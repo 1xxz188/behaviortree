@@ -1,0 +1,3 @@
+{"Kind":"node","Version":"baseline","InstanceID":"existing","TreeID":"main","NodeID":"gate","NodeIndex":1,"Sequence":1,"From":0,"To":1,"Reason":""}
+{"Kind":"node","Version":"baseline","InstanceID":"existing","TreeID":"main","NodeID":"root","NodeIndex":0,"Sequence":2,"From":0,"To":1,"Reason":""}
+plugin build contract differs from host (toolchain, flags, ABI or shared dependencies)

@@ -1,0 +1,14 @@
+ok  	appfw/third/behaviortree	0.005s
+?   	appfw/third/behaviortree/cmd/bttool	[no test files]
+ok  	appfw/third/behaviortree/codegen	24.773s
+ok  	appfw/third/behaviortree/editor	0.017s
+ok  	appfw/third/behaviortree/examples/behavior	0.002s
+?   	appfw/third/behaviortree/examples/behavior/helper	[no test files]
+?   	appfw/third/behaviortree/examples/definition	[no test files]
+?   	appfw/third/behaviortree/examples/host	[no test files]
+?   	appfw/third/behaviortree/examples/shared	[no test files]
+ok  	appfw/third/behaviortree/hotload	0.005s
+ok  	appfw/third/behaviortree/model	0.003s
+ok  	appfw/third/behaviortree/scripts/builddemo	24.594s
+?   	appfw/third/behaviortree/scripts/generate	[no test files]
+?   	appfw/third/behaviortree/web	[no test files]

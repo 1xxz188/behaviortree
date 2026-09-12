@@ -1,0 +1,8 @@
+Linux 4.18.0-553.147.1.el8_10.x86_64 x86_64
+go version go1.26.7 linux/amd64
+gcc (GCC) 13.2.0
+GOTOOLCHAIN=local
+GOROOT=/data/xxz/bt/cache/gomod/golang.org/toolchain@v0.0.1-go1.26.7.linux-amd64
+release=/data/xxz/bt/run-WO1ylfth/appfw/third/behaviortree/.build/release_20260911_165448_603980546
+debug=/data/xxz/bt/run-WO1ylfth/appfw/third/behaviortree/.build/release_20260911_165705_854219269
+43a2672859c33d8aef1f07b7502713e71d534cdad0fd0b0a8a7eee1848e16520  /data/xxz/bt/behaviortree-linux.tar.gz

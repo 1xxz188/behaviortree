@@ -1,0 +1,9 @@
+web/node_modules/
+web/.sites-runtime/
+web/.vite/
+*.exe
+*.so
+.build/
+.workspace/
+coverage.out
+!docs/linux-validation/*.log

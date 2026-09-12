@@ -1,0 +1,5 @@
+* text=auto eol=lf
+
+# 构建产物及第三方许可文本保留原有空白。
+web/dist/** -whitespace
+web/public/third-party-notices.txt -whitespace

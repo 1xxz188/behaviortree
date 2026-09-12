@@ -1,0 +1,23 @@
+built: /data/xxz/bt/standalone-9fuNeSzr/.build/release_20260912_011115_939965966
+{"Kind":"node","Version":"baseline","InstanceID":"existing","TreeID":"main","NodeID":"gate","NodeIndex":1,"Sequence":1,"From":0,"To":1,"Reason":""}
+{"Kind":"node","Version":"baseline","InstanceID":"existing","TreeID":"main","NodeID":"root","NodeIndex":0,"Sequence":2,"From":0,"To":1,"Reason":""}
+{"Kind":"publish","Version":"v1_20260912_011115_939965966","InstanceID":"","TreeID":"","NodeID":"","NodeIndex":0,"Sequence":0,"From":0,"To":0,"Reason":""}
+{"Kind":"node","Version":"baseline","InstanceID":"existing","TreeID":"main","NodeID":"gate","NodeIndex":1,"Sequence":3,"From":1,"To":2,"Reason":""}
+{"Kind":"node","Version":"baseline","InstanceID":"existing","TreeID":"main","NodeID":"record","NodeIndex":2,"Sequence":4,"From":0,"To":2,"Reason":""}
+{"Kind":"node","Version":"baseline","InstanceID":"existing","TreeID":"main","NodeID":"root","NodeIndex":0,"Sequence":5,"From":1,"To":2,"Reason":""}
+{"Kind":"switch","Version":"v1_20260912_011115_939965966","InstanceID":"existing","TreeID":"main","NodeID":"","NodeIndex":0,"Sequence":6,"From":0,"To":0,"Reason":"program version changed"}
+{"Kind":"node","Version":"v1_20260912_011115_939965966","InstanceID":"existing","TreeID":"main","NodeID":"gate","NodeIndex":1,"Sequence":7,"From":0,"To":1,"Reason":""}
+{"Kind":"node","Version":"v1_20260912_011115_939965966","InstanceID":"existing","TreeID":"main","NodeID":"root","NodeIndex":0,"Sequence":8,"From":0,"To":1,"Reason":""}
+{"Kind":"publish","Version":"v2_20260912_011115_939965966","InstanceID":"","TreeID":"","NodeID":"","NodeIndex":0,"Sequence":0,"From":0,"To":0,"Reason":""}
+{"Kind":"publish","Version":"v3_20260912_011115_939965966","InstanceID":"","TreeID":"","NodeID":"","NodeIndex":0,"Sequence":0,"From":0,"To":0,"Reason":""}
+{"Kind":"abort","Version":"v1_20260912_011115_939965966","InstanceID":"existing","TreeID":"main","NodeID":"gate","NodeIndex":1,"Sequence":9,"From":1,"To":0,"Reason":"cancel and restart for published version"}
+{"Kind":"switch","Version":"v3_20260912_011115_939965966","InstanceID":"existing","TreeID":"main","NodeID":"","NodeIndex":0,"Sequence":10,"From":0,"To":0,"Reason":"program version changed"}
+{"Kind":"node","Version":"v3_20260912_011115_939965966","InstanceID":"existing","TreeID":"main","NodeID":"gate","NodeIndex":1,"Sequence":11,"From":0,"To":1,"Reason":""}
+{"Kind":"node","Version":"v3_20260912_011115_939965966","InstanceID":"existing","TreeID":"main","NodeID":"root","NodeIndex":0,"Sequence":12,"From":0,"To":1,"Reason":""}
+{"Kind":"node","Version":"v3_20260912_011115_939965966","InstanceID":"existing","TreeID":"main","NodeID":"gate","NodeIndex":1,"Sequence":13,"From":1,"To":2,"Reason":""}
+{"Kind":"node","Version":"v3_20260912_011115_939965966","InstanceID":"existing","TreeID":"main","NodeID":"record","NodeIndex":2,"Sequence":14,"From":0,"To":2,"Reason":""}
+{"Kind":"node","Version":"v3_20260912_011115_939965966","InstanceID":"existing","TreeID":"main","NodeID":"extra_a","NodeIndex":3,"Sequence":15,"From":0,"To":2,"Reason":""}
+{"Kind":"node","Version":"v3_20260912_011115_939965966","InstanceID":"existing","TreeID":"main","NodeID":"extra_b","NodeIndex":4,"Sequence":16,"From":0,"To":2,"Reason":""}
+{"Kind":"node","Version":"v3_20260912_011115_939965966","InstanceID":"existing","TreeID":"main","NodeID":"extra_c","NodeIndex":5,"Sequence":17,"From":0,"To":2,"Reason":""}
+{"Kind":"node","Version":"v3_20260912_011115_939965966","InstanceID":"existing","TreeID":"main","NodeID":"root","NodeIndex":0,"Sequence":18,"From":1,"To":2,"Reason":""}
+PASS: three native versions, tree/action/helper changes, both switch policies, pinned Running, stale callback, bad signature and build mismatch; opened plugins: 4

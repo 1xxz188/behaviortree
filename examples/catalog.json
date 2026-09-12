@@ -1,0 +1,22 @@
+[
+  {
+    "id": "gate",
+    "name": "等待宿主异步完成",
+    "kind": "action",
+    "goName": "Gate",
+    "params": []
+  },
+  {
+    "id": "record",
+    "name": "记录业务事件",
+    "kind": "action",
+    "goName": "Record",
+    "params": [
+      {
+        "name": "Message",
+        "type": "string",
+        "default": "completed"
+      }
+    ]
+  }
+]

@@ -1,0 +1,85 @@
+{
+  "schemaVersion": 1,
+  "name": "Go 原生插件示例",
+  "blackboard": [
+    {
+      "id": "message",
+      "name": "Message",
+      "type": "string",
+      "default": "completed"
+    }
+  ],
+  "catalog": [
+    {
+      "id": "gate",
+      "name": "等待宿主异步完成",
+      "kind": "action",
+      "goName": "Gate",
+      "params": []
+    },
+    {
+      "id": "record",
+      "name": "记录业务事件",
+      "kind": "action",
+      "goName": "Record",
+      "params": [
+        {
+          "name": "Message",
+          "type": "string",
+          "default": "completed"
+        }
+      ]
+    }
+  ],
+  "trees": [
+    {
+      "id": "main",
+      "name": "异步任务",
+      "root": "root",
+      "nodes": [
+        {
+          "id": "root",
+          "type": "sequence",
+          "children": [
+            "gate",
+            "record"
+          ]
+        },
+        {
+          "id": "gate",
+          "type": "action",
+          "binding": "gate"
+        },
+        {
+          "id": "record",
+          "type": "action",
+          "binding": "record",
+          "params": {
+            "Message": {
+              "field": "message"
+            }
+          }
+        }
+      ],
+      "layout": {
+        "gate": {
+          "x": 80,
+          "y": 180
+        },
+        "record": {
+          "x": 320,
+          "y": 180
+        },
+        "root": {
+          "x": 200,
+          "y": 40
+        }
+      }
+    }
+  ],
+  "generation": {
+    "package": "behavior",
+    "contextImport": "github.com/1xxz188/behaviortree/examples/shared",
+    "contextType": "*Context"
+  }
+}

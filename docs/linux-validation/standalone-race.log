@@ -1,0 +1,14 @@
+ok  	github.com/1xxz188/behaviortree	1.041s
+?   	github.com/1xxz188/behaviortree/cmd/bttool	[no test files]
+ok  	github.com/1xxz188/behaviortree/codegen	32.102s
+ok  	github.com/1xxz188/behaviortree/editor	1.058s
+ok  	github.com/1xxz188/behaviortree/examples/behavior	1.011s
+?   	github.com/1xxz188/behaviortree/examples/behavior/helper	[no test files]
+?   	github.com/1xxz188/behaviortree/examples/definition	[no test files]
+?   	github.com/1xxz188/behaviortree/examples/host	[no test files]
+?   	github.com/1xxz188/behaviortree/examples/shared	[no test files]
+ok  	github.com/1xxz188/behaviortree/hotload	1.014s
+ok  	github.com/1xxz188/behaviortree/model	1.015s
+ok  	github.com/1xxz188/behaviortree/scripts/builddemo	97.684s
+?   	github.com/1xxz188/behaviortree/scripts/generate	[no test files]
+?   	github.com/1xxz188/behaviortree/web	[no test files]
