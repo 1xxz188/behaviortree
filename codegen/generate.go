@@ -73,29 +73,10 @@ func Generate(project model.Project) (Result, error) {
 	if err := checkExpandedSize(project); err != nil {
 		return Result{}, err
 	}
-	// 经 JSON 深拷贝后规范化集合，避免修改调用者的工程或画布。
-	raw, err := json.Marshal(project)
+	p, version, err := normalizeProject(project)
 	if err != nil {
 		return Result{}, err
 	}
-	var p model.Project
-	if err = json.Unmarshal(raw, &p); err != nil {
-		return Result{}, err
-	}
-	sort.Slice(p.Trees, func(i, j int) bool { return p.Trees[i].ID < p.Trees[j].ID })
-	sort.Slice(p.Blackboard, func(i, j int) bool { return p.Blackboard[i].ID < p.Blackboard[j].ID })
-	sort.Slice(p.Catalog, func(i, j int) bool { return p.Catalog[i].ID < p.Catalog[j].ID })
-	for i := range p.Trees {
-		p.Trees[i].Layout = nil
-		sort.Slice(p.Trees[i].Nodes, func(a, b int) bool { return p.Trees[i].Nodes[a].ID < p.Trees[i].Nodes[b].ID })
-	}
-	for i := range p.Catalog {
-		sort.Slice(p.Catalog[i].Params, func(a, b int) bool { return p.Catalog[i].Params[a].Name < p.Catalog[i].Params[b].Name })
-		sort.Strings(p.Catalog[i].Events)
-	}
-	raw, _ = json.Marshal(p)
-	sum := sha256.Sum256(raw)
-	version := hex.EncodeToString(sum[:16])
 	g := &generator{p: p, roots: map[string]int{}, defs: map[string]model.Definition{}, fields: map[string]int{}, context: p.Generation.ContextType}
 	if p.Generation.ContextImport != "" {
 		g.context = "ctxpkg." + strings.TrimPrefix(g.context, "*")
@@ -520,4 +501,38 @@ func checkExpandedSize(p model.Project) error {
 		total += n
 	}
 	return nil
+}
+
+// ProjectVersion 计算与生成器一致的语义版本，忽略布局且允许未连完的草稿。
+func ProjectVersion(project model.Project) (string, error) {
+	_, version, err := normalizeProject(project)
+	return version, err
+}
+
+// normalizeProject 深拷贝并规范化集合，统一预览、产物和草稿的版本判定。
+func normalizeProject(project model.Project) (model.Project, string, error) {
+	// 经 JSON 深拷贝后规范化集合，避免修改调用者的工程或画布。
+	raw, err := json.Marshal(project)
+	if err != nil {
+		return model.Project{}, "", err
+	}
+	var p model.Project
+	if err = json.Unmarshal(raw, &p); err != nil {
+		return model.Project{}, "", err
+	}
+	sort.Slice(p.Trees, func(i, j int) bool { return p.Trees[i].ID < p.Trees[j].ID })
+	sort.Slice(p.Blackboard, func(i, j int) bool { return p.Blackboard[i].ID < p.Blackboard[j].ID })
+	sort.Slice(p.Catalog, func(i, j int) bool { return p.Catalog[i].ID < p.Catalog[j].ID })
+	for i := range p.Trees {
+		p.Trees[i].Layout = nil
+		sort.Slice(p.Trees[i].Nodes, func(a, b int) bool { return p.Trees[i].Nodes[a].ID < p.Trees[i].Nodes[b].ID })
+	}
+	for i := range p.Catalog {
+		sort.Slice(p.Catalog[i].Params, func(a, b int) bool { return p.Catalog[i].Params[a].Name < p.Catalog[i].Params[b].Name })
+		sort.Strings(p.Catalog[i].Events)
+	}
+	raw, _ = json.Marshal(p)
+	sum := sha256.Sum256(raw)
+	version := hex.EncodeToString(sum[:16])
+	return p, version, nil
 }

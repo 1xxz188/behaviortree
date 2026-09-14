@@ -6,7 +6,12 @@ import {
   connect,
   emptyProject,
   removeNodes,
+  allocateID,
+  uid,
 } from "./project.ts";
+import {
+  createSourceIndex, GenerationRequests, semanticSignature, sourceNodeKey,
+} from "./generation.ts";
 import { parseInput, parseJSON, stringifyJSON } from "./json.ts";
 import {
   nodeTypes, valueTypes, definitionKinds, parseNodeType, parseValueType,
@@ -99,4 +104,108 @@ test("八种值输入保留原有语义及大整数精度", () => {
   ] as const;
   for (const [type, input, output] of cases)
     assert.equal(stringifyJSON(parseInput(input, type)), output);
+});
+
+// 使用可控随机序列制造碰撞，验证重试后立即保留新 ID，并保留完整 UUID。
+test("节点ID分配保留完整UUID并在集合中查重重试", () => {
+  const first = "00000000-0000-4000-8000-000000000001";
+  const second = "00000000-0000-4000-8000-000000000002";
+  const occupied = new Set([`node_${first.replaceAll("-", "")}`]);
+  const random = [first, first, second];
+  let calls = 0;
+  const id = allocateID(occupied, "node", () => random[calls++]!);
+  assert.equal(calls, 3);
+  assert.equal(id, `node_${second.replaceAll("-", "")}`);
+  assert.ok(occupied.has(id));
+  assert.match(uid(), /^node_[0-9a-f]{32}$/);
+  assert.match(allocateID(occupied, "tree"), /^tree_[0-9a-f]{32}$/);
+});
+
+// 坐标、对象键顺序及无语义集合顺序不改变签名，执行顺序和无损整数仍参与比较。
+test("源码语义签名忽略布局且保留业务变化与64位精度", () => {
+  const project = emptyProject();
+  project.blackboard.push({ id: "precise", name: "Precise", type: "uint64", default: parseJSON("18446744073709551615") });
+  const before = stringifyJSON(project);
+  const signature = semanticSignature(project);
+  const changed = clone(project);
+  changed.trees[0]!.layout = { root: { x: 900, y: -100 } };
+  changed.trees[0]!.nodes.reverse();
+  changed.blackboard.reverse();
+  assert.equal(semanticSignature(changed), signature);
+  assert.equal(stringifyJSON(project), before);
+  changed.trees[0]!.nodes.find((node) => node.id === "root")!.children!.reverse();
+  assert.notEqual(semanticSignature(changed), signature);
+  const precise = clone(project);
+  precise.blackboard.find((field) => field.id === "precise")!.default = parseJSON("18446744073709551614");
+  assert.notEqual(semanticSignature(precise), signature);
+});
+
+// 模拟 Go omitempty 保存后的空属性省略，重新打开同一工程不会误报过期。
+test("源码语义签名统一JSON保存后的可选空属性", () => {
+  const project = emptyProject();
+  const node = project.trees[0]!.nodes[0]!;
+  node.params = {};
+  node.binding = "";
+  node.count = 0;
+  const reopened = clone(project);
+  delete reopened.trees[0]!.nodes[0]!.params;
+  delete reopened.trees[0]!.nodes[0]!.binding;
+  delete reopened.trees[0]!.nodes[0]!.count;
+  assert.equal(semanticSignature(project), semanticSignature(reopened));
+});
+
+// 节点可有多个展开位置，跨树同名不得合并；辅助函数和节点间的空白不属于节点。
+test("源码映射支持节点多实例且导航仅限对应函数范围", () => {
+  const source = [
+    "package behavior",
+    "func btNode0(f *Frame) Status {",
+    "\tif true {",
+    "\t\treturn Success",
+    "\t}",
+    "\treturn Failure",
+    "}",
+    "",
+    "func helper() {",
+    "}",
+    "func btNode1(f *Frame) Status {",
+    "\treturn Success",
+    "}",
+    "func btNode2(f *Frame) Status {",
+    "\treturn Success",
+    "}",
+  ].join("\n");
+  const locations = [
+    { treeId: "main", nodeId: "shared", index: 0, line: 2 },
+    { treeId: "main", nodeId: "shared", index: 1, line: 11 },
+    { treeId: "other", nodeId: "shared", index: 2, line: 14 },
+    { treeId: "main", nodeId: "wrong", index: 3, line: 9 },
+  ];
+  const index = createSourceIndex(source, locations);
+  assert.deepEqual(index.byNode.get(sourceNodeKey("main", "shared")), locations.slice(0, 2));
+  assert.deepEqual(index.byNode.get(sourceNodeKey("other", "shared")), [locations[2]]);
+  assert.equal(index.byLine.get(6)?.index, 0);
+  assert.equal(index.byLine.get(7)?.index, 0);
+  for (const line of [1, 8, 9, 10, 17]) assert.equal(index.byLine.has(line), false);
+  assert.equal(index.byNode.has(sourceNodeKey("main", "wrong")), false);
+  assert.notEqual(sourceNodeKey("a:b", "c"), sourceNodeKey("a", "b:c"));
+});
+
+// 用迟到响应、连续请求和工程切换复现竞争；单独修改布局仍可接收正确源码。
+test("生成请求淘汰旧响应且布局调整不使当前请求失效", () => {
+  const requests = new GenerationRequests();
+  const project = emptyProject();
+  const first = requests.begin(project);
+  project.trees[0]!.layout = {};
+  assert.equal(requests.accepts(first, project), true);
+  const second = requests.begin(project);
+  assert.equal(requests.accepts(first, project), false);
+  assert.equal(requests.acceptsRevision(first), false);
+  assert.equal(requests.acceptsRevision(second), true);
+  project.trees[0]!.nodes[0]!.name = "已编辑";
+  assert.equal(requests.accepts(second, project), false);
+  requests.invalidate();
+  assert.equal(requests.acceptsRevision(second), false);
+  const third = requests.begin(project);
+  requests.invalidate();
+  assert.equal(requests.accepts(third, project), false);
 });

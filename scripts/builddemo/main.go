@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/1xxz188/behaviortree/codegen"
+	"github.com/1xxz188/behaviortree/editor"
 	"github.com/1xxz188/behaviortree/examples/definition"
 	"github.com/1xxz188/behaviortree/hotload"
 	"github.com/1xxz188/behaviortree/model"
@@ -133,7 +134,7 @@ func (b *builder) prepare(stamp string) ([]buildTarget, error) {
 		if err != nil {
 			return nil, err
 		}
-		if err = os.WriteFile(filepath.Join(dir, "behavior", "tree_gen.go"), result.Source, 0644); err != nil {
+		if err = editor.WriteGenerated(filepath.Join(dir, "behavior"), result); err != nil {
 			return nil, err
 		}
 		data, err := model.Encode(project)
@@ -141,9 +142,6 @@ func (b *builder) prepare(stamp string) ([]buildTarget, error) {
 			return nil, err
 		}
 		if err = os.WriteFile(filepath.Join(dir, "project.json"), data, 0644); err != nil {
-			return nil, err
-		}
-		if err = writeJSON(filepath.Join(dir, "behavior", "tree_gen.map.json"), result.SourceMap); err != nil {
 			return nil, err
 		}
 		if err = replaceStringConstant(filepath.Join(dir, "behavior", "helper", "version.go"), "Marker", label); err != nil {
@@ -214,7 +212,7 @@ func buildEnvironment(workspace string, cgoEnabled bool) []string {
 	return result
 }
 
-// writeJSON 保存旁车及源码映射；目录在本次构建中唯一。
+// writeJSON 保存构建产物旁车；目录在本次构建中唯一。
 func writeJSON(path string, value any) error {
 	data, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {

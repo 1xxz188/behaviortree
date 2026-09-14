@@ -2,14 +2,15 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
-	"github.com/1xxz188/behaviortree/codegen"
-	"github.com/1xxz188/behaviortree/examples/definition"
-	"github.com/1xxz188/behaviortree/model"
 	"os"
 	"path/filepath"
+
+	"github.com/1xxz188/behaviortree/codegen"
+	"github.com/1xxz188/behaviortree/editor"
+	"github.com/1xxz188/behaviortree/examples/definition"
+	"github.com/1xxz188/behaviortree/model"
 )
 
 // main 只覆盖明确的生成文件，绝不覆盖 actions.go。
@@ -25,10 +26,7 @@ func main() {
 	catalog, err := model.ExportCatalog(definition.Catalog())
 	check(err)
 	write(filepath.Join(*root, "examples", "catalog.json"), catalog)
-	write(filepath.Join(*root, "examples", "behavior", "tree_gen.go"), result.Source)
-	locations, err := json.MarshalIndent(result.SourceMap, "", "  ")
-	check(err)
-	write(filepath.Join(*root, "examples", "behavior", "tree_gen.map.json"), locations)
+	check(editor.WriteGenerated(filepath.Join(*root, "examples", "behavior"), result))
 	fmt.Println("generated examples/project.json, catalog.json and behavior/tree_gen.go")
 }
 

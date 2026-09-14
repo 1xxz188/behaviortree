@@ -157,8 +157,23 @@ export const kinds: Record<
 export function clone<T>(value: T): T {
   return parseJSON<T>(stringifyJSON(value));
 }
+// 保留完整 UUID 的随机位，前缀仅用于区分节点、树和字段。
 export function uid(prefix = "node"): string {
-  return `${prefix}_${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`;
+  return `${prefix}_${crypto.randomUUID().replaceAll("-", "")}`;
+}
+
+// 使用调用方维护的集合分配 ID；初始化后每次创建只做 O(1) 查重，碰撞时重试。
+export function allocateID(
+  occupied: Set<string>,
+  prefix = "node",
+  randomUUID: () => string = () => crypto.randomUUID(),
+): string {
+  let id: string;
+  do {
+    id = `${prefix}_${randomUUID().replaceAll("-", "")}`;
+  } while (occupied.has(id));
+  occupied.add(id);
+  return id;
 }
 
 // 删除节点时同时移除父子连接，保留其余子节点作为可继续编辑的草稿。

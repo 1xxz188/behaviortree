@@ -1,5 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from "vue";
+import CatalogManager from "./CatalogManager.vue";
+import SourceViewer from "./SourceViewer.vue";
+import { GenerationRequests, semanticSignature } from "./generation";
+import type { SourceLocation } from "./generation";
 import { VueFlow, Handle, Position, useVueFlow } from "@vue-flow/core";
 import type { Connection, NodeDragEvent, NodeMouseEvent } from "@vue-flow/core";
 import { Background } from "@vue-flow/background";
@@ -11,7 +15,7 @@ import {
   emptyProject,
   kinds,
   removeNodes,
-  uid,
+  allocateID,
 } from "./project";
 import type {
   BTNode,
@@ -25,9 +29,30 @@ import type {
 } from "./project";
 import { parseInput, parseJSON, stringifyJSON } from "./json";
 import {
-  nodeTypes, valueTypes, parseValueType, validateProjectTypes, validateCatalogTypes,
+  nodeTypes, valueTypes, parseValueType, validateProjectTypes,
 } from "./enums";
-import type { NodeType, ValueType } from "./enums";
+import type { DefinitionKind, NodeType, ValueType } from "./enums";
+
+// 生成接口统一返回源码、版本及节点位置；读取磁盘时附带工程匹配结果。
+interface GeneratedCode {
+  source: string; // 完整 Go 源码。
+  sourceMap: SourceLocation[]; // 各展开实例的位置。
+  version: string; // 生成内容的版本摘要。
+  path?: string; // 实际落盘路径，预览无路径。
+  matchesCurrent?: boolean; // 已保存源码是否对应当前工程。
+}
+// 结果保留生成时的修订号，编辑后只标记过期，不丢弃源码。
+interface CodeSnapshot extends GeneratedCode {
+  revision: number; // 对应当前编辑会话的语义修订。
+  signature: string; // 撤销恢复时判断内容是否一致。
+  origin: "preview" | "generated" | "saved"; // 区分预览和磁盘产物。
+}
+// 请求错误保留节点诊断，由仍有效的调用展示。
+class RequestError extends Error {
+  constructor(message: string, readonly status: number, readonly diagnostics?: Diagnostic[]) {
+    super(message);
+  }
+}
 
 const project = ref<Project>(emptyProject());
 const treeID = ref(project.value.trees[0]!.id);
@@ -41,8 +66,19 @@ const error = ref(false);
 const busy = ref(false);
 const dirty = ref(false);
 const diagnostics = ref<Diagnostic[]>([]);
-const source = ref("");
-const outputPath = ref("");
+const codeSnapshot = shallowRef<CodeSnapshot>();
+const scaffoldSnapshot = shallowRef<{ source: string; revision: number; signature: string }>();
+const semanticRevision = ref(0);
+let editRevision = 0; // 包含布局编辑，防止加载请求覆盖期间的新草稿。
+const generationRequests = new GenerationRequests();
+const source = computed(() => codeSnapshot.value?.source ?? "");
+const sourceStale = computed(() => !!codeSnapshot.value && codeSnapshot.value.revision !== semanticRevision.value);
+const scaffoldStale = computed(() => !!scaffoldSnapshot.value && scaffoldSnapshot.value.revision !== semanticRevision.value);
+const outputPath = computed(() => codeSnapshot.value?.path ?? "仅预览 · 尚未写入目录");
+const catalogDialog = ref<{ mode: "create" | "import" | "manage"; kind?: DefinitionKind }>();
+// 加载工程时一次建立集合，后续新增与复制只做集合查重。
+let occupiedIDs = new Set<string>();
+rebuildIDs();
 const tab = ref("nodes");
 const bottomTab = ref("diagnostics");
 const workbench = ref<HTMLElement>();
@@ -122,7 +158,6 @@ function resizeOutputWithKeyboard(event: KeyboardEvent) {
 const undoStack = ref<string[]>([]);
 const redoStack = ref<string[]>([]);
 const importInput = ref<HTMLInputElement>();
-const catalogInput = ref<HTMLInputElement>();
 const { fitView, setCenter, screenToFlowCoordinate } = useVueFlow();
 // 拖拽只保存节点模板，成功落入画布后才写入工程和撤销历史。
 const paletteDrag = ref<{ type: NodeType; binding?: string }>();
@@ -133,12 +168,12 @@ const tree = computed(
     project.value.trees.find((t) => t.id === treeID.value) ??
     project.value.trees[0]!,
 );
-const node = computed(() =>
-  tree.value?.nodes.find((n) => n.id === selected.value),
-);
-const definition = computed(() =>
-  project.value.catalog.find((d) => d.id === node.value?.binding),
-);
+const nodeIndex = computed(() => new Map(tree.value.nodes.map((n) => [n.id, n])));
+const node = computed(() => nodeIndex.value.get(selected.value));
+const definitionIndex = computed(() => new Map(project.value.catalog.map((d) => [d.id, d])));
+const definition = computed(() => definitionIndex.value.get(node.value?.binding ?? ""));
+const bindingOptions = computed(() => project.value.catalog.filter((d) => d.kind === node.value?.type));
+const invalidNodes = computed(() => new Set(diagnostics.value.filter((d) => d.treeId === tree.value.id).map((d) => d.nodeId)));
 const availableKinds = computed(() =>
   nodeTypes.map((type) => ({ type, info: kinds[type] })).filter(({ type, info }) =>
     `${info.label} ${type}`.toLowerCase().includes(search.value.toLowerCase()),
@@ -157,9 +192,7 @@ const graphNodes = computed(() =>
       node: n,
       kind: kinds[n.type],
       root: n.id === tree.value.root,
-      invalid: diagnostics.value.some(
-        (d) => d.treeId === tree.value.id && d.nodeId === n.id,
-      ),
+      invalid: invalidNodes.value.has(n.id),
     },
   })),
 );
@@ -185,29 +218,57 @@ function notice(text: string, failed = false) {
 }
 // 保存编辑前快照，使语义和布局都可以撤销。
 function checkpoint() {
+  editRevision++;
   undoStack.value.push(stringifyJSON(project.value));
   if (undoStack.value.length > 100) undoStack.value.shift();
   redoStack.value = [];
   dirty.value = true;
-  source.value = "";
+}
+// 只有语义变更使生成结果和在途请求过期；画布坐标不参与。
+function invalidateCode() {
+  semanticRevision.value++;
+  generationRequests.invalidate();
   diagnostics.value = [];
 }
 // 在统一历史边界内修改工程。
-function mutate(fn: () => void) {
+function mutate(fn: () => void, semantic = true) {
   checkpoint();
   fn();
+  if (semantic) invalidateCode();
 }
-// 恢复工程快照，并清除旧源码和诊断。
+// 只在替换工程时扫描一次已有 ID，删除过的 ID 在本会话中也不复用。
+function rebuildIDs() {
+  occupiedIDs = new Set(project.value.blackboard.map((f) => f.id));
+  for (const t of project.value.trees) {
+    occupiedIDs.add(t.id);
+    for (const n of t.nodes) occupiedIDs.add(n.id);
+  }
+}
+// 工程切换隔离源码、诊断和请求，避免显示另一工程的结果。
+function resetResults() {
+  editRevision++;
+  invalidateCode();
+  codeSnapshot.value = undefined;
+  scaffoldSnapshot.value = undefined;
+  rebuildIDs();
+}
+// 恢复工程快照；纯布局撤销不使源码过期。
 function restore(snapshot: string) {
+  editRevision++;
   const restored = parseJSON<Project>(snapshot);
   validateProjectTypes(restored);
+  const signature = semanticSignature(restored);
+  if (signature !== semanticSignature(project.value)) invalidateCode();
   project.value = restored;
+  rebuildIDs();
   if (!project.value.trees.some((t) => t.id === treeID.value))
     treeID.value = project.value.trees[0]?.id ?? "";
   selected.value = "";
   dirty.value = true;
-  source.value = "";
-  diagnostics.value = [];
+  if (codeSnapshot.value?.signature === signature)
+    codeSnapshot.value = { ...codeSnapshot.value, revision: semanticRevision.value };
+  if (scaffoldSnapshot.value?.signature === signature)
+    scaffoldSnapshot.value = { ...scaffoldSnapshot.value, revision: semanticRevision.value };
 }
 // 撤销最近一次工程修改。
 function undo() {
@@ -232,11 +293,11 @@ function changeText(event: Event, fn: (text: string) => void) {
 // 创建稳定节点 ID，并放置到当前树画布。
 function addNode(type: NodeType, binding?: string, position?: NodePosition) {
   mutate(() => {
-    const id = uid(),
+    const id = allocateID(occupiedIDs),
       item: BTNode = { id, type, name: kinds[type]?.label ?? type };
     if (binding) {
       item.binding = binding;
-      item.name = project.value.catalog.find((d) => d.id === binding)?.name;
+      item.name = definitionIndex.value.get(binding)?.name;
     }
     if (["repeat", "retry"].includes(type)) item.count = 3;
     if (["wait", "timeout"].includes(type)) item.durationMs = 1000;
@@ -300,7 +361,7 @@ function moveNode({ node: moved }: NodeDragEvent) {
   mutate(() => {
     tree.value.layout ??= {};
     tree.value.layout[moved.id] = { ...moved.position };
-  });
+  }, false);
 }
 // 删除所选节点和相关连接，保留其他草稿节点。
 function deleteSelected() {
@@ -315,7 +376,7 @@ function duplicate() {
   if (!node.value) return;
   mutate(() => {
     const n = clone(node.value!);
-    n.id = uid();
+    n.id = allocateID(occupiedIDs);
     n.name = `${n.name ?? kinds[n.type]?.label} 副本`;
     n.children = [];
     tree.value.nodes.push(n);
@@ -340,13 +401,13 @@ function disconnect(index: number) {
 }
 // 重新计算画布布局，保持行为语义不变。
 function layout() {
-  mutate(() => autoLayout(tree.value));
+  mutate(() => autoLayout(tree.value), false);
   setTimeout(() => fitView({ padding: 0.18 }), 30);
 }
 // 创建可独立生成或作为子树引用的入口。
 function addTree() {
   mutate(() => {
-    const id = uid("tree");
+    const id = allocateID(occupiedIDs, "tree");
     project.value.trees.push({
       id,
       name: "新行为树",
@@ -376,6 +437,7 @@ function resetProject() {
   if (dirty.value && !confirm("当前修改尚未保存，创建新工程？")) return;
   checkpoint();
   project.value = emptyProject();
+  resetResults();
   treeID.value = project.value.trees[0]!.id;
   selected.value = "root";
   fileName.value = "new-project.json";
@@ -397,8 +459,7 @@ async function request<T>(path: string, body?: unknown): Promise<T> {
     await res.text(),
   );
   if (!res.ok) {
-    if (data.diagnostics) diagnostics.value = data.diagnostics;
-    throw new Error(data.error ?? `请求失败 (${res.status})`);
+    throw new RequestError(data.error ?? `请求失败 (${res.status})`, res.status, data.diagnostics);
   }
   return data as T;
 }
@@ -409,6 +470,10 @@ async function action(fn: () => Promise<void>) {
   try {
     await fn();
   } catch (e) {
+    if (e instanceof RequestError && e.diagnostics) {
+      diagnostics.value = e.diagnostics;
+      showOutput("diagnostics");
+    }
     notice(e instanceof Error ? e.message : String(e), true);
   } finally {
     busy.value = false;
@@ -421,22 +486,23 @@ async function refreshFiles() {
 // 保存工程后刷新文件列表，清除未保存标记。
 function save() {
   return action(async () => {
+    const snapshot = stringifyJSON(project.value);
+    const name = fileName.value;
     await request("/api/project", {
-      name: fileName.value,
-      project: project.value,
+      name,
+      project: parseJSON(snapshot),
     });
-    dirty.value = false;
+    if (snapshot === stringifyJSON(project.value) && name === fileName.value) dirty.value = false;
     await refreshFiles();
-    notice(`已保存 ${fileName.value}`);
+    notice(`已保存 ${name}${dirty.value ? "，后续修改尚未保存" : ""}`);
   });
 }
 // 加载工程并重置该文件的编辑历史。
 function open(name: string) {
   return action(async () => {
     if (dirty.value && !confirm("当前修改尚未保存，打开其他工程？")) return;
-    const loaded = await request<Project>(
-      `/api/project?name=${encodeURIComponent(name)}`,
-    );
+    const loaded = await loadProject(() => request<Project>(`/api/project?name=${encodeURIComponent(name)}`));
+    if (!loaded) return;
     validateProjectTypes(loaded);
     project.value = loaded;
     fileName.value = name;
@@ -446,9 +512,29 @@ function open(name: string) {
     redoStack.value = [];
     dirty.value = false;
     diagnostics.value = [];
-    source.value = "";
+    resetResults();
     notice(`已打开 ${name}`);
+    await readGenerated(true);
   });
+}
+// 替换工程之前检查编辑代次，用户在读取期间的新修改优先保留。
+async function loadProject(load: () => Promise<Project>) {
+  const revision = editRevision;
+  try {
+    const loaded = await load();
+    if (revision === editRevision) return loaded;
+    notice("读取期间工程已修改，已取消替换，请重新打开或导入");
+  } catch (e) {
+    if (revision === editRevision) throw e;
+  }
+}
+// 第一次查看输出时提供足够的阅读高度，后续尊重手动调整。
+function showOutput(tab: string) {
+  bottomTab.value = tab;
+  if (outputHeight.value === undefined) {
+    setOutputHeight(320);
+    void nextTick(() => fitView({ padding: 0.18 }));
+  }
 }
 // 文件列表作为打开命令使用，复位选择后允许再次重开同名工程。
 function selectProject(event: Event) {
@@ -460,13 +546,10 @@ function selectProject(event: Event) {
 // 调用 Go 共用校验器，并展示可定位到节点的诊断。
 function validate() {
   return action(async () => {
-    diagnostics.value = (
-      await request<{ diagnostics: Diagnostic[] }>(
-        "/api/validate",
-        project.value,
-      )
-    ).diagnostics;
-    bottomTab.value = "diagnostics";
+    const result = await currentProjectRequest<{ diagnostics: Diagnostic[] }>("/api/validate");
+    if (!result) return;
+    diagnostics.value = result.data.diagnostics;
+    showOutput("diagnostics");
     notice(
       diagnostics.value.length
         ? `发现 ${diagnostics.value.length} 个问题`
@@ -475,20 +558,70 @@ function validate() {
     );
   });
 }
-// 生成实际 Go 控制流，并展示源码及保存路径。
-function generate() {
+// 在请求边界获取快照，语义修改后以 O(1) 修订检查丢弃旧响应和旧诊断。
+async function currentProjectRequest<T>(path: string) {
+  const snapshot = clone(project.value);
+  const token = generationRequests.begin(snapshot);
+  const revision = semanticRevision.value;
+  try {
+    const data = await request<T>(path, snapshot);
+    if (!generationRequests.acceptsRevision(token)) {
+      notice(path === "/api/generate" ? "旧快照已生成到目录，当前修改仍需重新生成" : "工程已变化，已忽略旧请求结果");
+      return;
+    }
+    return { data, signature: token.signature, revision };
+  } catch (e) {
+    if (generationRequests.acceptsRevision(token)) throw e;
+  }
+}
+// 预览与写盘复用同一后端生成器；旧结果持续保留至新结果成功返回。
+function generate(write = true) {
   return action(async () => {
-    const result = await request<{
-      source: string;
-      path: string;
-      version: string;
-    }>("/api/generate", project.value);
-    source.value = result.source;
-    outputPath.value = result.path;
+    const result = await currentProjectRequest<GeneratedCode>(write ? "/api/generate" : "/api/preview");
+    if (!result) return;
+    codeSnapshot.value = { ...result.data, signature: result.signature, revision: result.revision, origin: write ? "generated" : "preview" };
     diagnostics.value = [];
-    bottomTab.value = "source";
-    notice(`已生成 Go · ${result.version.slice(0, 12)}`);
+    showOutput("source");
+    notice(`${write ? "已生成到目录" : "预览已更新"} · ${result.data.version.slice(0, 12)}`);
   });
+}
+// 从生成目录读取上次产物；打开工程自动读取时，尚无产物不视为错误。
+async function readGenerated(silent = false) {
+  try {
+    const result = await currentProjectRequest<GeneratedCode>("/api/generated");
+    if (!result) return;
+    const matches = result.data.matchesCurrent === true;
+    codeSnapshot.value = { ...result.data, signature: matches ? result.signature : "", revision: matches ? result.revision : -1, origin: "saved" };
+    showOutput("source");
+    notice(matches ? "已载入上次生成，内容与当前工程一致" : "已载入上次生成，内容与当前工程不同，请更新预览");
+  } catch (e) {
+    if (silent && e instanceof RequestError && e.status === 404) return;
+    throw e;
+  }
+}
+// 骨架只供预览、复制或下载，实际业务仍由独立手写文件实现。
+function previewScaffold() {
+  return action(async () => {
+    const result = await currentProjectRequest<{ source: string }>("/api/scaffold");
+    if (!result) return;
+    scaffoldSnapshot.value = { source: result.data.source, revision: result.revision, signature: result.signature };
+    showOutput("scaffold");
+    notice("业务骨架已生成，请实现 TODO 后与生成文件一起编译");
+  });
+}
+// 使用系统剪贴板复制可见文件，不把源码写入工程目录。
+async function copySource() {
+  try {
+    await navigator.clipboard.writeText(bottomTab.value === "scaffold" ? scaffoldSnapshot.value?.source ?? "" : source.value);
+    notice("已复制源码");
+  } catch {
+    notice("剪贴板不可用，请使用下载按钮", true);
+  }
+}
+// 仅当映射与当前工程一致时，从源码行定位画布节点。
+function locateSource(location: SourceLocation) {
+  if (sourceStale.value) return;
+  focusDiagnostic({ treeId: location.treeId, nodeId: location.nodeId, message: "" });
 }
 // 将当前工程或源码交给浏览器下载机制。
 function download(name: string, content: string, mime = "application/json") {
@@ -507,12 +640,16 @@ async function importProject(event: Event) {
     file = input.files?.[0];
   if (!file) return;
   await action(async () => {
-    const parsed: unknown = parseJSON(await file.text());
-    validateProjectTypes(parsed);
-    const loaded = await request<Project>("/api/import", parsed);
+    const loaded = await loadProject(async () => {
+      const parsed: unknown = parseJSON(await file.text());
+      validateProjectTypes(parsed);
+      return request<Project>("/api/import", parsed);
+    });
+    if (!loaded) return;
     validateProjectTypes(loaded);
     checkpoint();
     project.value = loaded;
+    resetResults();
     treeID.value = loaded.trees[0]!.id;
     selected.value = "";
     fileName.value = file.name;
@@ -520,28 +657,28 @@ async function importProject(event: Event) {
   });
   input.value = "";
 }
-// 导入程序员用 Go 导出的动作、条件及参数声明。
-async function importCatalog(event: Event) {
-  const input = event.target as HTMLInputElement,
-    file = input.files?.[0];
-  if (!file) return;
-  await action(async () => {
-    const parsed = parseJSON(await file.text());
-    validateCatalogTypes(parsed);
-    const catalog = await request<Definition[]>("/api/catalog", parsed);
-    validateCatalogTypes(catalog);
-    mutate(() => {
-      project.value.catalog = catalog;
-    });
-    notice(`已导入 ${catalog.length} 个 Go 节点定义`);
+// 从节点属性或节点库打开同一目录管理入口。
+function manageCatalog(mode: "create" | "import" | "manage", forNode = false) {
+  const kind = forNode && (node.value?.type === "action" || node.value?.type === "condition") ? node.value.type : undefined;
+  catalogDialog.value = { mode, kind };
+}
+// 目录验证成功后一次更新并建立撤销记录，可将新定义绑定当前节点。
+function applyCatalog(catalog: Definition[], bindID?: string) {
+  mutate(() => {
+    project.value.catalog = catalog;
+    if (bindID && node.value) {
+      node.value.binding = bindID;
+      node.value.params = {};
+    }
   });
-  input.value = "";
+  catalogDialog.value = undefined;
+  notice(`业务目录已更新，共 ${catalog.length} 个定义；请校验现有绑定`);
 }
 // 添加带稳定 ID 的强类型黑板字段。
 function addField() {
   mutate(() => {
     project.value.blackboard.push({
-      id: uid("field"),
+      id: allocateID(occupiedIDs, "field"),
       name: `Field${project.value.blackboard.length + 1}`,
       type: "int64",
       default: 0,
@@ -605,6 +742,7 @@ function focusDiagnostic(d: Diagnostic) {
 }
 // 处理保存、撤销和删除快捷键，不干扰文本原生撤销。
 function keydown(e: KeyboardEvent) {
+  if (catalogDialog.value) return;
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
     e.preventDefault();
     (e.target as HTMLElement)?.blur();
@@ -633,7 +771,7 @@ watch(treeID, () => {
   endPaletteDrag();
   selected.value = "";
   setTimeout(() => fitView({ padding: 0.18 }), 30);
-});
+}, { flush: "sync" });
 onMounted(() => {
   outputResizeObserver = new ResizeObserver(updateOutputBounds);
   if (workbench.value) outputResizeObserver.observe(workbench.value);
@@ -725,8 +863,9 @@ onUnmounted(() => toolLifecycle.abort());
         </button>
         <button :disabled="busy" @click="save">保存 <kbd>Ctrl S</kbd></button>
         <button :disabled="busy" @click="validate">校验</button>
-        <button class="primary" :disabled="busy" @click="generate">
-          生成 Go <span>↗</span>
+        <button :disabled="busy" @click="generate(false)">预览 Go</button>
+        <button class="primary" :disabled="busy" @click="generate(true)">
+          生成到目录 <span>↗</span>
         </button>
       </div>
     </header>
@@ -794,13 +933,17 @@ onUnmounted(() => toolLifecycle.abort());
           </button>
         </div>
         <div class="panel-heading small-heading">
-          Go 业务节点<button class="text-button" @click="catalogInput?.click()">
-            导入目录
+          Go 业务节点<button class="text-button" @click="manageCatalog('manage')">
+            管理目录
           </button>
         </div>
         <p v-if="!project.catalog.length" class="muted empty-note">
-          导入 Go 导出的节点目录，即可配置业务动作和条件。
+          尚无业务定义。新建定义或导入 Go 导出的目录后，即可绑定动作和条件。
         </p>
+        <div class="binding-actions">
+          <button @click="manageCatalog('create')">新建定义</button>
+          <button @click="manageCatalog('import')">导入目录</button>
+        </div>
         <button
           v-for="d in project.catalog"
           :key="d.id"
@@ -956,8 +1099,9 @@ onUnmounted(() => toolLifecycle.abort());
                 >{{ data.node.durationMs ?? 0 }} ms</span
               ><span v-else-if="['repeat', 'retry'].includes(data.node.type)"
                 >{{ data.node.count ?? 0 }} 次</span
-              ><span v-else-if="data.node.binding">{{ data.node.binding }}</span
-              ><span v-else
+              ><span v-else-if="data.node.binding">{{ data.node.binding }}</span>
+              <span v-else-if="['action', 'condition'].includes(data.node.type)" class="unbound-node">未绑定业务定义</span>
+              <span v-else
                 >{{ data.node.children?.length ?? 0 }} 个子节点</span
               >
             </div>
@@ -1001,8 +1145,9 @@ onUnmounted(() => toolLifecycle.abort());
             @input="changeText($event, (v) => (node!.name = v))"
         /></label>
         <label class="field-label"
-          >节点 ID<input :value="node.id" readonly class="mono"
+          >节点 ID（自动生成）<input :value="node.id" readonly class="mono" :title="node.id"
         /></label>
+        <p class="muted empty-note">ID 是固定身份标识；修改上方名称即可重命名显示，不改变连线和绑定。</p>
         <label
           v-if="['repeat', 'retry'].includes(node.type)"
           class="field-label"
@@ -1049,16 +1194,27 @@ onUnmounted(() => toolLifecycle.abort());
             >
               <option value="">请选择…</option>
               <option
-                v-for="d in project.catalog.filter(
-                  (d) => d.kind === node!.type,
-                )"
+                v-for="d in bindingOptions"
                 :key="d.id"
                 :value="d.id"
               >
-                {{ d.name }}
+                {{ d.name }} · {{ d.goName }}
               </option>
             </select></label
           >
+          <p v-if="!bindingOptions.length" class="binding-note">
+            尚无{{ node.type === 'action' ? '动作' : '条件' }}定义。请新建业务定义或导入目录，再选择绑定。
+          </p>
+          <p v-else-if="node.binding && (!definition || definition.kind !== node.type)" class="binding-note">
+            当前绑定 {{ node.binding }} 不存在或种类不匹配，请重新选择。
+          </p>
+          <div class="binding-actions">
+            <button @click="manageCatalog('create', true)">新建业务定义</button>
+            <button @click="manageCatalog('import', true)">导入目录</button>
+            <button @click="manageCatalog('manage', true)">管理定义</button>
+            <button :disabled="busy || !project.catalog.length" @click="previewScaffold">预览业务骨架</button>
+          </div>
+          <p class="muted empty-note">定义决定生成代码调用哪个函数，业务实现请写入同包的独立 Go 文件。</p>
           <div
             v-for="p in definition?.params ?? []"
             :key="p.name"
@@ -1113,7 +1269,7 @@ onUnmounted(() => toolLifecycle.abort());
             <b>{{ i + 1 }}</b
             ><button class="child-name" @click="selected = child">
               {{
-                tree.nodes.find((n) => n.id === child)?.name ?? child
+              nodeIndex.get(child)?.name ?? child
               }}</button
             ><button :disabled="i === 0" title="上移" @click="reorder(i, -1)">
               ↑</button
@@ -1212,18 +1368,29 @@ onUnmounted(() => toolLifecycle.abort());
           @click="bottomTab = 'source'"
         >
           生成代码</button
-        ><span class="muted output-path">{{
-          bottomTab === "source" ? outputPath : "JSON → 校验 → Go"
-        }}</span
-        ><button
-          v-if="source && bottomTab === 'source'"
-          class="text-button"
-          @click="download('tree_gen.go', source, 'text/plain')"
-        >
-          下载 Go
-        </button>
+        ><button :class="{ active: bottomTab === 'scaffold' }" @click="bottomTab = 'scaffold'">业务骨架</button>
+        <span class="output-tab-spacer"></span>
+        <button :disabled="busy" @click="() => action(() => readGenerated())">查看上次生成</button>
       </div>
-      <div class="output-content">
+      <div v-if="bottomTab !== 'diagnostics'" class="code-toolbar">
+        <button :disabled="busy" @click="bottomTab === 'scaffold' ? previewScaffold() : generate(false)">
+          {{ bottomTab === 'scaffold' ? '更新业务骨架' : '更新预览' }}
+        </button>
+        <template v-if="bottomTab === 'source' ? !!source : !!scaffoldSnapshot">
+          <button @click="copySource">复制</button>
+          <button @click="bottomTab === 'scaffold' ? download('actions.go', scaffoldSnapshot!.source, 'text/plain') : download('tree_gen.go', source, 'text/plain')">下载 {{ bottomTab === 'scaffold' ? 'actions.go' : 'Go' }}</button>
+          <span class="code-state" :class="{ stale: bottomTab === 'source' ? sourceStale : scaffoldStale }">
+            {{ (bottomTab === 'source' ? sourceStale : scaffoldStale) ? '已过期 · 请更新' : bottomTab === 'scaffold' ? '待实现 TODO' : codeSnapshot?.origin === 'preview' ? '当前预览' : '已生成文件' }}
+          </span>
+        </template>
+      </div>
+      <div v-if="bottomTab === 'source' && source" class="code-metadata">
+        <span class="mono">版本 {{ codeSnapshot!.version.slice(0, 12) }}</span>
+        <span class="output-path" :title="outputPath">{{ outputPath }}</span>
+      </div>
+      <p v-if="bottomTab === 'source' && sourceStale" class="code-warning">当前工程已变化，以下保留旧源码；更新预览后恢复节点联动。</p>
+      <p v-if="bottomTab === 'scaffold' && scaffoldSnapshot" class="code-warning">{{ scaffoldStale ? '工程已变化，请更新骨架。' : '' }}骨架中的 TODO 需要手动实现；下载文件不会覆盖已有业务实现。</p>
+      <div v-if="bottomTab === 'diagnostics'" class="output-content">
         <template v-if="bottomTab === 'diagnostics'"
           ><button
             v-for="(d, i) in diagnostics"
@@ -1235,12 +1402,17 @@ onUnmounted(() => toolLifecycle.abort());
             >{{ d.message }}
           </button>
           <p v-if="!diagnostics.length" class="muted">
-            点击「校验」检查结构与类型。点击「生成 Go」保存代码并查看结果。
+            点击「校验」检查结构与类型。「预览 Go」查看源码，「生成到目录」写入生成文件。
           </p></template
         >
-        <pre v-else>{{
-          source || "生成代码将显示在这里。手写的动作实现不会被覆盖。"
-        }}</pre>
+      </div>
+      <SourceViewer v-else-if="bottomTab === 'source' && source" :source="source" :source-map="codeSnapshot!.sourceMap"
+        :tree-id="treeID" :node-id="selected" :stale="sourceStale" @locate="locateSource" />
+      <SourceViewer v-else-if="bottomTab === 'scaffold' && scaffoldSnapshot" :source="scaffoldSnapshot.source" />
+      <div v-else class="output-empty">
+        <strong>{{ bottomTab === 'scaffold' ? '从业务目录创建 Go 函数骨架' : '先预览，再生成到目录' }}</strong>
+        <p>{{ bottomTab === 'scaffold' ? '根据动作、条件和上下文生成函数签名及 TODO；可复制或下载为独立手写文件。' : '预览使用当前工程生成完整 Go 源码，不写文件。选中节点可定位对应函数，点击代码行号可返回画布。' }}</p>
+        <button :disabled="busy" @click="bottomTab === 'scaffold' ? previewScaffold() : generate(false)">{{ bottomTab === 'scaffold' ? '生成业务骨架' : '预览当前工程' }}</button>
       </div>
     </section>
     <footer :class="['statusbar', { error }]">
@@ -1257,12 +1429,8 @@ onUnmounted(() => toolLifecycle.abort());
       accept="application/json,.json"
       hidden
       @change="importProject"
-    /><input
-      ref="catalogInput"
-      type="file"
-      accept="application/json,.json"
-      hidden
-      @change="importCatalog"
     />
+    <CatalogManager v-if="catalogDialog" :catalog="project.catalog" :initial-mode="catalogDialog.mode" :initial-kind="catalogDialog.kind"
+      @apply="applyCatalog" @close="catalogDialog = undefined" />
   </div>
 </template>

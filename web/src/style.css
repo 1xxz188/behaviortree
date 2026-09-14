@@ -600,6 +600,23 @@ pre {
   white-space: nowrap;
   flex: 1;
 }
+/* 生成状态与文件操作独立成行，窄屏时自然换行。 */
+.binding-actions { display: flex; gap: 7px; flex-wrap: wrap; margin: 9px 0; }
+.binding-actions button { font-size: 11px; padding: 5px 7px; }
+.binding-note { color: #e8c584; font-size: 12px; line-height: 1.7; margin: 10px 0; }
+.unbound-node { color: #e8b781; }
+.output-tab-spacer { flex: 1; }
+.output-tabs { gap: 16px; overflow-x: auto; }
+.code-toolbar { display: flex; align-items: center; flex-wrap: wrap; flex-shrink: 0; gap: 8px; padding: 7px 12px; }
+.code-toolbar button { font-size: 11px; padding: 4px 8px; }
+.code-state { margin-left: auto; font-size: 11px; color: #9ce0bf; }
+.code-state.stale { color: #e8c584; }
+.code-metadata { display: flex; gap: 15px; align-items: center; flex-shrink: 0; padding: 0 12px 7px; font-size: 10px; color: #8da3b3; }
+.code-warning { flex-shrink: 0; margin: 0; padding: 6px 12px; font-size: 11px; line-height: 1.6; color: #e8c584; background: #322d23; }
+.output-empty { overflow: auto; padding: 14px 16px; font-size: 12px; color: #9cb1c1; }
+.output-empty strong { color: #c6d9e3; font-weight: 500; }
+.output-empty p { margin: 9px 0; line-height: 1.7; }
+.output-empty button { padding: 5px 9px; font-size: 12px; }
 .output-content {
   min-height: 0;
   flex: 1;

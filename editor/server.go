@@ -56,6 +56,9 @@ func New(workspace string) (*Server, error) {
 	s.mux.HandleFunc("POST /api/catalog", s.importCatalog)
 	s.mux.HandleFunc("POST /api/validate", s.validate)
 	s.mux.HandleFunc("POST /api/generate", s.generate)
+	s.mux.HandleFunc("POST /api/preview", s.preview)
+	s.mux.HandleFunc("POST /api/generated", s.readGenerated)
+	s.mux.HandleFunc("POST /api/scaffold", s.scaffold)
 	s.mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		reply(w, 404, map[string]string{"error": "未知接口"})
 	})
@@ -378,10 +381,9 @@ func writeGenerated(root *os.Root, dir string, result codegen.Result) error {
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
-	mapping, err := json.MarshalIndent(struct {
-		Version   string                   `json:"version"`
-		Locations []codegen.SourceLocation `json:"locations"`
-	}{result.Version, result.SourceMap}, "", "  ")
+	mapping, err := json.MarshalIndent(generatedMapping{
+		Version: result.Version, SourceHash: sourceHash(result.Source), Locations: result.SourceMap,
+	}, "", "  ")
 	if err != nil {
 		return err
 	}
