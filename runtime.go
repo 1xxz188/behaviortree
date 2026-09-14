@@ -94,7 +94,7 @@ func (i *Instance[C]) Start() Status {
 	if i.registry != nil {
 		if err := i.bind(i.registry.latest()); err != nil {
 			i.err = err
-			i.log("error", -1, Invalid, Failure, err.Error())
+			i.log(LogError, -1, Invalid, Failure, err.Error())
 			return Failure
 		}
 	}
@@ -128,7 +128,7 @@ func (i *Instance[C]) run() (status Status) {
 	defer func() {
 		if failure := recover(); failure != nil {
 			i.err = fmt.Errorf("behavior execution panic: %v", failure)
-			i.log("error", i.root, i.status, Failure, i.err.Error())
+			i.log(LogError, i.root, i.status, Failure, i.err.Error())
 		}
 		if i.err != nil {
 			i.frame.Abort(i.root, "runtime error")
@@ -147,7 +147,7 @@ func (i *Instance[C]) run() (status Status) {
 	status = i.program.program.Step(&i.frame, i.root)
 	if status != Running && status != Success && status != Failure {
 		i.err = fmt.Errorf("generated root returned invalid status %d", status)
-		i.log("error", i.root, i.status, Failure, i.err.Error())
+		i.log(LogError, i.root, i.status, Failure, i.err.Error())
 	}
 	return status
 }
@@ -157,7 +157,7 @@ func (i *Instance[C]) Notify(event string) Status {
 	if i.closed || i.status != Running {
 		return i.status
 	}
-	if group, exists := i.dependencies.events["event:"+event]; exists {
+	if group, exists := i.dependencies.events[event]; exists {
 		i.observe(group)
 	}
 	if !i.busy {
@@ -286,7 +286,7 @@ func (f *Frame[C]) Exit(node int, status Status) Status {
 	s := i.state(node)
 	if status != Running && status != Success && status != Failure {
 		i.err = fmt.Errorf("node %q returned invalid status %d", i.program.program.Nodes[node].ID, status)
-		i.log("error", node, s.Status, Failure, i.err.Error())
+		i.log(LogError, node, s.Status, Failure, i.err.Error())
 		status = Failure
 	}
 	previous := s.Status
@@ -298,7 +298,7 @@ func (f *Frame[C]) Exit(node int, status Status) Status {
 		}
 	}
 	if i.options.Trace && previous != status {
-		i.log("node", node, previous, status, "")
+		i.log(LogNode, node, previous, status, "")
 	}
 	return status
 }
@@ -331,7 +331,7 @@ func (f *Frame[C]) After(node int, duration time.Duration) {
 	}
 	if i.options.After == nil {
 		i.err = fmt.Errorf("node %q requires Options.After", i.program.program.Nodes[node].ID)
-		i.log("error", node, s.Status, Failure, i.err.Error())
+		i.log(LogError, node, s.Status, Failure, i.err.Error())
 		return
 	}
 	token := f.Token(node)
@@ -378,7 +378,7 @@ func (i *Instance[C]) cancelTimer(node int) {
 			if i.err == nil {
 				i.err = fmt.Errorf("node %q timer cancel panic: %v", i.program.program.Nodes[node].ID, failure)
 			}
-			i.log("error", node, s.Status, Failure, i.err.Error())
+			i.log(LogError, node, s.Status, Failure, i.err.Error())
 		}
 	}()
 	cancel()
@@ -443,7 +443,7 @@ func (f *Frame[C]) abortActions(node int, reason string) {
 			f.abortAction(node)
 		}
 		if i.options.Trace {
-			i.log("abort", node, s.Status, Invalid, reason)
+			i.log(LogAbort, node, s.Status, Invalid, reason)
 		}
 	}
 }
@@ -456,7 +456,7 @@ func (f *Frame[C]) abortAction(node int) {
 			if i.err == nil {
 				i.err = fmt.Errorf("node %q Abort panic: %v", i.program.program.Nodes[node].ID, failure)
 			}
-			i.log("error", node, i.state(node).Status, Failure, i.err.Error())
+			i.log(LogError, node, i.state(node).Status, Failure, i.err.Error())
 		}
 	}()
 	i.program.program.Abort(f, node)
@@ -590,7 +590,7 @@ func (i *Instance[C]) schedule() {
 }
 
 // log 在追踪开关判断之后组装结构化事件，不复制黑板或格式化业务字符串。
-func (i *Instance[C]) log(kind string, node int, from, to Status, reason string) {
+func (i *Instance[C]) log(kind LogKind, node int, from, to Status, reason string) {
 	if i.options.Logger == nil {
 		return
 	}
@@ -628,6 +628,6 @@ func (i *Instance[C]) bind(next *preparedProgram[C]) error {
 	i.program, i.root = next, root
 	i.setDependencies(next.dependencies[root])
 	i.states = make([]NodeState, next.program.Nodes[root].End-root)
-	i.log("switch", -1, Invalid, Invalid, "program version changed")
+	i.log(LogSwitch, -1, Invalid, Invalid, "program version changed")
 	return nil
 }

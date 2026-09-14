@@ -15,7 +15,7 @@ type preparedProgram[C any] struct {
 
 // rootDependencies 是多个相同入口实例共享的 O(1) 通知分发表。
 type rootDependencies struct {
-	events map[string]int // events 将宿主事件映射到观察者组。
+	events map[string]int // events 将不带协议前缀的宿主事件名映射到观察者组。
 	groups [][]int        // groups 前 len(Fields) 个槽位固定为字段依赖，其后是事件依赖。
 }
 
@@ -89,7 +89,7 @@ func prepareProgram[C any](p *Program[C]) (*preparedProgram[C], error) {
 				return nil, fmt.Errorf("field %q has invalid enum default", field.ID)
 			}
 		default:
-			return nil, fmt.Errorf("field %q has unknown type %q", field.ID, field.Type)
+			return nil, fmt.Errorf("field %q has unknown type %d", field.ID, field.Type)
 		}
 		cp.program.Fields[slot].Enum = append([]string(nil), field.Enum...)
 	}
@@ -108,6 +108,7 @@ func prepareProgram[C any](p *Program[C]) (*preparedProgram[C], error) {
 		sort.Ints(copied)
 		cp.program.Dependencies[key] = copied
 		fieldSlot := -1
+		event := strings.TrimPrefix(key, "event:")
 		if strings.HasPrefix(key, "field:") {
 			slot, exists := fieldIndex[strings.TrimPrefix(key, "field:")]
 			if !exists {
@@ -126,7 +127,7 @@ func prepareProgram[C any](p *Program[C]) (*preparedProgram[C], error) {
 			if fieldSlot >= 0 {
 				d.groups[fieldSlot] = copied[first:end]
 			} else {
-				d.events[key] = len(d.groups)
+				d.events[event] = len(d.groups)
 				d.groups = append(d.groups, copied[first:end])
 			}
 			first = end

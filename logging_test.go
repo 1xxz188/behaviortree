@@ -88,3 +88,44 @@ func TestExplicitLogDisable(t *testing.T) {
 	}
 	i.Close()
 }
+
+// TestDefaultTraceKindNames 验证整数日志种类在默认接收者中仍输出 node/abort 文本和原有状态字段。
+func TestDefaultTraceKindNames(t *testing.T) {
+	var buffer bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buffer, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	q, context := &testQueue{}, &probe{}
+	opts := q.opts()
+	opts.Trace = true
+	i, err := NewInstance(gateProgram("v1"), "trace-log", "main", context, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	i.Start()
+	i.Close()
+	decoder := json.NewDecoder(&buffer)
+	seen := map[string]int{}
+	for {
+		var record map[string]any
+		if err := decoder.Decode(&record); err == io.EOF {
+			break
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		kind, ok := record["kind"].(string)
+		if !ok {
+			t.Fatal("log kind changed from a string", record)
+		}
+		seen[kind]++
+		if kind == "node" && (record["from"] != "invalid" || record["to"] != "running") {
+			t.Fatal("node log lost state names", record)
+		}
+		if kind == "abort" && record["reason"] != "instance closed" {
+			t.Fatal("abort log lost its reason", record)
+		}
+	}
+	if seen["node"] == 0 || seen["abort"] == 0 || len(seen) != 2 {
+		t.Fatal("unexpected trace log kinds", seen)
+	}
+}

@@ -23,6 +23,10 @@ import type {
   Value,
 } from "./project";
 import { parseInput, parseJSON, stringifyJSON } from "./json";
+import {
+  nodeTypes, valueTypes, parseValueType, validateProjectTypes, validateCatalogTypes,
+} from "./enums";
+import type { NodeType, ValueType } from "./enums";
 
 const project = ref<Project>(emptyProject());
 const treeID = ref(project.value.trees[0]!.id);
@@ -40,6 +44,80 @@ const source = ref("");
 const outputPath = ref("");
 const tab = ref("nodes");
 const bottomTab = ref("diagnostics");
+const workbench = ref<HTMLElement>();
+const outputPanel = ref<HTMLElement>();
+const outputHeight = ref<number>();
+const renderedOutputHeight = ref(170);
+const minOutputHeight = 100;
+const maxOutputHeight = ref(170);
+const resizingOutput = ref(false);
+let outputResizeObserver: ResizeObserver | undefined;
+let outputDrag: { pointerId: number; startY: number; startHeight: number } | undefined;
+
+function setOutputHeight(height: number) {
+  outputHeight.value = Math.round(
+    Math.max(minOutputHeight, Math.min(maxOutputHeight.value, height)),
+  );
+}
+
+// 根据实际布局限制面板高度，为画布保留操作空间。
+function updateOutputBounds() {
+  if (!workbench.value || !outputPanel.value) return;
+  const style = getComputedStyle(workbench.value);
+  const minCanvasHeight = parseFloat(
+    style.getPropertyValue("--canvas-min-height"),
+  );
+  const rows = style.gridTemplateRows.split(" ").map(parseFloat);
+  maxOutputHeight.value = Math.max(
+    minOutputHeight,
+    Math.floor(
+      workbench.value.clientHeight - rows[0]! - rows[3]! - minCanvasHeight,
+    ),
+  );
+  if (outputHeight.value !== undefined) setOutputHeight(outputHeight.value);
+  renderedOutputHeight.value = Math.round(outputPanel.value.getBoundingClientRect().height);
+}
+
+function startOutputResize(event: PointerEvent) {
+  if (event.button !== 0 || outputDrag || !outputPanel.value) return;
+  event.preventDefault();
+  updateOutputBounds();
+  const handle = event.currentTarget as HTMLElement;
+  handle.focus();
+  handle.setPointerCapture(event.pointerId);
+  outputDrag = {
+    pointerId: event.pointerId,
+    startY: event.clientY,
+    startHeight: outputPanel.value.getBoundingClientRect().height,
+  };
+  resizingOutput.value = true;
+}
+
+function resizeOutput(event: PointerEvent) {
+  if (!outputDrag || outputDrag.pointerId !== event.pointerId) return;
+  setOutputHeight(outputDrag.startHeight + outputDrag.startY - event.clientY);
+}
+
+function stopOutputResize(event: PointerEvent) {
+  if (!outputDrag || outputDrag.pointerId !== event.pointerId) return;
+  outputDrag = undefined;
+  resizingOutput.value = false;
+  const handle = event.currentTarget as HTMLElement;
+  if (handle.hasPointerCapture(event.pointerId))
+    handle.releasePointerCapture(event.pointerId);
+}
+
+function resizeOutputWithKeyboard(event: KeyboardEvent) {
+  if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
+  event.preventDefault();
+  updateOutputBounds();
+  const height = outputPanel.value?.getBoundingClientRect().height ?? 170;
+  setOutputHeight(
+    event.key === "Home" ? minOutputHeight :
+    event.key === "End" ? maxOutputHeight.value :
+    height + (event.key === "ArrowUp" ? 20 : -20),
+  );
+}
 const undoStack = ref<string[]>([]);
 const redoStack = ref<string[]>([]);
 const importInput = ref<HTMLInputElement>();
@@ -58,8 +136,8 @@ const definition = computed(() =>
   project.value.catalog.find((d) => d.id === node.value?.binding),
 );
 const availableKinds = computed(() =>
-  Object.entries(kinds).filter(([type, k]) =>
-    `${k.label} ${type}`.toLowerCase().includes(search.value.toLowerCase()),
+  nodeTypes.map((type) => ({ type, info: kinds[type] })).filter(({ type, info }) =>
+    `${info.label} ${type}`.toLowerCase().includes(search.value.toLowerCase()),
   ),
 );
 const graphNodes = computed(() =>
@@ -73,6 +151,7 @@ const graphNodes = computed(() =>
     selected: n.id === selected.value,
     data: {
       node: n,
+      kind: kinds[n.type],
       root: n.id === tree.value.root,
       invalid: diagnostics.value.some(
         (d) => d.treeId === tree.value.id && d.nodeId === n.id,
@@ -116,7 +195,9 @@ function mutate(fn: () => void) {
 }
 // 恢复工程快照，并清除旧源码和诊断。
 function restore(snapshot: string) {
-  project.value = parseJSON<Project>(snapshot);
+  const restored = parseJSON<Project>(snapshot);
+  validateProjectTypes(restored);
+  project.value = restored;
   if (!project.value.trees.some((t) => t.id === treeID.value))
     treeID.value = project.value.trees[0]?.id ?? "";
   selected.value = "";
@@ -145,7 +226,7 @@ function changeText(event: Event, fn: (text: string) => void) {
   mutate(() => fn((event.target as HTMLInputElement).value));
 }
 // 创建稳定节点 ID，并放置到当前树画布。
-function addNode(type: string, binding?: string) {
+function addNode(type: NodeType, binding?: string) {
   mutate(() => {
     const id = uid(),
       item: BTNode = { id, type, name: kinds[type]?.label ?? type };
@@ -318,6 +399,7 @@ function open(name: string) {
     const loaded = await request<Project>(
       `/api/project?name=${encodeURIComponent(name)}`,
     );
+    validateProjectTypes(loaded);
     project.value = loaded;
     fileName.value = name;
     treeID.value = loaded.trees[0]!.id;
@@ -388,7 +470,9 @@ async function importProject(event: Event) {
   if (!file) return;
   await action(async () => {
     const parsed: unknown = parseJSON(await file.text());
+    validateProjectTypes(parsed);
     const loaded = await request<Project>("/api/import", parsed);
+    validateProjectTypes(loaded);
     checkpoint();
     project.value = loaded;
     treeID.value = loaded.trees[0]!.id;
@@ -405,7 +489,9 @@ async function importCatalog(event: Event) {
   if (!file) return;
   await action(async () => {
     const parsed = parseJSON(await file.text());
+    validateCatalogTypes(parsed);
     const catalog = await request<Definition[]>("/api/catalog", parsed);
+    validateCatalogTypes(catalog);
     mutate(() => {
       project.value.catalog = catalog;
     });
@@ -457,7 +543,7 @@ function setParamMode(name: string, mode: string) {
   });
 }
 // 按元数据声明解析参数，完整范围由 Go 再校验。
-function setParam(name: string, type: string, event: Event) {
+function setParam(name: string, type: ValueType, event: Event) {
   const text = (event.target as HTMLInputElement).value;
   try {
     const value =
@@ -510,11 +596,16 @@ watch(treeID, () => {
   setTimeout(() => fitView({ padding: 0.18 }), 30);
 });
 onMounted(() => {
+  outputResizeObserver = new ResizeObserver(updateOutputBounds);
+  if (workbench.value) outputResizeObserver.observe(workbench.value);
+  if (outputPanel.value) outputResizeObserver.observe(outputPanel.value);
+  updateOutputBounds();
   void action(refreshFiles);
   window.addEventListener("keydown", keydown);
   window.addEventListener("beforeunload", beforeUnload);
 });
 onUnmounted(() => {
+  outputResizeObserver?.disconnect();
   window.removeEventListener("keydown", keydown);
   window.removeEventListener("beforeunload", beforeUnload);
 });
@@ -572,7 +663,12 @@ onUnmounted(() => toolLifecycle.abort());
 </script>
 
 <template>
-  <div class="workbench">
+  <div
+    ref="workbench"
+    class="workbench"
+    :class="{ 'resizing-output': resizingOutput }"
+    :style="outputHeight === undefined ? {} : { '--output-height': `${outputHeight}px` }"
+  >
     <header class="topbar">
       <div class="brand">
         <span class="brandmark">⑂</span><strong>行为树工作台</strong
@@ -643,7 +739,7 @@ onUnmounted(() => toolLifecycle.abort());
         />
         <div class="node-library">
           <button
-            v-for="[type, info] in availableKinds"
+            v-for="{ type, info } in availableKinds"
             :key="type"
             class="palette-node"
             :title="info.help"
@@ -699,7 +795,7 @@ onUnmounted(() => toolLifecycle.abort());
               :value="field.type"
               @change="
                 changeText($event, (v) => {
-                  field.type = v;
+                  field.type = parseValueType(v);
                   field.default = ['string', 'enum'].includes(v)
                     ? ''
                     : v === 'bool'
@@ -709,16 +805,7 @@ onUnmounted(() => toolLifecycle.abort());
               "
             >
               <option
-                v-for="type in [
-                  'bool',
-                  'int64',
-                  'uint64',
-                  'float64',
-                  'string',
-                  'enum',
-                  'entity',
-                  'duration',
-                ]"
+                v-for="type in valueTypes"
                 :key="type"
               >
                 {{ type }}
@@ -799,20 +886,20 @@ onUnmounted(() => toolLifecycle.abort());
           <div
             :class="[
               'bt-node',
-              kinds[data.node.type]?.color,
+              data.kind.color,
               { invalid: data.invalid },
             ]"
           >
             <Handle type="target" :position="Position.Left" />
             <div class="bt-node-top">
-              <span>{{ kinds[data.node.type]?.icon ?? "?" }}</span
+              <span>{{ data.kind.icon }}</span
               ><small>{{
-                kinds[data.node.type]?.label ?? data.node.type
+                data.kind.label
               }}</small
               ><b v-if="data.root">ROOT</b>
             </div>
             <strong>{{
-              data.node.name || kinds[data.node.type]?.label
+              data.node.name || data.kind.label
             }}</strong>
             <div class="node-detail">
               <span v-if="['wait', 'timeout'].includes(data.node.type)"
@@ -1041,7 +1128,26 @@ onUnmounted(() => toolLifecycle.abort());
       </template>
     </aside>
 
-    <section class="output-panel">
+    <section id="output-panel" ref="outputPanel" class="output-panel">
+      <div
+        class="output-resizer"
+        role="separator"
+        tabindex="0"
+        aria-label="调整输出面板高度"
+        aria-orientation="horizontal"
+        aria-controls="output-panel"
+        :aria-valuemin="minOutputHeight"
+        :aria-valuemax="maxOutputHeight"
+        :aria-valuenow="renderedOutputHeight"
+        title="上下拖动调整高度，双击恢复默认高度"
+        @pointerdown="startOutputResize"
+        @pointermove="resizeOutput"
+        @pointerup="stopOutputResize"
+        @pointercancel="stopOutputResize"
+        @lostpointercapture="stopOutputResize"
+        @keydown="resizeOutputWithKeyboard"
+        @dblclick="outputHeight = undefined"
+      ></div>
       <div class="output-tabs">
         <button
           :class="{ active: bottomTab === 'diagnostics' }"

@@ -6,20 +6,6 @@ import (
 	"time"
 )
 
-// ValueType 是元数据中的强类型字段类型。
-type ValueType string
-
-const (
-	BoolType     ValueType = "bool"     // BoolType 为布尔值。
-	IntType      ValueType = "int64"    // IntType 为有符号整数。
-	UIntType     ValueType = "uint64"   // UIntType 为无符号整数。
-	FloatType    ValueType = "float64"  // FloatType 为浮点数。
-	StringType   ValueType = "string"   // StringType 为字符串。
-	EnumType     ValueType = "enum"     // EnumType 为具名枚举字符串。
-	EntityIDType ValueType = "entityID" // EntityIDType 为业务实体标识。
-	DurationType ValueType = "duration" // DurationType 为纳秒时长。
-)
-
 // Value 是黑板槽位的无反射值；仅与 Field.Type 对应的成员有意义。
 type Value struct {
 	Bool     bool          // Bool 保存布尔值。

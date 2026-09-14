@@ -1,4 +1,5 @@
 import { parseJSON, stringifyJSON } from "./json.ts";
+import type { DefinitionKind, NodeType, ValueType } from "./enums.ts";
 
 export interface Value {
   field?: string;
@@ -7,27 +8,27 @@ export interface Value {
 export interface Field {
   id: string;
   name: string;
-  type: string;
+  type: ValueType;
   default?: unknown;
   enum?: string[];
 }
 export interface Parameter {
   name: string;
-  type: string;
+  type: ValueType;
   default?: unknown;
   enum?: string[];
 }
 export interface Definition {
   id: string;
   name: string;
-  kind: string;
+  kind: DefinitionKind;
   goName: string;
   params?: Parameter[];
   events?: string[];
 }
 export interface BTNode {
   id: string;
-  type: string;
+  type: NodeType;
   name?: string;
   children?: string[];
   binding?: string;
@@ -63,7 +64,7 @@ export interface Diagnostic {
 }
 
 export const kinds: Record<
-  string,
+  NodeType,
   { label: string; icon: string; color: string; help: string }
 > = {
   sequence: {

@@ -6,6 +6,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/1xxz188/behaviortree/hotload"
 )
 
 // TestVersionedPrivateImports 验证嵌套 helper 引用进入版本目录，固定上下文引用保持一致。
@@ -29,12 +31,12 @@ func TestPreparedSharedContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	b := builder{root: root, out: t.TempDir(), mode: "release"}
+	b := builder{root: root, out: t.TempDir(), mode: hotload.BuildRelease}
 	targets, err := b.prepare("test_contract")
 	if err != nil {
 		t.Fatal(err)
 	}
-	b.env = buildEnvironment(filepath.Join(b.out, "go.work"))
+	b.env = buildEnvironment(filepath.Join(b.out, "go.work"), runtime.GOOS != "windows")
 	// 此测试检查本机源码一致性；Linux 原生插件加载由 builddemo 独立验收。
 	for index, entry := range b.env {
 		if strings.HasPrefix(entry, "GOOS=") {
@@ -53,6 +55,9 @@ func TestPreparedSharedContract(t *testing.T) {
 	}
 	if contract.Shared[runtimeImport] == "" || contract.Shared[sharedImport] == "" || len(contract.APIFingerprint) != 64 {
 		t.Fatal("shared ABI not fingerprinted")
+	}
+	if contract.Mode != hotload.BuildRelease || contract.GOOS != runtime.GOOS || contract.GOARCH != runtime.GOARCH || (runtime.GOOS == "windows" && contract.CGOEnabled) {
+		t.Fatalf("contract differs from actual build environment: %+v", contract)
 	}
 	if _, exists := contract.Shared[behaviorImport]; exists {
 		t.Fatal("private action package was treated as shared ABI")

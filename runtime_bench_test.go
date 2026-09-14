@@ -2,9 +2,37 @@ package behaviortree
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"unsafe"
 )
+
+// BenchmarkNotifyEventName 比较短事件、长事件和未知事件的通知成本，隔离事件名处理产生的分配。
+func BenchmarkNotifyEventName(b *testing.B) {
+	for _, name := range []string{"short", "long", "unknown"} {
+		b.Run(name, func(b *testing.B) {
+			event := "ready"
+			if name != "short" {
+				event = strings.Repeat("event-name-", 16)
+			}
+			p := benchmarkProgram(10, false, true)
+			p.Dependencies = map[string][]int{"event:" + event: {1}}
+			i, err := NewInstance(p, "event-name", "main", 0, Options{Post: func(func()) { b.Fatal("unexpected yield") }, Logger: func(LogRecord) {}})
+			if err != nil {
+				b.Fatal(err)
+			}
+			i.Start()
+			if name == "unknown" {
+				event += "unknown"
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				i.Notify(event)
+			}
+			i.Close()
+		})
+	}
+}
 
 // benchmarkProgram 模拟生成器的整数索引控制流，业务动作只读状态，不混入业务成本。
 func benchmarkProgram(nodes int, parallel, wait bool) *Program[int] {

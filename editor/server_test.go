@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	bt "github.com/1xxz188/behaviortree"
 	"github.com/1xxz188/behaviortree/codegen"
 	"github.com/1xxz188/behaviortree/model"
 )
@@ -41,7 +42,7 @@ func TestEditorRoundTrip(t *testing.T) {
 	}
 	defer s.Close()
 	p := model.Example()
-	p.Blackboard = []model.Field{{ID: "target", Name: "TargetID", Type: "uint64", Default: json.RawMessage("18446744073709551615")}}
+	p.Blackboard = []model.Field{{ID: "target", Name: "TargetID", Type: bt.UIntType, Default: json.RawMessage("18446744073709551615")}}
 	w := callEditor(t, s, "POST", "/api/project", map[string]any{"name": "patrol.json", "project": p})
 	if w.Code != 200 {
 		t.Fatal(w.Code, w.Body.String())

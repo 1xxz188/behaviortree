@@ -1,6 +1,9 @@
 package behaviortree
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestMultipleRootStateIsolation 验证每个实例只分配入口树范围，绝对节点索引和事件不会串到其他入口。
 func TestMultipleRootStateIsolation(t *testing.T) {
@@ -30,7 +33,7 @@ func TestMultipleRootStateIsolation(t *testing.T) {
 	if len(i.states) != 2 {
 		t.Fatal("allocated state for unrelated roots")
 	}
-	group := i.dependencies.events["event:shared"]
+	group := i.dependencies.events["shared"]
 	if len(i.dependencies.groups[group]) != 1 || i.dependencies.groups[group][0] != 3 {
 		t.Fatal("current root retained unrelated tree observers")
 	}
@@ -43,6 +46,81 @@ func TestMultipleRootStateIsolation(t *testing.T) {
 	i.Notify("b")
 	if i.Steps() != before+2 {
 		t.Fatal("absolute offset dispatch failed")
+	}
+	i.Notify("shared")
+	if i.Steps() != before+4 {
+		t.Fatal("shared event crossed root boundary or failed to dispatch")
+	}
+	i.Close()
+}
+
+// TestNotifyExactNamesAndAllocations 验证移除内部协议前缀后事件仍精确匹配、隔离字段通知，长事件稳态零分配。
+func TestNotifyExactNamesAndAllocations(t *testing.T) {
+	longEvent := strings.Repeat("event-name-", 16)
+	p := benchmarkProgram(4, true, true)
+	p.Fields = []Field{{ID: "flag", Name: "Flag", Type: BoolType}}
+	p.Dependencies = map[string][]int{
+		"event:ready":        {1},
+		"event:event:ready":  {2},
+		"event:field:flag":   {3},
+		"event:" + longEvent: {2},
+		"field:flag":         {1},
+	}
+	visits := [4]int{}
+	var step func(*Frame[int], int) Status
+	step = func(f *Frame[int], node int) Status {
+		if cached, run := f.Enter(node); !run {
+			return cached
+		}
+		visits[node]++
+		if node == 0 {
+			for child := 1; child < len(visits); child++ {
+				step(f, child)
+			}
+		} else {
+			f.State(node).Started = true
+			if f.State(node).Ready {
+				f.Consume(node)
+			}
+		}
+		return f.Exit(node, Running)
+	}
+	p.Step = step
+	q := &testQueue{}
+	i, err := NewInstance(p, "exact-event", "main", 0, q.opts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	i.Start()
+	for _, tc := range []struct {
+		event string // event 是宿主发送的原始事件名称。
+		node  int    // node 是唯一预期重评的叶子，零表示没有观察者。
+	}{{"ready", 1}, {"event:ready", 2}, {"field:flag", 3}, {longEvent, 2}, {"unknown", 0}, {longEvent + "unknown", 0}, {"", 0}} {
+		before := visits
+		i.Notify(tc.event)
+		for node := 1; node < len(visits); node++ {
+			want := before[node]
+			if node == tc.node {
+				want++
+			}
+			if visits[node] != want {
+				t.Fatalf("event %q woke unexpected leaf %d: got %d want %d", tc.event, node, visits[node], want)
+			}
+		}
+	}
+	before := visits
+	i.Blackboard().SetBool(0, true)
+	q.drain(t)
+	if visits[1] != before[1]+1 || visits[2] != before[2] || visits[3] != before[3] {
+		t.Fatal("field notification mixed with an event using the field prefix")
+	}
+	for _, event := range []string{"ready", longEvent, longEvent + "unknown"} {
+		if allocations := testing.AllocsPerRun(1000, func() { i.Notify(event) }); allocations != 0 {
+			t.Errorf("event %q allocated %.1f objects", event, allocations)
+		}
+	}
+	if len(q.items) != 0 {
+		t.Fatal("event notification left unnecessary scheduled work")
 	}
 	i.Close()
 }

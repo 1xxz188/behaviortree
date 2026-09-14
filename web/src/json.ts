@@ -1,4 +1,6 @@
 import { LosslessNumber, parse, stringify } from "lossless-json";
+import { parseValueType } from "./enums.ts";
+import type { ValueType } from "./enums.ts";
 
 // 工程中的 64 位整数必须原样往返，画布坐标与普通小整数仍使用原生 number。
 export function parseJSON<T = unknown>(text: string): T {
@@ -16,7 +18,8 @@ export function stringifyJSON(value: unknown, space?: number): string {
 }
 
 // 类型错误交给界面显示；完整取值范围由 Go 元数据验证器统一校验。
-export function parseInput(text: string, type: string): unknown {
+export function parseInput(text: string, type: ValueType): unknown {
+  parseValueType(type);
   if (type === "string" || type === "enum") return text;
   if (type === "bool") {
     if (!["true", "false"].includes(text))

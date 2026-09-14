@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+
+	bt "github.com/1xxz188/behaviortree"
 )
 
 // SchemaVersion 是当前支持的工程格式版本。
@@ -32,25 +34,25 @@ type Generation struct {
 type Field struct {
 	ID      string          `json:"id"`                // 跨版本稳定的字段 ID。
 	Name    string          `json:"name"`              // Go 导出访问器名称。
-	Type    string          `json:"type"`              // bool/int64/uint64/float64/string/enum/entity/duration。
+	Type    bt.ValueType    `json:"type"`              // bool/int64/uint64/float64/string/enum/entity/duration。
 	Default json.RawMessage `json:"default,omitempty"` // JSON 默认值；duration 使用纳秒整数。
-	Enum    []string        `json:"enum,omitempty"`    // 枚举的允许值，空表示不限制。
+	Enum    []string        `json:"enum,omitempty"`    // 枚举字段必须提供非空允许值。
 }
 
 // Definition 是由程序员用 Go 声明的业务节点目录项。
 type Definition struct {
-	ID     string      `json:"id"`               // 编辑器绑定使用的稳定 ID。
-	Name   string      `json:"name"`             // 节点面板显示名称。
-	Kind   string      `json:"kind"`             // action 或 condition。
-	GoName string      `json:"goName"`           // 同包手写函数名称。
-	Params []Parameter `json:"params"`           // 强类型参数声明。
-	Events []string    `json:"events,omitempty"` // 需要唤醒或重新求值的宿主事件。
+	ID     string         `json:"id"`               // 编辑器绑定使用的稳定 ID。
+	Name   string         `json:"name"`             // 节点面板显示名称。
+	Kind   DefinitionKind `json:"kind"`             // action 或 condition。
+	GoName string         `json:"goName"`           // 同包手写函数名称。
+	Params []Parameter    `json:"params"`           // 强类型参数声明。
+	Events []string       `json:"events,omitempty"` // 需要唤醒或重新求值的宿主事件。
 }
 
 // Parameter 定义生成的 <GoName>Params 结构体成员。
 type Parameter struct {
 	Name    string          `json:"name"`              // Go 导出成员名称。
-	Type    string          `json:"type"`              // 与黑板字段相同的值类型。
+	Type    bt.ValueType    `json:"type"`              // 与黑板字段相同的值类型。
 	Default json.RawMessage `json:"default,omitempty"` // 未填写时使用的默认常量。
 	Enum    []string        `json:"enum,omitempty"`    // 枚举的允许值。
 }
@@ -79,7 +81,7 @@ type Position struct {
 // Node 是内建节点或 Go 业务节点的一次使用。
 type Node struct {
 	ID         string           `json:"id"`                   // 树内稳定节点 ID。
-	Type       string           `json:"type"`                 // 内建节点种类。
+	Type       NodeType         `json:"type"`                 // 内建节点种类。
 	Name       string           `json:"name,omitempty"`       // 可选显示名。
 	Children   []string         `json:"children,omitempty"`   // 有序子节点 ID。
 	Binding    string           `json:"binding,omitempty"`    // 业务节点目录 ID。
@@ -109,6 +111,9 @@ func Decode(data []byte) (Project, error) {
 	if err := d.Decode(&extra); err != io.EOF {
 		return p, fmt.Errorf("工程后含多余 JSON 数据")
 	}
+	if err := validateDecodedTypes(p); err != nil {
+		return p, err
+	}
 	return p, nil
 }
 
@@ -119,6 +124,9 @@ func Encode(p Project) ([]byte, error) { return json.MarshalIndent(p, "", "  ") 
 func ExportCatalog(definitions []Definition) ([]byte, error) {
 	p := Example()
 	p.Catalog = definitions
+	if err := validateDecodedTypes(p); err != nil {
+		return nil, err
+	}
 	if diagnostics := Validate(p); len(diagnostics) != 0 {
 		return nil, fmt.Errorf("节点目录无效: %s", diagnostics[0].Message)
 	}
@@ -127,5 +135,5 @@ func ExportCatalog(definitions []Definition) ([]byte, error) {
 
 // Example 创建不依赖业务动作的最小可运行工程。
 func Example() Project {
-	return Project{SchemaVersion: SchemaVersion, Name: "行为树示例", Blackboard: []Field{}, Catalog: []Definition{}, Generation: Generation{Package: "generated", ContextType: "any"}, Trees: []Tree{{ID: "main", Name: "主行为树", Root: "root", Nodes: []Node{{ID: "root", Type: "sequence", Children: []string{"wait", "done"}}, {ID: "wait", Type: "wait", DurationMS: 100}, {ID: "done", Type: "wait"}}, Layout: map[string]Position{"root": {X: 240, Y: 40}, "wait": {X: 120, Y: 180}, "done": {X: 360, Y: 180}}}}}
+	return Project{SchemaVersion: SchemaVersion, Name: "行为树示例", Blackboard: []Field{}, Catalog: []Definition{}, Generation: Generation{Package: "generated", ContextType: "any"}, Trees: []Tree{{ID: "main", Name: "主行为树", Root: "root", Nodes: []Node{{ID: "root", Type: NodeSequence, Children: []string{"wait", "done"}}, {ID: "wait", Type: NodeWait, DurationMS: 100}, {ID: "done", Type: NodeWait}}, Layout: map[string]Position{"root": {X: 240, Y: 40}, "wait": {X: 120, Y: 180}, "done": {X: 360, Y: 180}}}}}
 }

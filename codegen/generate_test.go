@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	bt "github.com/1xxz188/behaviortree"
 	"github.com/1xxz188/behaviortree/model"
 )
 
@@ -43,10 +44,10 @@ func TestStableNativeSource(t *testing.T) {
 // TestExpansionLimit 验证指数子树引用在实际展开前被拒绝。
 func TestExpansionLimit(t *testing.T) {
 	p := model.Example()
-	p.Trees = []model.Tree{{ID: "t0", Name: "leaf", Root: "root", Nodes: []model.Node{{ID: "root", Type: "wait"}}}}
+	p.Trees = []model.Tree{{ID: "t0", Name: "leaf", Root: "root", Nodes: []model.Node{{ID: "root", Type: model.NodeWait}}}}
 	for i := 1; i < 22; i++ {
 		prior := fmt.Sprintf("t%d", i-1)
-		p.Trees = append(p.Trees, model.Tree{ID: fmt.Sprintf("t%d", i), Name: "double", Root: "root", Nodes: []model.Node{{ID: "root", Type: "parallel", Children: []string{"a", "b"}}, {ID: "a", Type: "subtree", Tree: prior}, {ID: "b", Type: "subtree", Tree: prior}}})
+		p.Trees = append(p.Trees, model.Tree{ID: fmt.Sprintf("t%d", i), Name: "double", Root: "root", Nodes: []model.Node{{ID: "root", Type: model.NodeParallel, Children: []string{"a", "b"}}, {ID: "a", Type: model.NodeSubtree, Tree: prior}, {ID: "b", Type: model.NodeSubtree, Tree: prior}}})
 	}
 	if _, err := Generate(p); err == nil || !strings.Contains(err.Error(), "展开超过") {
 		t.Fatalf("应在展开前拒绝指数增长: %v", err)
@@ -57,12 +58,12 @@ func TestExpansionLimit(t *testing.T) {
 func TestWideParallelSource(t *testing.T) {
 	build := func(count int) Result {
 		p := model.Example()
-		root := model.Node{ID: "root", Type: "parallel"}
+		root := model.Node{ID: "root", Type: model.NodeParallel}
 		nodes := []model.Node{root}
 		for i := 0; i < count; i++ {
 			id := fmt.Sprintf("child%d", i)
 			nodes[0].Children = append(nodes[0].Children, id)
-			nodes = append(nodes, model.Node{ID: id, Type: "wait", DurationMS: 1})
+			nodes = append(nodes, model.Node{ID: id, Type: model.NodeWait, DurationMS: 1})
 		}
 		p.Trees[0].Nodes = nodes
 		result, err := Generate(p)
@@ -83,6 +84,27 @@ func TestWideParallelSource(t *testing.T) {
 // TestGeneratedRuntime 编译真实生成代码，并运行组合语义、异步取消和黑板事件用例。
 func TestGeneratedRuntime(t *testing.T) {
 	p := fixtureProject()
+	// 明确覆盖全集，防止新增节点或值类型时真实编译样例漏掉分支。
+	nodes := map[model.NodeType]bool{}
+	for _, tree := range p.Trees {
+		for _, node := range tree.Nodes {
+			nodes[node.Type] = true
+		}
+	}
+	for typ := model.NodeSequence; typ <= model.NodeSubtree; typ++ {
+		if !nodes[typ] {
+			t.Fatalf("真实生成编译缺少节点类型 %v", typ)
+		}
+	}
+	values := map[bt.ValueType]bool{}
+	for _, field := range p.Blackboard {
+		values[field.Type] = true
+	}
+	for _, typ := range []bt.ValueType{bt.BoolType, bt.IntType, bt.UIntType, bt.FloatType, bt.StringType, bt.EnumType, bt.EntityIDType, bt.DurationType} {
+		if !values[typ] {
+			t.Fatalf("真实生成编译缺少值类型 %v", typ)
+		}
+	}
 	result, err := Generate(p)
 	if err != nil {
 		t.Fatal(err)
@@ -127,57 +149,57 @@ func TestGeneratedRuntime(t *testing.T) {
 func fixtureProject() model.Project {
 	value := func(v string) model.Value { raw, _ := json.Marshal(v); return model.Value{Value: raw} }
 	action := func(id, binding, label string) model.Node {
-		return model.Node{ID: id, Type: "action", Binding: binding, Params: map[string]model.Value{"Label": value(label)}}
+		return model.Node{ID: id, Type: model.NodeAction, Binding: binding, Params: map[string]model.Value{"Label": value(label)}}
 	}
-	wrap := func(id, typ string, children ...string) model.Node {
+	wrap := func(id string, typ model.NodeType, children ...string) model.Node {
 		return model.Node{ID: id, Type: typ, Children: children}
 	}
 	tree := func(id string, nodes ...model.Node) model.Tree {
 		return model.Tree{ID: id, Name: id, Root: nodes[0].ID, Nodes: nodes}
 	}
-	p := model.Project{SchemaVersion: 1, Name: "generated runtime tests", Generation: model.Generation{Package: "generated", ContextType: "*testContext"}, Blackboard: []model.Field{{ID: "enabled", Name: "Enabled", Type: "bool"}}, Catalog: []model.Definition{{ID: "ok", Name: "成功", Kind: "action", GoName: "Pass", Params: []model.Parameter{{Name: "Label", Type: "string"}}}, {ID: "fail", Name: "失败", Kind: "action", GoName: "Fail", Params: []model.Parameter{{Name: "Label", Type: "string"}}}, {ID: "hold", Name: "异步", Kind: "action", GoName: "Hold", Params: []model.Parameter{{Name: "Label", Type: "string"}}, Events: []string{"resume"}}, {ID: "flaky", Name: "重试", Kind: "action", GoName: "Flaky", Params: []model.Parameter{{Name: "Label", Type: "string"}}}, {ID: "gate", Name: "条件", Kind: "condition", GoName: "Gate", Params: []model.Parameter{{Name: "Flag", Type: "bool"}}}}}
-	p.Catalog = append(p.Catalog, model.Definition{ID: "enumWrite", Name: "枚举写入", Kind: "action", GoName: "WriteEnum", Params: []model.Parameter{{Name: "Label", Type: "string"}}})
+	p := model.Project{SchemaVersion: 1, Name: "generated runtime tests", Generation: model.Generation{Package: "generated", ContextType: "*testContext"}, Blackboard: []model.Field{{ID: "enabled", Name: "Enabled", Type: bt.BoolType}}, Catalog: []model.Definition{{ID: "ok", Name: "成功", Kind: model.DefinitionAction, GoName: "Pass", Params: []model.Parameter{{Name: "Label", Type: bt.StringType}}}, {ID: "fail", Name: "失败", Kind: model.DefinitionAction, GoName: "Fail", Params: []model.Parameter{{Name: "Label", Type: bt.StringType}}}, {ID: "hold", Name: "异步", Kind: model.DefinitionAction, GoName: "Hold", Params: []model.Parameter{{Name: "Label", Type: bt.StringType}}, Events: []string{"resume"}}, {ID: "flaky", Name: "重试", Kind: model.DefinitionAction, GoName: "Flaky", Params: []model.Parameter{{Name: "Label", Type: bt.StringType}}}, {ID: "gate", Name: "条件", Kind: model.DefinitionCondition, GoName: "Gate", Params: []model.Parameter{{Name: "Flag", Type: bt.BoolType}}}}}
+	p.Catalog = append(p.Catalog, model.Definition{ID: "enumWrite", Name: "枚举写入", Kind: model.DefinitionAction, GoName: "WriteEnum", Params: []model.Parameter{{Name: "Label", Type: bt.StringType}}})
 	p.Trees = []model.Tree{
 		tree("enumValid", action("root", "enumWrite", "move")),
 		tree("enumInvalid", action("root", "enumWrite", "missing")),
-		tree("sequence", wrap("root", "sequence", "a", "b"), action("a", "ok", "a"), action("b", "hold", "b")),
-		tree("selector", wrap("root", "selector", "a", "b"), action("a", "fail", "a"), action("b", "ok", "b")),
-		tree("parallel", wrap("root", "parallel", "a", "b"), action("a", "hold", "a"), action("b", "fail", "b")),
-		tree("priority", wrap("root", "priority", "high", "low"), wrap("high", "sequence", "guard", "work"), model.Node{ID: "guard", Type: "condition", Binding: "gate", Params: map[string]model.Value{"Flag": {Field: "enabled"}}}, action("work", "hold", "high"), action("low", "hold", "low")),
-		tree("priorityFailure", wrap("root", "priority", "high", "low"), wrap("high", "sequence", "guard", "work"), model.Node{ID: "guard", Type: "condition", Binding: "gate", Params: map[string]model.Value{"Flag": {Field: "enabled"}}}, action("work", "fail", "high"), action("low", "hold", "low")),
-		tree("repeat", model.Node{ID: "root", Type: "repeat", Count: 3, Children: []string{"a"}}, action("a", "ok", "a")),
-		tree("retry", model.Node{ID: "root", Type: "retry", Count: 3, Children: []string{"a"}}, action("a", "flaky", "a")),
-		tree("repeatFail", model.Node{ID: "root", Type: "repeat", Count: 3, Children: []string{"a"}}, action("a", "fail", "a")),
-		tree("retryPass", model.Node{ID: "root", Type: "retry", Count: 3, Children: []string{"a"}}, action("a", "ok", "a")),
-		tree("retryFail", model.Node{ID: "root", Type: "retry", Count: 2, Children: []string{"a"}}, action("a", "fail", "a")),
-		tree("repeatHold", model.Node{ID: "root", Type: "repeat", Count: 2, Children: []string{"a"}}, action("a", "hold", "a")),
-		tree("wait", model.Node{ID: "root", Type: "wait", DurationMS: 10}),
-		tree("timeout", model.Node{ID: "root", Type: "timeout", DurationMS: 10, Children: []string{"a"}}, action("a", "hold", "a")),
-		tree("inverter", wrap("root", "inverter", "a"), action("a", "ok", "a")),
-		tree("succeed", wrap("root", "succeed", "a"), action("a", "fail", "a")),
-		tree("fail", wrap("root", "fail", "a"), action("a", "ok", "a")),
+		tree("sequence", wrap("root", model.NodeSequence, "a", "b"), action("a", "ok", "a"), action("b", "hold", "b")),
+		tree("selector", wrap("root", model.NodeSelector, "a", "b"), action("a", "fail", "a"), action("b", "ok", "b")),
+		tree("parallel", wrap("root", model.NodeParallel, "a", "b"), action("a", "hold", "a"), action("b", "fail", "b")),
+		tree("priority", wrap("root", model.NodePriority, "high", "low"), wrap("high", model.NodeSequence, "guard", "work"), model.Node{ID: "guard", Type: model.NodeCondition, Binding: "gate", Params: map[string]model.Value{"Flag": {Field: "enabled"}}}, action("work", "hold", "high"), action("low", "hold", "low")),
+		tree("priorityFailure", wrap("root", model.NodePriority, "high", "low"), wrap("high", model.NodeSequence, "guard", "work"), model.Node{ID: "guard", Type: model.NodeCondition, Binding: "gate", Params: map[string]model.Value{"Flag": {Field: "enabled"}}}, action("work", "fail", "high"), action("low", "hold", "low")),
+		tree("repeat", model.Node{ID: "root", Type: model.NodeRepeat, Count: 3, Children: []string{"a"}}, action("a", "ok", "a")),
+		tree("retry", model.Node{ID: "root", Type: model.NodeRetry, Count: 3, Children: []string{"a"}}, action("a", "flaky", "a")),
+		tree("repeatFail", model.Node{ID: "root", Type: model.NodeRepeat, Count: 3, Children: []string{"a"}}, action("a", "fail", "a")),
+		tree("retryPass", model.Node{ID: "root", Type: model.NodeRetry, Count: 3, Children: []string{"a"}}, action("a", "ok", "a")),
+		tree("retryFail", model.Node{ID: "root", Type: model.NodeRetry, Count: 2, Children: []string{"a"}}, action("a", "fail", "a")),
+		tree("repeatHold", model.Node{ID: "root", Type: model.NodeRepeat, Count: 2, Children: []string{"a"}}, action("a", "hold", "a")),
+		tree("wait", model.Node{ID: "root", Type: model.NodeWait, DurationMS: 10}),
+		tree("timeout", model.Node{ID: "root", Type: model.NodeTimeout, DurationMS: 10, Children: []string{"a"}}, action("a", "hold", "a")),
+		tree("inverter", wrap("root", model.NodeInverter, "a"), action("a", "ok", "a")),
+		tree("succeed", wrap("root", model.NodeSucceed, "a"), action("a", "fail", "a")),
+		tree("fail", wrap("root", model.NodeFail, "a"), action("a", "ok", "a")),
 		tree("shared", action("root", "hold", "shared")),
-		tree("subtree", wrap("root", "parallel", "a", "b"), model.Node{ID: "a", Type: "subtree", Tree: "shared"}, model.Node{ID: "b", Type: "subtree", Tree: "shared"}),
+		tree("subtree", wrap("root", model.NodeParallel, "a", "b"), model.Node{ID: "a", Type: model.NodeSubtree, Tree: "shared"}, model.Node{ID: "b", Type: model.NodeSubtree, Tree: "shared"}),
 	}
 	deep := model.Tree{ID: "deep", Name: "deep"}
 	for n := 0; n < 64; n++ {
-		deep.Nodes = append(deep.Nodes, wrap(fmt.Sprintf("n%d", n), "sequence", fmt.Sprintf("n%d", n+1)))
+		deep.Nodes = append(deep.Nodes, wrap(fmt.Sprintf("n%d", n), model.NodeSequence, fmt.Sprintf("n%d", n+1)))
 	}
 	deep.Root = "n0"
 	deep.Nodes = append(deep.Nodes, action("n64", "ok", "a"))
 	p.Trees = append(p.Trees, deep)
 	for _, width := range []int{10, 1000} {
-		wide := model.Tree{ID: fmt.Sprintf("priority%d", width), Name: "宽优先级树", Root: "root", Nodes: []model.Node{{ID: "root", Type: "priority"}}}
+		wide := model.Tree{ID: fmt.Sprintf("priority%d", width), Name: "宽优先级树", Root: "root", Nodes: []model.Node{{ID: "root", Type: model.NodePriority}}}
 		for n := 0; n < width; n++ {
 			branch, guard, work := fmt.Sprintf("branch%d", n), fmt.Sprintf("guard%d", n), fmt.Sprintf("work%d", n)
 			wide.Nodes[0].Children = append(wide.Nodes[0].Children, branch)
-			wide.Nodes = append(wide.Nodes, wrap(branch, "sequence", guard, work), model.Node{ID: guard, Type: "condition", Binding: "gate", Params: map[string]model.Value{"Flag": {Value: json.RawMessage("false")}}}, action(work, "ok", "unused"))
+			wide.Nodes = append(wide.Nodes, wrap(branch, model.NodeSequence, guard, work), model.Node{ID: guard, Type: model.NodeCondition, Binding: "gate", Params: map[string]model.Value{"Flag": {Value: json.RawMessage("false")}}}, action(work, "ok", "unused"))
 		}
 		wide.Nodes[0].Children = append(wide.Nodes[0].Children, "low")
 		wide.Nodes = append(wide.Nodes, action("low", "hold", "low"))
 		p.Trees = append(p.Trees, wide)
 	}
-	for _, f := range []model.Field{{ID: "integer", Name: "Integer", Type: "int64"}, {ID: "unsigned", Name: "Unsigned", Type: "uint64", Default: json.RawMessage("18446744073709551615")}, {ID: "floating", Name: "Floating", Type: "float64"}, {ID: "text", Name: "Text", Type: "string"}, {ID: "enum", Name: "Mode", Type: "enum", Enum: []string{"idle", "move"}}, {ID: "entity", Name: "Target", Type: "entity"}, {ID: "duration", Name: "Delay", Type: "duration"}} {
+	for _, f := range []model.Field{{ID: "integer", Name: "Integer", Type: bt.IntType}, {ID: "unsigned", Name: "Unsigned", Type: bt.UIntType, Default: json.RawMessage("18446744073709551615")}, {ID: "floating", Name: "Floating", Type: bt.FloatType}, {ID: "text", Name: "Text", Type: bt.StringType}, {ID: "enum", Name: "Mode", Type: bt.EnumType, Enum: []string{"idle", "move"}}, {ID: "entity", Name: "Target", Type: bt.EntityIDType}, {ID: "duration", Name: "Delay", Type: bt.DurationType}} {
 		p.Blackboard = append(p.Blackboard, f)
 	}
 	return p

@@ -47,7 +47,7 @@ func (r *Registry[C]) Publish(program *Program[C], policy SwitchPolicy) (err err
 			logger := r.logger
 			r.mu.RUnlock()
 			if logger != nil {
-				emitLog(logger, LogRecord{Kind: "error", Reason: err.Error()})
+				emitLog(logger, LogRecord{Kind: LogError, Reason: err.Error()})
 			}
 		}
 	}()
@@ -91,7 +91,7 @@ func (r *Registry[C]) Publish(program *Program[C], policy SwitchPolicy) (err err
 	}
 	r.mu.Unlock()
 	if logger != nil {
-		emitLog(logger, LogRecord{Kind: "publish", Version: p.program.Version})
+		emitLog(logger, LogRecord{Kind: LogPublish, Version: p.program.Version})
 	}
 	if len(pending) > 0 {
 		batch := &restartBatch[C]{registry: r, pending: pending, generation: p.generation}

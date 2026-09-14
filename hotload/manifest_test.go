@@ -10,12 +10,12 @@ import (
 
 // TestManifestCompatibility 验证共享依赖、工具链和构建选项变化会阻止加载。
 func TestManifestCompatibility(t *testing.T) {
-	c := Contract{GoVersion: "go1.26.7", GOOS: "linux", GOARCH: "amd64", CGOEnabled: "1", Mode: "release", Shared: map[string]string{"runtime": "hash"}, APIFingerprint: "api"}
+	c := Contract{GoVersion: "go1.26.7", GOOS: "linux", GOARCH: "amd64", CGOEnabled: true, Mode: BuildRelease, Shared: map[string]string{"runtime": "hash"}, APIFingerprint: "api"}
 	m := Manifest{SchemaVersion: 1, Version: "v1", PrivateModule: "bt.local/v1", SHA256: strings.Repeat("a", 64), Contract: c}
 	if err := m.Check(c); err != nil {
 		t.Fatal(err)
 	}
-	for _, edit := range []func(*Contract){func(v *Contract) { v.GoVersion = "go1.26.6" }, func(v *Contract) { v.Mode = "debug" }, func(v *Contract) { v.APIFingerprint = "different" }, func(v *Contract) { v.Tags = []string{"debug"} }, func(v *Contract) { v.Shared = map[string]string{"runtime": "changed"} }} {
+	for _, edit := range []func(*Contract){func(v *Contract) { v.GoVersion = "go1.26.6" }, func(v *Contract) { v.Mode = BuildDebug }, func(v *Contract) { v.CGOEnabled = false }, func(v *Contract) { v.Mode = InvalidBuildMode }, func(v *Contract) { v.Mode = BuildMode(255) }, func(v *Contract) { v.APIFingerprint = "different" }, func(v *Contract) { v.Tags = []string{"debug"} }, func(v *Contract) { v.Shared = map[string]string{"runtime": "changed"} }} {
 		bad := c
 		edit(&bad)
 		if m.Check(bad) == nil {
@@ -35,8 +35,11 @@ func TestManifestRoundTripAndChecksum(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := Manifest{SchemaVersion: 1, Version: "v1", SHA256: sum}
-	data, _ := json.Marshal(m)
+	m := Manifest{SchemaVersion: 1, Version: "v1", SHA256: sum, Contract: Contract{Mode: BuildRelease}}
+	data, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err = os.WriteFile(file+".json", data, 0600); err != nil {
 		t.Fatal(err)
 	}

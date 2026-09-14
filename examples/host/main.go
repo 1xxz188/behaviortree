@@ -122,7 +122,11 @@ func integration(dir string) {
 	copyArtifact(artifact(dir, "v3"), badPath)
 	m, err := hotload.ReadManifest(badPath + ".json")
 	must(err)
-	m.Contract.Mode = "incompatible"
+	// 使用另一种合法模式，验证契约不匹配在 plugin.Open 前被拒绝。
+	m.Contract.Mode = hotload.BuildDebug
+	if contract.Mode == hotload.BuildDebug {
+		m.Contract.Mode = hotload.BuildRelease
+	}
 	writeJSON(badPath+".json", m)
 	_, _, err = loader.Load(badPath, nil)
 	ensure(err != nil, "build mismatch accepted")

@@ -11,6 +11,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	bt "github.com/1xxz188/behaviortree"
 )
 
 // Identifier 判断名称是否为非保留的 Go 标识符。
@@ -25,16 +27,10 @@ func ExportedIdentifier(name string) bool {
 }
 
 // ValidType 检查首版支持的强类型集合。
-func ValidType(t string) bool {
-	switch t {
-	case "bool", "int64", "uint64", "float64", "string", "enum", "entity", "duration":
-		return true
-	}
-	return false
-}
+func ValidType(t bt.ValueType) bool { return t.Valid() }
 
 // Literal 校验并解码一个有精度约束的 JSON 常量。
-func Literal(t string, raw json.RawMessage, enum []string) (any, error) {
+func Literal(t bt.ValueType, raw json.RawMessage, enum []string) (any, error) {
 	if !ValidType(t) {
 		return nil, fmt.Errorf("未知值类型 %q", t)
 	}
@@ -47,25 +43,25 @@ func Literal(t string, raw json.RawMessage, enum []string) (any, error) {
 	}
 	var target any
 	switch t {
-	case "bool":
+	case bt.BoolType:
 		var v bool
 		if err := json.Unmarshal(raw, &v); err != nil {
 			return nil, err
 		}
 		target = v
-	case "int64", "duration":
+	case bt.IntType, bt.DurationType:
 		var v int64
 		if err := json.Unmarshal(raw, &v); err != nil {
 			return nil, err
 		}
 		target = v
-	case "uint64", "entity":
+	case bt.UIntType, bt.EntityIDType:
 		var v uint64
 		if err := json.Unmarshal(raw, &v); err != nil {
 			return nil, err
 		}
 		target = v
-	case "float64":
+	case bt.FloatType:
 		var v float64
 		if err := json.Unmarshal(raw, &v); err != nil {
 			return nil, err
@@ -74,12 +70,12 @@ func Literal(t string, raw json.RawMessage, enum []string) (any, error) {
 			return nil, fmt.Errorf("浮点数必须有限")
 		}
 		target = v
-	case "string", "enum":
+	case bt.StringType, bt.EnumType:
 		var v string
 		if err := json.Unmarshal(raw, &v); err != nil {
 			return nil, err
 		}
-		if t == "enum" && len(enum) > 0 {
+		if t == bt.EnumType && len(enum) > 0 {
 			found := false
 			for _, choice := range enum {
 				found = found || v == choice
@@ -94,13 +90,13 @@ func Literal(t string, raw json.RawMessage, enum []string) (any, error) {
 }
 
 // Zero 返回一种值类型的 JSON 零值；枚举优先采用首个允许值。
-func Zero(t string, enum []string) json.RawMessage {
-	if t == "bool" {
+func Zero(t bt.ValueType, enum []string) json.RawMessage {
+	if t == bt.BoolType {
 		return json.RawMessage("false")
 	}
-	if t == "string" || t == "enum" {
+	if t == bt.StringType || t == bt.EnumType {
 		v := ""
-		if t == "enum" && len(enum) > 0 {
+		if t == bt.EnumType && len(enum) > 0 {
 			v = enum[0]
 		}
 		data, _ := json.Marshal(v)
@@ -156,7 +152,7 @@ func Validate(p Project) []Diagnostic {
 		}
 		names[f.Name] = true
 		symbols["Get"+f.Name], symbols["Set"+f.Name] = true, true
-		if f.Type == "enum" && len(f.Enum) == 0 {
+		if f.Type == bt.EnumType && len(f.Enum) == 0 {
 			add("", "", "blackboard", "枚举字段必须声明至少一个允许值: "+f.ID)
 		}
 		enumSeen := map[string]bool{}
@@ -184,7 +180,7 @@ func Validate(p Project) []Diagnostic {
 			add("", "", "catalog", "重复节点目录 ID: "+d.ID)
 		}
 		defs[d.ID] = d
-		if d.Kind != "action" && d.Kind != "condition" {
+		if !d.Kind.Valid() {
 			add("", "", "catalog", "节点目录 kind 必须为 action 或 condition")
 		}
 		if !Identifier(d.GoName) || goNames[d.GoName] || symbols[d.GoName] || symbols[d.GoName+"Params"] || strings.HasPrefix(d.GoName, "btNode") || types.Universe.Lookup(d.GoName) != nil {
@@ -199,7 +195,7 @@ func Validate(p Project) []Diagnostic {
 			}
 			paramNames[param.Name] = true
 			if !ValidType(param.Type) {
-				add("", "", "catalog", "未知参数类型: "+param.Type)
+				add("", "", "catalog", "未知参数类型: "+param.Type.String())
 			}
 			if len(param.Default) > 0 {
 				if _, err := Literal(param.Type, param.Default, param.Enum); err != nil {
@@ -244,13 +240,13 @@ func Validate(p Project) []Diagnostic {
 		for _, n := range tree.Nodes {
 			min, max := 0, 0
 			switch n.Type {
-			case "sequence", "selector", "parallel", "priority":
+			case NodeSequence, NodeSelector, NodeParallel, NodePriority:
 				min, max = 1, -1
-			case "repeat", "retry", "timeout", "inverter", "succeed", "fail":
+			case NodeRepeat, NodeRetry, NodeTimeout, NodeInverter, NodeSucceed, NodeFail:
 				min, max = 1, 1
-			case "action", "condition", "wait", "subtree":
+			case NodeAction, NodeCondition, NodeWait, NodeSubtree:
 			default:
-				add(tree.ID, n.ID, "type", "未知节点类型: "+n.Type)
+				add(tree.ID, n.ID, "type", "未知节点类型: "+n.Type.String())
 			}
 			if len(n.Children) < min || max >= 0 && len(n.Children) > max {
 				add(tree.ID, n.ID, "children", "子节点数量不符合节点类型要求")
@@ -261,22 +257,22 @@ func Validate(p Project) []Diagnostic {
 					add(tree.ID, n.ID, "children", "子节点不存在: "+id)
 				}
 			}
-			if n.Type == "repeat" || n.Type == "retry" {
+			if n.Type == NodeRepeat || n.Type == NodeRetry {
 				if n.Count <= 0 {
 					add(tree.ID, n.ID, "count", "循环次数必须为正整数")
 				}
 			}
-			if n.Type == "wait" || n.Type == "timeout" {
+			if n.Type == NodeWait || n.Type == NodeTimeout {
 				if n.DurationMS < 0 || n.DurationMS > math.MaxInt64/1000000 {
 					add(tree.ID, n.ID, "durationMs", "时长必须为可表示的非负毫秒数")
 				}
 			}
-			if n.Type == "subtree" {
+			if n.Type == NodeSubtree {
 				if _, ok := trees[n.Tree]; !ok {
 					add(tree.ID, n.ID, "tree", "引用的子树不存在")
 				}
 			}
-			if n.Type == "priority" {
+			if n.Type == NodePriority {
 				for i, id := range n.Children {
 					if i == len(n.Children)-1 {
 						break
@@ -285,14 +281,14 @@ func Validate(p Project) []Diagnostic {
 					if !ok {
 						continue
 					}
-					if child.Type != "sequence" || len(child.Children) == 0 || nodes[child.Children[0]].Type != "condition" {
+					if child.Type != NodeSequence || len(child.Children) == 0 || nodes[child.Children[0]].Type != NodeCondition {
 						add(tree.ID, id, "children", "priority 除末尾候选外必须使用以 condition 开头的 sequence")
 					}
 				}
 			}
-			if n.Type == "action" || n.Type == "condition" {
+			if n.Type == NodeAction || n.Type == NodeCondition {
 				d, ok := defs[n.Binding]
-				if !ok || d.Kind != n.Type {
+				if !ok || !d.Kind.Matches(n.Type) {
 					add(tree.ID, n.ID, "binding", "业务节点绑定不存在或种类不匹配")
 					continue
 				}
@@ -315,7 +311,7 @@ func Validate(p Project) []Diagnostic {
 						if !ok || f.Type != param.Type {
 							add(tree.ID, n.ID, "params."+param.Name, "黑板字段不存在或类型不匹配")
 						}
-						if ok && param.Type == "enum" && len(param.Enum) > 0 {
+						if ok && param.Type == bt.EnumType && len(param.Enum) > 0 {
 							for _, choice := range f.Enum {
 								found := false
 								for _, allowed := range param.Enum {
@@ -396,7 +392,7 @@ func Validate(p Project) []Diagnostic {
 		}
 		color[id] = 1
 		for _, n := range trees[id].Nodes {
-			if n.Type == "subtree" {
+			if n.Type == NodeSubtree {
 				visitTree(n.Tree)
 			}
 		}

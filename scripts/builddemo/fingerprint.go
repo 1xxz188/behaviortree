@@ -58,7 +58,10 @@ func sourceHash(p listedPackage) (string, error) {
 
 // collectShared 收集宿主与所有版本的共享包并集，拒绝同路径源码不同的构建。
 func (b *builder) collectShared(targets []buildTarget) (hotload.Contract, error) {
-	envData, err := b.goOutput(b.root, "env", "-json", "GOAMD64", "GOEXPERIMENT", "CC", "CXX", "CGO_CFLAGS", "CGO_CPPFLAGS", "CGO_CXXFLAGS", "CGO_LDFLAGS")
+	if !b.mode.Valid() {
+		return hotload.Contract{}, fmt.Errorf("mode: invalid value %d", b.mode)
+	}
+	envData, err := b.goOutput(b.root, "env", "-json", "GOVERSION", "GOOS", "GOARCH", "CGO_ENABLED", "GOAMD64", "GOEXPERIMENT", "CC", "CXX", "CGO_CFLAGS", "CGO_CPPFLAGS", "CGO_CXXFLAGS", "CGO_LDFLAGS")
 	if err != nil {
 		return hotload.Contract{}, err
 	}
@@ -66,8 +69,15 @@ func (b *builder) collectShared(targets []buildTarget) (hotload.Contract, error)
 	if err = json.Unmarshal(envData, &env); err != nil {
 		return hotload.Contract{}, err
 	}
-	c := hotload.Contract{GoVersion: "go1.26.7", GOOS: "linux", GOARCH: "amd64", CGOEnabled: "1", Mode: b.mode, Flags: b.commonFlags(), Environment: env, Shared: make(map[string]string)}
-	if b.mode == "debug" {
+	if env["CGO_ENABLED"] != "0" && env["CGO_ENABLED"] != "1" {
+		return hotload.Contract{}, fmt.Errorf("CGO_ENABLED: invalid value %q", env["CGO_ENABLED"])
+	}
+	c := hotload.Contract{GoVersion: env["GOVERSION"], GOOS: env["GOOS"], GOARCH: env["GOARCH"], CGOEnabled: env["CGO_ENABLED"] == "1", Mode: b.mode, Flags: b.commonFlags(), Environment: env, Shared: make(map[string]string)}
+	// 契约的独立字段从同一次环境查询取得，避免记录与真实构建环境不一致。
+	for _, key := range []string{"GOVERSION", "GOOS", "GOARCH", "CGO_ENABLED"} {
+		delete(env, key)
+	}
+	if b.mode == hotload.BuildDebug {
 		c.Tags = []string{"debug"}
 	}
 	api := make(map[string]string)

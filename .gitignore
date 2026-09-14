@@ -7,3 +7,5 @@ web/.vite/
 .workspace/
 coverage.out
 !docs/linux-validation/*.log
+/.idea
+/.codegraph

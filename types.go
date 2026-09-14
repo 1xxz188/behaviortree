@@ -101,16 +101,16 @@ type Options struct {
 
 // LogRecord 是不需要预先格式化字符串的结构化运行日志。
 type LogRecord struct {
-	Kind       string // Kind 为 publish、switch、error、node 或 abort。
-	Version    string // Version 是执行所固定的程序版本。
-	InstanceID string // InstanceID 是宿主提供的实例标识。
-	TreeID     string // TreeID 是实例入口树。
-	NodeID     string // NodeID 是编辑器节点标识。
-	NodeIndex  int    // NodeIndex 区分子树复用时同一源节点的多个调用位置。
-	Sequence   uint64 // Sequence 是该实例日志事件序号。
-	From       Status // From 是节点变化前状态。
-	To         Status // To 是节点变化后状态。
-	Reason     string // Reason 是取消、错误或切换原因。
+	Kind       LogKind // Kind 为发布、切换、错误、节点追踪或取消事件。
+	Version    string  // Version 是执行所固定的程序版本。
+	InstanceID string  // InstanceID 是宿主提供的实例标识。
+	TreeID     string  // TreeID 是实例入口树。
+	NodeID     string  // NodeID 是编辑器节点标识。
+	NodeIndex  int     // NodeIndex 区分子树复用时同一源节点的多个调用位置。
+	Sequence   uint64  // Sequence 是该实例日志事件序号。
+	From       Status  // From 是节点变化前状态。
+	To         Status  // To 是节点变化后状态。
+	Reason     string  // Reason 是取消、错误或切换原因。
 }
 
 // SwitchPolicy 决定已运行实例何时切换完整程序版本。

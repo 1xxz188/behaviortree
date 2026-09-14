@@ -22,10 +22,10 @@ import (
 
 // builder 固定构建参数，确保各产物使用完全一致的共享源码。
 type builder struct {
-	root string   // 行为树模块绝对路径。
-	out  string   // 本次构建独有的输出目录。
-	mode string   // debug 或 release。
-	env  []string // 已规范化的子进程环境。
+	root string            // 行为树模块绝对路径。
+	out  string            // 本次构建独有的输出目录。
+	mode hotload.BuildMode // 宿主和插件共享的构建模式。
+	env  []string          // 已规范化的子进程环境。
 }
 
 // buildTarget 描述宿主或一个私有版本的编译入口。
@@ -46,9 +46,8 @@ func main() {
 	mode := flag.String("mode", "release", "release 或 debug")
 	prepare := flag.Bool("prepare", false, "仅生成版本化源码，不构建 .so")
 	flag.Parse()
-	if *mode != "release" && *mode != "debug" {
-		fatal(fmt.Errorf("mode must be release or debug"))
-	}
+	buildMode, err := hotload.ParseBuildMode(*mode)
+	fatal(err)
 	root, err := filepath.Abs(*moduleRoot)
 	fatal(err)
 	base, err := filepath.Abs(*out)
@@ -56,10 +55,10 @@ func main() {
 	stamp := time.Now().UTC().Format("20060102_150405.000000000")
 	dir := filepath.Join(base, "release_"+strings.ReplaceAll(stamp, ".", "_"))
 	fatal(os.MkdirAll(dir, 0755))
-	b := builder{root: root, out: dir, mode: *mode}
+	b := builder{root: root, out: dir, mode: buildMode}
 	targets, err := b.prepare(stamp)
 	fatal(err)
-	b.env = buildEnvironment(filepath.Join(dir, "go.work"))
+	b.env = buildEnvironment(filepath.Join(dir, "go.work"), true)
 	if *prepare {
 		fmt.Println("prepared (no .so validation):", dir)
 		return
@@ -110,6 +109,9 @@ func main() {
 
 // prepare 使用生成器修改树结构，并修改私有 action 和 helper 实现。
 func (b *builder) prepare(stamp string) ([]buildTarget, error) {
+	if !b.mode.Valid() {
+		return nil, fmt.Errorf("mode: invalid value %d", b.mode)
+	}
 	targets := []buildTarget{{dir: b.root, pattern: runtimeImport + "/examples/host", importPath: runtimeImport + "/examples/host", output: "host"}}
 	for index := 1; index <= 4; index++ {
 		label := fmt.Sprintf("v%d", index)
@@ -174,7 +176,7 @@ func (b *builder) prepare(stamp string) ([]buildTarget, error) {
 // commonFlags 同时应用于 list、宿主和插件，以保证构建参数完全对应。
 func (b *builder) commonFlags() []string {
 	flags := []string{"-mod=readonly", "-trimpath", "-buildvcs=false"}
-	if b.mode == "debug" {
+	if b.mode == hotload.BuildDebug {
 		flags = append(flags, "-tags=debug", "-gcflags=all=-N -l")
 	}
 	return flags
@@ -193,8 +195,12 @@ func (b *builder) goOutput(dir string, args ...string) ([]byte, error) {
 }
 
 // buildEnvironment 固定目标、CGO 和优化环境，清除外部 GOFLAGS 干扰。
-func buildEnvironment(workspace string) []string {
-	values := map[string]string{"GOWORK": workspace, "GOOS": "linux", "GOARCH": "amd64", "CGO_ENABLED": "1", "GOAMD64": "v1", "GOFLAGS": "", "GOEXPERIMENT": "", "GOTOOLCHAIN": "local"}
+func buildEnvironment(workspace string, cgoEnabled bool) []string {
+	cgo := "0"
+	if cgoEnabled {
+		cgo = "1"
+	}
+	values := map[string]string{"GOWORK": workspace, "GOOS": "linux", "GOARCH": "amd64", "CGO_ENABLED": cgo, "GOAMD64": "v1", "GOFLAGS": "", "GOEXPERIMENT": "", "GOTOOLCHAIN": "local"}
 	result := make([]string, 0, len(os.Environ())+len(values))
 	for _, entry := range os.Environ() {
 		name, _, _ := strings.Cut(entry, "=")

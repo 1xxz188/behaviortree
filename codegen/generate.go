@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 
+	bt "github.com/1xxz188/behaviortree"
 	"github.com/1xxz188/behaviortree/model"
 )
 
@@ -123,7 +124,7 @@ func Generate(project model.Project) (Result, error) {
 		n := indices[tree][id]
 		g.nodes = append(g.nodes, occurrence{node: n, tree: tree, parent: parent})
 		var children []int
-		if n.Type == "subtree" {
+		if n.Type == model.NodeSubtree {
 			childTree := trees[n.Tree]
 			children = append(children, expand(childTree.ID, childTree.Root, index))
 		} else {
@@ -161,7 +162,7 @@ func Generate(project model.Project) (Result, error) {
 		g.line("// Get%s 按编译后槽位读取黑板字段。", f.Name)
 		g.line("func Get%s(f *bt.Frame[%s]) %s { return f.Board.%s(%d) }", f.Name, g.context, goType(f.Type), boardMethod(f.Type), i)
 		g.line("// Set%s 在值变化时通知依赖条件。", f.Name)
-		if f.Type == "enum" {
+		if f.Type == bt.EnumType {
 			// 允许值编译为静态分支，避免热路径遍历元数据或建立 map。
 			g.line("func Set%s(f *bt.Frame[%s], value string) {switch value {", f.Name, g.context)
 			choices := make([]string, len(f.Enum))
@@ -196,7 +197,7 @@ func Generate(project model.Project) (Result, error) {
 	g.line("},Dependencies:map[string][]int{")
 	dependencies := map[string][]int{}
 	for i, n := range g.nodes {
-		if n.node.Type != "action" && n.node.Type != "condition" {
+		if n.node.Type != model.NodeAction && n.node.Type != model.NodeCondition {
 			continue
 		}
 		d := g.defs[n.node.Binding]
@@ -232,7 +233,7 @@ func Generate(project model.Project) (Result, error) {
 	g.line("// btAbort 仅清理当前动作；运行时负责活跃子树取消和状态失效。")
 	g.line("func btAbort(f *bt.Frame[%s], node int) {switch node {", g.context)
 	for i, n := range g.nodes {
-		if n.node.Type == "action" {
+		if n.node.Type == model.NodeAction {
 			g.line("case %d: %s(f,%d,bt.Abort,%s)", i, g.defs[n.node.Binding].GoName, i, g.params(n.node))
 		}
 	}
@@ -265,74 +266,48 @@ func Generate(project model.Project) (Result, error) {
 // line 追加一行可格式化的 Go 文本。
 func (g *generator) line(format string, args ...any) { fmt.Fprintf(&g.buf, format+"\n", args...) }
 
-// goType 将元数据值类型映射为静态 Go 类型。
-func goType(t string) string {
-	switch t {
-	case "entity":
-		return "uint64"
-	case "enum":
-		return "string"
-	case "duration":
-		return "btDuration"
-	default:
-		return t
-	}
+// typeDescription 集中保存一种值类型的生成规则，避免多个分支映射漂移。
+type typeDescription struct {
+	goName      string // 生成的 Go 类型。
+	boardMethod string // 黑板槽位访问器。
+	runtimeName string // 公共运行时常量名称。
+	member      string // 公共 Value 的存储成员。
 }
 
-// boardMethod 选择直接槽位访问器。
-func boardMethod(t string) string {
-	switch t {
-	case "bool":
-		return "Bool"
-	case "int64":
-		return "Int"
-	case "uint64":
-		return "Uint"
-	case "float64":
-		return "Float"
-	case "string":
-		return "String"
-	case "enum":
-		return "Enum"
-	case "entity":
-		return "EntityID"
-	default:
-		return "Duration"
-	}
+// typeDescriptions 通过枚举索引直接查询全部支持的类型。
+var typeDescriptions = [...]typeDescription{
+	bt.BoolType:     {"bool", "Bool", "BoolType", "Bool"},
+	bt.IntType:      {"int64", "Int", "IntType", "Int"},
+	bt.UIntType:     {"uint64", "Uint", "UIntType", "Uint"},
+	bt.FloatType:    {"float64", "Float", "FloatType", "Float"},
+	bt.StringType:   {"string", "String", "StringType", "String"},
+	bt.EnumType:     {"string", "Enum", "EnumType", "String"},
+	bt.EntityIDType: {"uint64", "EntityID", "EntityIDType", "EntityID"},
+	bt.DurationType: {"btDuration", "Duration", "DurationType", "Duration"},
 }
 
-// runtimeType 选择公共运行时的布局类型。
-func runtimeType(t string) string {
-	switch t {
-	case "bool":
-		return "BoolType"
-	case "int64":
-		return "IntType"
-	case "uint64":
-		return "UIntType"
-	case "float64":
-		return "FloatType"
-	case "string":
-		return "StringType"
-	case "enum":
-		return "EnumType"
-	case "entity":
-		return "EntityIDType"
-	default:
-		return "DurationType"
+// describeType 拒绝遗漏或非法类型；调用前工程已经完成类型校验。
+func describeType(t bt.ValueType) typeDescription {
+	if !t.Valid() || int(t) >= len(typeDescriptions) || typeDescriptions[t].goName == "" {
+		panic(fmt.Sprintf("unsupported value type %v", t))
 	}
+	return typeDescriptions[t]
 }
 
-// valueMember 选择公共 Value 的强类型成员。
-func valueMember(t string) string {
-	if t == "enum" {
-		return "String"
-	}
-	return boardMethod(t)
-}
+// goType 返回静态 Go 类型名称。
+func goType(t bt.ValueType) string { return describeType(t).goName }
+
+// boardMethod 返回直接槽位访问器名称。
+func boardMethod(t bt.ValueType) string { return describeType(t).boardMethod }
+
+// runtimeType 返回公共运行时类型常量名称。
+func runtimeType(t bt.ValueType) string { return describeType(t).runtimeName }
+
+// valueMember 返回公共 Value 的强类型存储成员。
+func valueMember(t bt.ValueType) string { return describeType(t).member }
 
 // literal 将已校验常量转换为无注入可能的 Go 字面量。
-func literal(t string, raw json.RawMessage) string {
+func literal(t bt.ValueType, raw json.RawMessage) string {
 	value, _ := model.Literal(t, raw, nil)
 	switch v := value.(type) {
 	case string:
@@ -394,35 +369,35 @@ func (g *generator) emitNode(i int) {
 	g.line("s:=f.State(%d); _=s", i)
 	exit := func(status string) { g.line("return f.Exit(%d,%s)", i, status) }
 	switch n.node.Type {
-	case "action":
+	case model.NodeAction:
 		g.line("phase:=bt.Start;if s.Started{phase=bt.Resume};s.Started=true")
 		exit(fmt.Sprintf("%s(f,%d,phase,%s)", g.defs[n.node.Binding].GoName, i, g.params(n.node)))
-	case "condition":
+	case model.NodeCondition:
 		g.line("if %s(f,%d,%s) { return f.Exit(%d,bt.Success) }", g.defs[n.node.Binding].GoName, i, g.params(n.node), i)
 		exit("bt.Failure")
-	case "sequence", "selector":
+	case model.NodeSequence, model.NodeSelector:
 		g.line("for { switch s.Cursor {")
 		for j, child := range n.children {
 			g.line("case %d: status:=btNode%d(f);if status==bt.Running{return f.Exit(%d,status)}", j, child, i)
 			terminal := "bt.Failure"
-			if n.node.Type == "selector" {
+			if n.node.Type == model.NodeSelector {
 				terminal = "bt.Success"
 			}
 			g.line("if status==%s{s.Cursor=0;return f.Exit(%d,status)};s.Cursor++", terminal, i)
 		}
 		g.line("default:s.Cursor=0;")
-		if n.node.Type == "sequence" {
+		if n.node.Type == model.NodeSequence {
 			exit("bt.Success")
 		} else {
 			exit("bt.Failure")
 		}
 		g.line("}}")
-	case "priority":
+	case model.NodePriority:
 		// 只有当前分支被唤醒且其首守卫未变时，直接续跑，避免探测所有高优先守卫。
 		g.line("if s.Count!=0&&f.State(s.Cursor).Status==bt.Running&&f.OnlyDirtyChild(%d,s.Cursor){guardDirty:=false;switch s.Cursor{", i)
 		for _, child := range n.children {
 			candidate := g.nodes[child]
-			if candidate.node.Type == "sequence" && len(candidate.children) > 0 && g.nodes[candidate.children[0]].node.Type == "condition" {
+			if candidate.node.Type == model.NodeSequence && len(candidate.children) > 0 && g.nodes[candidate.children[0]].node.Type == model.NodeCondition {
 				g.line("case %d:guardDirty=f.IsDirty(%d)", child, candidate.children[0])
 			}
 		}
@@ -431,7 +406,7 @@ func (g *generator) emitNode(i int) {
 		for j, child := range n.children {
 			candidate := g.nodes[child]
 			guard := -1
-			if candidate.node.Type == "sequence" && len(candidate.children) > 0 && g.nodes[candidate.children[0]].node.Type == "condition" {
+			if candidate.node.Type == model.NodeSequence && len(candidate.children) > 0 && g.nodes[candidate.children[0]].node.Type == model.NodeCondition {
 				guard = candidate.children[0]
 			}
 			if guard >= 0 {
@@ -448,7 +423,7 @@ func (g *generator) emitNode(i int) {
 		}
 		g.line("if s.Count!=0 {f.Abort(s.Cursor,\"priority guard failed\")};s.Count=0")
 		exit("bt.Failure")
-	case "parallel":
+	case model.NodeParallel:
 		// 首次按显式顺序启动全部分支；预算不足时保留尚未启动的位置。
 		g.line("for s.Cursor<%d {var child int;var status bt.Status;switch s.Cursor {", len(n.children))
 		for j, child := range n.children {
@@ -464,18 +439,18 @@ func (g *generator) emitNode(i int) {
 		g.line("};if status==bt.Failure{f.AbortChildren(%d,\"parallel failed\");return f.Exit(%d,bt.Failure)};if status==bt.Success{s.Count++}}", i, i)
 		g.line("if s.Count==%d{return f.Exit(%d,bt.Success)}", len(n.children), i)
 		exit("bt.Running")
-	case "repeat", "retry":
+	case model.NodeRepeat, model.NodeRetry:
 		child := n.children[0]
 		g.line("for s.Count<%d {status:=btNode%d(f);if status==bt.Running{return f.Exit(%d,status)}", n.node.Count, child, i)
 		terminal := "bt.Failure"
 		finish := "bt.Success"
-		if n.node.Type == "retry" {
+		if n.node.Type == model.NodeRetry {
 			terminal, finish = "bt.Success", "bt.Failure"
 		}
 		g.line("if status==%s{return f.Exit(%d,status)};s.Count++;if s.Count<%d{f.Reset(%d)}", terminal, i, n.node.Count, child)
 		g.line("}")
 		exit(finish)
-	case "wait":
+	case model.NodeWait:
 		if n.node.DurationMS == 0 {
 			exit("bt.Success")
 		} else {
@@ -483,7 +458,7 @@ func (g *generator) emitNode(i int) {
 			g.line("if !s.Started{s.Started=true;f.After(%d,time.Duration(%d)*time.Millisecond)}", i, n.node.DurationMS)
 			exit("bt.Running")
 		}
-	case "timeout":
+	case model.NodeTimeout:
 		child := n.children[0]
 		if n.node.DurationMS == 0 {
 			g.line("f.Abort(%d,\"timeout\")", child)
@@ -493,17 +468,17 @@ func (g *generator) emitNode(i int) {
 			g.line("if !s.Started{s.Started=true;f.After(%d,time.Duration(%d)*time.Millisecond)}", i, n.node.DurationMS)
 			exit(fmt.Sprintf("btNode%d(f)", child))
 		}
-	case "subtree":
+	case model.NodeSubtree:
 		exit(fmt.Sprintf("btNode%d(f)", n.children[0]))
-	case "inverter", "succeed", "fail":
+	case model.NodeInverter, model.NodeSucceed, model.NodeFail:
 		g.line("status:=btNode%d(f);if status==bt.Running{return f.Exit(%d,status)}", n.children[0], i)
 		switch n.node.Type {
-		case "inverter":
+		case model.NodeInverter:
 			g.line("if status==bt.Success{return f.Exit(%d,bt.Failure)}", i)
 			exit("bt.Success")
-		case "succeed":
+		case model.NodeSucceed:
 			exit("bt.Success")
-		case "fail":
+		case model.NodeFail:
 			exit("bt.Failure")
 		}
 	}
@@ -524,7 +499,7 @@ func checkExpandedSize(p model.Project) error {
 		}
 		n := len(trees[id].Nodes)
 		for _, node := range trees[id].Nodes {
-			if node.Type == "subtree" {
+			if node.Type == model.NodeSubtree {
 				child := size(node.Tree)
 				if n > MaxExpandedNodes-child {
 					sizes[id] = MaxExpandedNodes + 1

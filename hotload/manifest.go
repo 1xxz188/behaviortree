@@ -2,6 +2,7 @@
 package hotload
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -16,13 +17,44 @@ type Contract struct {
 	GoVersion      string            `json:"goVersion"`      // 完整工具链版本。
 	GOOS           string            `json:"goos"`           // 目标操作系统。
 	GOARCH         string            `json:"goarch"`         // 目标架构。
-	CGOEnabled     string            `json:"cgoEnabled"`     // CGO 开关。
+	CGOEnabled     bool              `json:"cgoEnabled"`     // CGO 开关。
 	Tags           []string          `json:"tags"`           // 排序后的构建标签。
-	Mode           string            `json:"mode"`           // release 或 debug。
+	Mode           BuildMode         `json:"mode"`           // 宿主与插件共享的构建模式。
 	Flags          []string          `json:"flags"`          // 影响共享代码的编译选项。
 	Environment    map[string]string `json:"environment"`    // CGO、GOAMD64 等影响代码生成的环境。
 	Shared         map[string]string `json:"shared"`         // 共享包导入路径到源码与模块信息 SHA256。
 	APIFingerprint string            `json:"apiFingerprint"` // 框架和固定业务上下文源码指纹。
+}
+
+// Validate 检查直接构造和 JSON 解码后的必填枚举。
+func (c Contract) Validate() error {
+	if !c.Mode.Valid() {
+		return fmt.Errorf("contract.mode: missing or invalid value %d", c.Mode)
+	}
+	return nil
+}
+
+// UnmarshalJSON 在契约入口拒绝缺失模式和非布尔 CGO 开关，保留未知字段检查。
+func (c *Contract) UnmarshalJSON(data []byte) error {
+	type contractFields Contract
+	var value struct {
+		contractFields
+		CGOEnabled *bool `json:"cgoEnabled"` // 指针区分 false 与缺失或 null。
+	}
+	d := json.NewDecoder(bytes.NewReader(data))
+	d.DisallowUnknownFields()
+	if err := d.Decode(&value); err != nil {
+		return fmt.Errorf("contract: %w", err)
+	}
+	if err := Contract(value.contractFields).Validate(); err != nil {
+		return err
+	}
+	if value.CGOEnabled == nil {
+		return fmt.Errorf("contract.cgoEnabled: missing or null boolean")
+	}
+	value.contractFields.CGOEnabled = *value.CGOEnabled
+	*c = Contract(value.contractFields)
+	return nil
 }
 
 // Manifest 将唯一版本与二进制文件绑定，放在 plugin.so.json 旁车文件。
@@ -51,11 +83,20 @@ func ReadManifest(path string) (Manifest, error) {
 	if err = d.Decode(&extra); err != io.EOF {
 		return m, fmt.Errorf("manifest contains trailing data")
 	}
+	if err = m.Contract.Validate(); err != nil {
+		return m, err
+	}
 	return m, nil
 }
 
 // Check 拒绝工具链、参数、共享依赖或 ABI 不一致的版本。
 func (m Manifest) Check(expected Contract) error {
+	if err := m.Contract.Validate(); err != nil {
+		return err
+	}
+	if err := expected.Validate(); err != nil {
+		return fmt.Errorf("host: %w", err)
+	}
 	if m.SchemaVersion != 1 || m.Version == "" || m.PrivateModule == "" {
 		return fmt.Errorf("invalid manifest identity")
 	}
