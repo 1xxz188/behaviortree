@@ -18,6 +18,7 @@ import type {
   Definition,
   Diagnostic,
   Field,
+  Position as NodePosition,
   Project,
   Tree,
   Value,
@@ -122,7 +123,10 @@ const undoStack = ref<string[]>([]);
 const redoStack = ref<string[]>([]);
 const importInput = ref<HTMLInputElement>();
 const catalogInput = ref<HTMLInputElement>();
-const { fitView, setCenter } = useVueFlow();
+const { fitView, setCenter, screenToFlowCoordinate } = useVueFlow();
+// 拖拽只保存节点模板，成功落入画布后才写入工程和撤销历史。
+const paletteDrag = ref<{ type: NodeType; binding?: string }>();
+const canvasDragOver = ref(false);
 
 const tree = computed(
   () =>
@@ -226,7 +230,7 @@ function changeText(event: Event, fn: (text: string) => void) {
   mutate(() => fn((event.target as HTMLInputElement).value));
 }
 // 创建稳定节点 ID，并放置到当前树画布。
-function addNode(type: NodeType, binding?: string) {
+function addNode(type: NodeType, binding?: string, position?: NodePosition) {
   mutate(() => {
     const id = uid(),
       item: BTNode = { id, type, name: kinds[type]?.label ?? type };
@@ -238,13 +242,47 @@ function addNode(type: NodeType, binding?: string) {
     if (["wait", "timeout"].includes(type)) item.durationMs = 1000;
     tree.value.nodes.push(item);
     tree.value.layout ??= {};
-    tree.value.layout[id] = {
+    tree.value.layout[id] = position ?? {
       x: 100 + (tree.value.nodes.length % 3) * 230,
       y: 100 + Math.floor(tree.value.nodes.length / 3) * 100,
     };
     if (!tree.value.root) tree.value.root = id;
     selected.value = id;
   });
+}
+// 使用浏览器原生拖影，让节点从侧栏连续跟随鼠标进入画布。
+function startPaletteDrag(event: DragEvent, type: NodeType, binding?: string) {
+  if (!event.dataTransfer) return;
+  paletteDrag.value = { type, binding };
+  event.dataTransfer.effectAllowed = "copy";
+  event.dataTransfer.setData("application/x-behaviortree-node", type);
+}
+// 清除悬停状态；取消拖拽或在画布外松手不产生工程修改。
+function endPaletteDrag() {
+  paletteDrag.value = undefined;
+  canvasDragOver.value = false;
+}
+// 仅接受当前节点库发起的拖拽，避免把外部文本或文件误建成节点。
+function dragOverCanvas(event: DragEvent) {
+  if (!paletteDrag.value || !event.dataTransfer) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = "copy";
+  canvasDragOver.value = true;
+}
+// 在画布内部跨越节点和连线时保留高亮，真正离开画布时才清除。
+function leaveCanvas(event: DragEvent) {
+  const canvas = event.currentTarget as HTMLElement;
+  if (event.relatedTarget instanceof Node && canvas.contains(event.relatedTarget)) return;
+  canvasDragOver.value = false;
+}
+// 由 Vue Flow 换算屏幕落点，统一处理画布偏移、平移和缩放。
+function dropPaletteNode(event: DragEvent) {
+  if (!paletteDrag.value) return;
+  event.preventDefault();
+  const { type, binding } = paletteDrag.value;
+  const position = screenToFlowCoordinate({ x: event.clientX, y: event.clientY });
+  endPaletteDrag();
+  addNode(type, binding, position);
 }
 // 复用拓扑检查，按连线顺序追加子节点。
 function link(connection: Connection) {
@@ -592,6 +630,7 @@ function beforeUnload(e: BeforeUnloadEvent) {
   if (dirty.value) e.preventDefault();
 }
 watch(treeID, () => {
+  endPaletteDrag();
   selected.value = "";
   setTimeout(() => fitView({ padding: 0.18 }), 30);
 });
@@ -742,7 +781,10 @@ onUnmounted(() => toolLifecycle.abort());
             v-for="{ type, info } in availableKinds"
             :key="type"
             class="palette-node"
-            :title="info.help"
+            draggable="true"
+            :title="`${info.help} · 按住拖入画布，或点击添加`"
+            @dragstart="startPaletteDrag($event, type)"
+            @dragend="endPaletteDrag"
             @click="addNode(type)"
           >
             <span :class="['kind-icon', info.color]">{{ info.icon }}</span
@@ -763,6 +805,10 @@ onUnmounted(() => toolLifecycle.abort());
           v-for="d in project.catalog"
           :key="d.id"
           class="palette-node"
+          draggable="true"
+          title="按住拖入画布，或点击添加"
+          @dragstart="startPaletteDrag($event, d.kind, d.id)"
+          @dragend="endPaletteDrag"
           @click="addNode(d.kind, d.id)"
         >
           <span
@@ -869,6 +915,7 @@ onUnmounted(() => toolLifecycle.abort());
         </div>
       </div>
       <VueFlow
+        :class="{ 'palette-drag-over': canvasDragOver }"
         :nodes="graphNodes"
         :edges="graphEdges"
         :min-zoom="0.15"
@@ -879,6 +926,9 @@ onUnmounted(() => toolLifecycle.abort());
         @node-click="({ node: n }: NodeMouseEvent) => (selected = n.id)"
         @pane-click="selected = ''"
         @node-drag-stop="moveNode"
+        @dragover="dragOverCanvas"
+        @dragleave="leaveCanvas"
+        @drop="dropPaletteNode"
       >
         <Background pattern-color="#34434f" :gap="22" :size="1" />
         <Controls position="bottom-left" :show-interactive="false" />
@@ -923,7 +973,7 @@ onUnmounted(() => toolLifecycle.abort());
           </div>
         </template>
       </VueFlow>
-      <div class="canvas-hint">拖动节点端点连接 · 子节点顺序在右侧调整</div>
+      <div class="canvas-hint">从节点库拖入画布添加 · 拖动节点端点连接 · 子节点顺序在右侧调整</div>
     </main>
 
     <aside :class="['inspector', { opened: inspectorOpen }]">

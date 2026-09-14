@@ -251,6 +251,8 @@ pre {
   gap: 3px;
 }
 .palette-node {
+  cursor: grab;
+  user-select: none;
   display: flex;
   align-items: center;
   width: 100%;
@@ -259,6 +261,13 @@ pre {
   background: transparent;
   text-align: left;
   padding: 7px 3px;
+}
+.palette-node:active {
+  cursor: grabbing;
+}
+.vue-flow.palette-drag-over {
+  box-shadow: inset 0 0 0 2px #7ee4b1;
+  background-color: #142a2b;
 }
 .palette-node span:nth-child(2) {
   flex: 1;
