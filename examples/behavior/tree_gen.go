@@ -29,7 +29,7 @@ func SetMessage(f *bt.Frame[*ctxpkg.Context], value string) { f.Board.SetString(
 // NewProgram 创建本版本共享的不可变程序，空版本名使用内容摘要。
 func NewProgram(version string) *bt.Program[*ctxpkg.Context] {
 	if version == "" {
-		version = "42a9624a23079e1cc8ba5905836d1b72"
+		version = "6dc314e272c0a523777b2d765eaa6699"
 	}
 	return &bt.Program[*ctxpkg.Context]{Version: version, Roots: map[string]int{
 		"main": 0,

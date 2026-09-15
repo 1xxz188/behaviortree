@@ -15,6 +15,20 @@ import (
 	bt "github.com/1xxz188/behaviortree"
 )
 
+// ValidTreeID 逐字节检查非空 ASCII 树 ID，允许字母、数字和下划线及数字开头。
+func ValidTreeID(id string) bool {
+	if id == "" {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		if c != '_' && (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') {
+			return false
+		}
+	}
+	return true
+}
+
 // Identifier 判断名称是否为非保留的 Go 标识符。
 func Identifier(name string) bool {
 	return name != "_" && token.IsIdentifier(name) && !token.Lookup(name).IsKeyword()
@@ -211,8 +225,8 @@ func Validate(p Project) []Diagnostic {
 	}
 	trees := map[string]Tree{}
 	for _, tree := range p.Trees {
-		if tree.ID == "" {
-			add("", "", "trees", "树 ID 不能为空")
+		if !ValidTreeID(tree.ID) {
+			add(tree.ID, "", "id", "行为树 ID 不能为空，且只能包含英文字母、数字和下划线")
 		}
 		if _, ok := trees[tree.ID]; ok {
 			add(tree.ID, "", "id", "重复树 ID")

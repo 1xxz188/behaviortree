@@ -42,7 +42,7 @@ function canonicalValue(value: unknown): unknown {
   return value;
 }
 
-// 工程集合的排序规则与生成器一致；布局和集合原始顺序不使已生成代码过期。
+// 工程集合的排序规则与生成器一致；树展示名、布局和集合原始顺序不使代码过期。
 export function semanticSignature(project: Project): string {
   const snapshot = clone(project);
   const byID = (a: { id: string }, b: { id: string }) =>
@@ -53,6 +53,7 @@ export function semanticSignature(project: Project): string {
   snapshot.generation.contextImport ??= "";
   for (const field of snapshot.blackboard) field.enum ??= [];
   for (const tree of snapshot.trees) {
+    tree.name = "";
     delete tree.layout;
     tree.nodes.sort(byID);
     // Go 的 omitempty 会在保存后省略空值，统一表示保证重新打开时签名稳定。

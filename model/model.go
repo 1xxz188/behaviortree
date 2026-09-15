@@ -63,10 +63,10 @@ type Value struct {
 	Value json.RawMessage `json:"value,omitempty"` // 强类型 JSON 常量。
 }
 
-// Tree 使用显式 Children 顺序定义优先级。
+// Tree 以 ID 作为运行时主键，并使用显式 Children 顺序定义优先级。
 type Tree struct {
-	ID     string              `json:"id"`               // 稳定树 ID。
-	Name   string              `json:"name"`             // 显示名称。
+	ID     string              `json:"id"`               // 工程内唯一且区分大小写的稳定 ID；显式修改时需同步全部引用。
+	Name   string              `json:"name"`             // 允许重复的显示名称，不参与运行时版本。
 	Root   string              `json:"root"`             // 根节点 ID。
 	Nodes  []Node              `json:"nodes"`            // 节点集合，数组顺序无语义。
 	Layout map[string]Position `json:"layout,omitempty"` // 单独保存的画布坐标。

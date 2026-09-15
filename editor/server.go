@@ -151,8 +151,11 @@ func normalizeDraft(p *model.Project) error {
 	seen := make(map[string]bool, len(p.Trees))
 	for i := range p.Trees {
 		t := &p.Trees[i]
-		if t.ID == "" || seen[t.ID] {
-			return errors.New("行为树 ID 不能为空或重复")
+		if !model.ValidTreeID(t.ID) {
+			return errors.New("行为树 ID 不能为空，且只能包含英文字母、数字和下划线")
+		}
+		if seen[t.ID] {
+			return fmt.Errorf("行为树 ID 重复: %s", t.ID)
 		}
 		seen[t.ID] = true
 		if t.Nodes == nil {

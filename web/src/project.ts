@@ -41,12 +41,13 @@ export interface Position {
   x: number;
   y: number;
 }
+// 行为树以工程内唯一的 ID 标识运行时入口，名称仅供展示。
 export interface Tree {
-  id: string;
-  name: string;
-  root: string;
-  nodes: BTNode[];
-  layout?: Record<string, Position>;
+  id: string; // 稳定主键，仅允许英文、数字、下划线；显式改号须同步引用。
+  name: string; // 可重复的展示名称，不参与生成版本。
+  root: string; // 入口节点 ID。
+  nodes: BTNode[]; // 本树所属节点。
+  layout?: Record<string, Position>; // 节点在编辑画布上的位置。
 }
 export interface Project {
   schemaVersion: number;

@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, shallowRef, watch } from "vue";
 import CatalogManager from "./CatalogManager.vue";
 import SourceViewer from "./SourceViewer.vue";
 import { GenerationRequests, semanticSignature } from "./generation";
 import type { SourceLocation } from "./generation";
+import { TreeIdentityIndex, captureSnapshot, restoreSnapshot } from "./treeIdentity";
+import type { EditorSnapshot } from "./treeIdentity";
 import { VueFlow, Handle, Position, useVueFlow } from "@vue-flow/core";
 import type { Connection, NodeDragEvent, NodeMouseEvent } from "@vue-flow/core";
 import { Background } from "@vue-flow/background";
@@ -56,6 +58,9 @@ class RequestError extends Error {
 
 const project = ref<Project>(emptyProject());
 const treeID = ref(project.value.trees[0]!.id);
+const treeIDDraft = ref(treeID.value); // ID 输入草稿，应用前不影响工程。
+const treeIDError = ref(""); // 当前改号失败原因。
+let renamingTree = false; // 同一棵树改号时保留选择与视口。
 const selected = ref("root");
 const inspectorOpen = ref(false);
 const search = ref("");
@@ -78,6 +83,7 @@ const outputPath = computed(() => codeSnapshot.value?.path ?? "仅预览 · 尚�
 const catalogDialog = ref<{ mode: "create" | "import" | "manage"; kind?: DefinitionKind }>();
 // 加载工程时一次建立集合，后续新增与复制只做集合查重。
 let occupiedIDs = new Set<string>();
+const treeIdentity = shallowRef(new TreeIdentityIndex(project.value)); // 索引持有响应式树和节点。
 rebuildIDs();
 const tab = ref("nodes");
 const bottomTab = ref("diagnostics");
@@ -155,8 +161,8 @@ function resizeOutputWithKeyboard(event: KeyboardEvent) {
     height + (event.key === "ArrowUp" ? 20 : -20),
   );
 }
-const undoStack = ref<string[]>([]);
-const redoStack = ref<string[]>([]);
+const undoStack = ref<EditorSnapshot[]>([]);
+const redoStack = ref<EditorSnapshot[]>([]);
 const importInput = ref<HTMLInputElement>();
 const { fitView, setCenter, screenToFlowCoordinate } = useVueFlow();
 // 拖拽只保存节点模板，成功落入画布后才写入工程和撤销历史。
@@ -165,7 +171,7 @@ const canvasDragOver = ref(false);
 
 const tree = computed(
   () =>
-    project.value.trees.find((t) => t.id === treeID.value) ??
+    treeIdentity.value.byID.get(treeID.value) ??
     project.value.trees[0]!,
 );
 const nodeIndex = computed(() => new Map(tree.value.nodes.map((n) => [n.id, n])));
@@ -219,7 +225,7 @@ function notice(text: string, failed = false) {
 // 保存编辑前快照，使语义和布局都可以撤销。
 function checkpoint() {
   editRevision++;
-  undoStack.value.push(stringifyJSON(project.value));
+  undoStack.value.push(captureSnapshot(project.value, treeID.value, selected.value));
   if (undoStack.value.length > 100) undoStack.value.shift();
   redoStack.value = [];
   dirty.value = true;
@@ -250,20 +256,23 @@ function resetResults() {
   invalidateCode();
   codeSnapshot.value = undefined;
   scaffoldSnapshot.value = undefined;
+  treeIdentity.value = new TreeIdentityIndex(project.value);
   rebuildIDs();
+  cancelTreeID();
 }
-// 恢复工程快照；纯布局撤销不使源码过期。
-function restore(snapshot: string) {
+// 恢复工程和选择快照；布局与展示名撤销不使源码过期。
+function restore(snapshot: EditorSnapshot) {
   editRevision++;
-  const restored = parseJSON<Project>(snapshot);
-  validateProjectTypes(restored);
+  const { project: restored, index } = restoreSnapshot(snapshot, reactive);
   const signature = semanticSignature(restored);
   if (signature !== semanticSignature(project.value)) invalidateCode();
   project.value = restored;
+  treeIdentity.value = index;
   rebuildIDs();
-  if (!project.value.trees.some((t) => t.id === treeID.value))
-    treeID.value = project.value.trees[0]?.id ?? "";
-  selected.value = "";
+  treeID.value = treeIdentity.value.byID.has(snapshot.treeID)
+    ? snapshot.treeID : project.value.trees[0]?.id ?? "";
+  selected.value = nodeIndex.value.has(snapshot.selected) ? snapshot.selected : "";
+  cancelTreeID();
   dirty.value = true;
   if (codeSnapshot.value?.signature === signature)
     codeSnapshot.value = { ...codeSnapshot.value, revision: semanticRevision.value };
@@ -274,7 +283,7 @@ function restore(snapshot: string) {
 function undo() {
   const state = undoStack.value.pop();
   if (state) {
-    redoStack.value.push(stringifyJSON(project.value));
+    redoStack.value.push(captureSnapshot(project.value, treeID.value, selected.value));
     restore(state);
   }
 }
@@ -282,13 +291,50 @@ function undo() {
 function redo() {
   const state = redoStack.value.pop();
   if (state) {
-    undoStack.value.push(stringifyJSON(project.value));
+    undoStack.value.push(captureSnapshot(project.value, treeID.value, selected.value));
     restore(state);
   }
 }
 // 提交文本属性变更，保留可撤销历史。
 function changeText(event: Event, fn: (text: string) => void) {
   mutate(() => fn((event.target as HTMLInputElement).value));
+}
+// 展示名只进入保存和历史，不淘汰生成结果或在途请求。
+function changeTreeName(event: Event) {
+  const name = (event.target as HTMLInputElement).value;
+  if (name !== tree.value.name) mutate(() => { tree.value.name = name; }, false);
+}
+// 取消尚未提交的 ID 输入，不产生工程修改。
+function cancelTreeID() {
+  treeIDDraft.value = treeID.value;
+  treeIDError.value = "";
+}
+// 先校验再在一次历史边界内更新 ID、反向引用和当前选择。
+function applyTreeID() {
+  const previous = treeID.value;
+  const next = treeIDDraft.value;
+  const failure = treeIdentity.value.validateRename(previous, next);
+  if (failure) {
+    treeIDError.value = failure;
+    return;
+  }
+  if (previous === next) return cancelTreeID();
+  let references = 0;
+  mutate(() => {
+    references = treeIdentity.value.rename(previous, next);
+    occupiedIDs.add(next);
+    // 保留旧 ID 的会话预留，避免自动创建意外复用曾经的入口。
+    renamingTree = true;
+    try { treeID.value = next; } finally { renamingTree = false; }
+  });
+  cancelTreeID();
+  notice(`行为树 ID 已更新，已同步 ${references} 处引用，请保存并重新生成`);
+}
+// 子树目标变更同步维护反向索引，不扫描其他节点。
+function changeTreeReference(event: Event) {
+  const target = (event.target as HTMLSelectElement).value;
+  if (!node.value || (node.value.tree ?? "") === target) return;
+  mutate(() => treeIdentity.value.setReference(node.value!, target));
 }
 // 创建稳定节点 ID，并放置到当前树画布。
 function addNode(type: NodeType, binding?: string, position?: NodePosition) {
@@ -302,6 +348,7 @@ function addNode(type: NodeType, binding?: string, position?: NodePosition) {
     if (["repeat", "retry"].includes(type)) item.count = 3;
     if (["wait", "timeout"].includes(type)) item.durationMs = 1000;
     tree.value.nodes.push(item);
+    treeIdentity.value.addNode(tree.value.nodes[tree.value.nodes.length - 1]!);
     tree.value.layout ??= {};
     tree.value.layout[id] = position ?? {
       x: 100 + (tree.value.nodes.length % 3) * 230,
@@ -352,7 +399,8 @@ function link(connection: Connection) {
     failure = connect(copy, connection.source, connection.target);
   if (failure) return notice(failure, true);
   mutate(() => {
-    tree.value.nodes = copy.nodes;
+    // 只写实际变化的父连接，保留反向引用索引持有的节点对象。
+    nodeIndex.value.get(connection.source!)!.children = copy.nodes.find((n) => n.id === connection.source)!.children;
     tree.value.root = copy.root;
   });
 }
@@ -367,6 +415,7 @@ function moveNode({ node: moved }: NodeDragEvent) {
 function deleteSelected() {
   if (node.value)
     mutate(() => {
+      treeIdentity.value.removeNode(node.value!);
       removeNodes(tree.value, [selected.value]);
       selected.value = "";
     });
@@ -380,6 +429,7 @@ function duplicate() {
     n.name = `${n.name ?? kinds[n.type]?.label} 副本`;
     n.children = [];
     tree.value.nodes.push(n);
+    treeIdentity.value.addNode(tree.value.nodes[tree.value.nodes.length - 1]!);
     tree.value.layout ??= {};
     const p = tree.value.layout[selected.value] ?? { x: 100, y: 100 };
     tree.value.layout[n.id] = { x: p.x + 35, y: p.y + 100 };
@@ -415,6 +465,7 @@ function addTree() {
       nodes: [],
       layout: {},
     });
+    treeIdentity.value.addTree(project.value.trees[project.value.trees.length - 1]!);
     treeID.value = id;
     selected.value = "";
   });
@@ -425,6 +476,7 @@ function deleteTree() {
   if (!confirm(`删除“${tree.value.name}”？引用它的子树节点需要重新选择。`))
     return;
   mutate(() => {
+    treeIdentity.value.removeTree(tree.value);
     project.value.trees = project.value.trees.filter(
       (t) => t.id !== treeID.value,
     );
@@ -768,6 +820,8 @@ function beforeUnload(e: BeforeUnloadEvent) {
   if (dirty.value) e.preventDefault();
 }
 watch(treeID, () => {
+  cancelTreeID();
+  if (renamingTree) return;
   endPaletteDrag();
   selected.value = "";
   setTimeout(() => fitView({ padding: 0.18 }), 30);
@@ -898,7 +952,7 @@ onUnmounted(() => toolLifecycle.abort());
           :class="{ active: item.id === treeID }"
           @click="treeID = item.id"
         >
-          <span>⑂</span>{{ item.name }}<small>{{ item.nodes.length }}</small>
+          <span>⑂</span><span class="tree-caption">{{ item.name }}<code>{{ item.id }}</code></span><small>{{ item.nodes.length }}</small>
         </button>
       </nav>
       <div class="sidebar-tabs">
@@ -1169,7 +1223,7 @@ onUnmounted(() => toolLifecycle.abort());
         <label v-if="node.type === 'subtree'" class="field-label"
           >引用行为树<select
             :value="node.tree ?? ''"
-            @change="changeText($event, (v) => (node!.tree = v))"
+            @change="changeTreeReference"
           >
             <option value="">请选择…</option>
             <option
@@ -1177,7 +1231,7 @@ onUnmounted(() => toolLifecycle.abort());
               :key="t.id"
               :value="t.id"
             >
-              {{ t.name }}
+              {{ t.name }} · {{ t.id }}
             </option>
           </select></label
         >
@@ -1299,11 +1353,19 @@ onUnmounted(() => toolLifecycle.abort());
         <label class="field-label"
           >行为树名称<input
             :value="tree.name"
-            @input="changeText($event, (v) => (tree.name = v))"
+            @input="changeTreeName"
         /></label>
         <label class="field-label"
-          >行为树 ID<input :value="tree.id" readonly class="mono"
+          >行为树 ID<input v-model="treeIDDraft" class="mono"
+            :aria-invalid="!!treeIDError" aria-describedby="tree-id-help tree-id-error"
+            @input="treeIDError = ''" @keydown.enter.prevent="applyTreeID" @keydown.esc.prevent="cancelTreeID"
         /></label>
+        <p id="tree-id-help" class="muted identity-help">仅英文、数字、下划线；工程内唯一。应用时同步当前工程全部引用。已上线入口改号需调整外部调用并重启。</p>
+        <p v-if="treeIDError" id="tree-id-error" class="identity-error" role="alert">{{ treeIDError }}</p>
+        <div class="identity-actions">
+          <button @click="applyTreeID" :disabled="treeIDDraft === tree.id">应用</button>
+          <button @click="cancelTreeID" :disabled="treeIDDraft === tree.id && !treeIDError">取消</button>
+        </div>
         <div class="panel-heading small-heading">Go 生成设置</div>
         <label class="field-label"
           >包名<input

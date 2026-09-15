@@ -503,7 +503,7 @@ func checkExpandedSize(p model.Project) error {
 	return nil
 }
 
-// ProjectVersion 计算与生成器一致的语义版本，忽略布局且允许未连完的草稿。
+// ProjectVersion 计算与生成器一致的语义版本，忽略树显示名称和布局且允许未连完的草稿。
 func ProjectVersion(project model.Project) (string, error) {
 	_, version, err := normalizeProject(project)
 	return version, err
@@ -524,6 +524,8 @@ func normalizeProject(project model.Project) (model.Project, string, error) {
 	sort.Slice(p.Blackboard, func(i, j int) bool { return p.Blackboard[i].ID < p.Blackboard[j].ID })
 	sort.Slice(p.Catalog, func(i, j int) bool { return p.Catalog[i].ID < p.Catalog[j].ID })
 	for i := range p.Trees {
+		// 名称仅用于展示；只清除深拷贝中的名称，持久化仍保留原值。
+		p.Trees[i].Name = ""
 		p.Trees[i].Layout = nil
 		sort.Slice(p.Trees[i].Nodes, func(a, b int) bool { return p.Trees[i].Nodes[a].ID < p.Trees[i].Nodes[b].ID })
 	}

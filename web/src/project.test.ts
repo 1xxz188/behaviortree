@@ -18,6 +18,23 @@ import {
   parseDefinitionKind, validateProjectTypes, validateCatalogTypes,
 } from "./enums.ts";
 
+// 展示名可重复且不影响生成语义，改号仍必须淘汰旧版本与在途结果。
+test("树展示名不改变签名或在途请求，ID变更仍使语义改变", () => {
+  const project = emptyProject();
+  const original = clone(project);
+  const requests = new GenerationRequests();
+  const token = requests.begin(project);
+  project.trees[0]!.name = "新的展示名";
+  assert.equal(semanticSignature(project), semanticSignature(original));
+  assert.equal(requests.accepts(token, project), true);
+  assert.equal(project.trees[0]!.name, "新的展示名");
+  project.trees[0]!.id = "new_tree";
+  assert.notEqual(semanticSignature(project), semanticSignature(original));
+  assert.equal(requests.accepts(token, project), false);
+  requests.invalidate();
+  assert.equal(requests.acceptsRevision(token), false);
+});
+
 test("导入、撤销拷贝和导出保留完整64位整数", () => {
   const input =
     '{"value":18446744073709551615,"negative":-9223372036854775808,"x":12.5}';
