@@ -30,7 +30,7 @@ const MaxProjectBytes = 8 << 20
 // Server 通过 os.Root 将工程读写限制在固定目录内，包括符号链接访问。
 type Server struct {
 	root *os.Root       // 受限文件系统根。
-	path string         // 展示生成产物的绝对路径。
+	path string         // 展示工作目录和生成产物的绝对路径。
 	mu   sync.Mutex     // 串行化文件发布，防止同一生成文件交错写入。
 	mux  *http.ServeMux // HTTP 路由与内嵌前端。
 }
@@ -172,7 +172,7 @@ func normalizeDraft(p *model.Project) error {
 	return nil
 }
 
-// listProjects 返回已有工程文件名，不递归遍历整个工作目录。
+// listProjects 返回工作目录绝对路径和已有工程文件名，不递归遍历整个工作目录。
 func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
 	f, err := s.root.Open(".")
 	if err != nil {
@@ -192,7 +192,7 @@ func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	sort.Strings(files)
-	reply(w, 200, map[string]any{"files": files})
+	reply(w, 200, map[string]any{"workspace": s.path, "files": files})
 }
 
 // readProject 从受限目录读取和解析工程。

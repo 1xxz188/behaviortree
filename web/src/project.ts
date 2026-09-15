@@ -251,6 +251,21 @@ export function autoLayout(tree: Tree): void {
   tree.layout = positions;
 }
 
+// 新建工程只包含一个可编辑的根节点，示例由用户单独选择。
+export function blankProject(): Project {
+  return {
+    schemaVersion: 1,
+    name: "未命名工程",
+    blackboard: [],
+    catalog: [],
+    trees: [{ id: "main", name: "主行为树", root: "root", nodes: [
+      { id: "root", type: "sequence", name: "根节点", children: [] },
+    ], layout: { root: { x: 80, y: 80 } } }],
+    generation: { package: "behavior", contextImport: "", contextType: "any" },
+  };
+}
+
+// 创建内置巡逻示例，供显式打开示例与既有示例测试使用。
 export function emptyProject(): Project {
   const tree: Tree = {
     id: "patrol",

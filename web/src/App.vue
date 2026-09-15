@@ -2,6 +2,10 @@
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, shallowRef, watch } from "vue";
 import CatalogManager from "./CatalogManager.vue";
 import SourceViewer from "./SourceViewer.vue";
+import ProjectDialog from "./ProjectDialog.vue";
+import { startupProject, rememberProject } from "./workspace";
+import type { WorkspaceFiles, RecentStorage } from "./workspace";
+import { ProjectSaveState } from "./saveState";
 import { GenerationRequests, semanticSignature } from "./generation";
 import type { SourceLocation } from "./generation";
 import { TreeIdentityIndex, captureSnapshot, restoreSnapshot } from "./treeIdentity";
@@ -15,6 +19,7 @@ import {
   clone,
   connect,
   emptyProject,
+  blankProject,
   kinds,
   removeNodes,
   allocateID,
@@ -56,7 +61,7 @@ class RequestError extends Error {
   }
 }
 
-const project = ref<Project>(emptyProject());
+const project = ref<Project>(blankProject());
 const treeID = ref(project.value.trees[0]!.id);
 const treeIDDraft = ref(treeID.value); // ID 输入草稿，应用前不影响工程。
 const treeIDError = ref(""); // 当前改号失败原因。
@@ -64,12 +69,25 @@ let renamingTree = false; // 同一棵树改号时保留选择与视口。
 const selected = ref("root");
 const inspectorOpen = ref(false);
 const search = ref("");
-const fileName = ref("project.json");
+const fileName = ref(""); // 仅表示当前工作目录内已成功打开或保存的文件。
+const suggestedName = ref("project.json"); // 新建及导入只提供首次保存建议。
+const workspace = ref(""); // 服务端返回的实际绝对工作目录。
+const projectReady = ref(false); // 完成打开或显式新建后才展示编辑区。
+const initializing = ref(true); // 首屏等待目录信息，不提前显示示例。
+const openingName = ref(""); // 加载提示中的目标文件。
+const failedOpen = ref(""); // 保留失败目标供用户重试。
+const workspaceError = ref(""); // 首屏错误保留具体原因。
+const projectDialog = shallowRef<{
+  kind: "save" | "switch"; // 选择名称或处理未保存修改。
+  reload: boolean; // 同名重载时明确说明读取磁盘和覆盖当前内容。
+  resolve: (value?: string) => void; // 用户关闭对话框后继续原操作。
+}>();
 const files = ref<string[]>([]);
 const message = ref("本地工程 · 修改后请保存");
 const error = ref(false);
 const busy = ref(false);
-const dirty = ref(false);
+const saveState = reactive(new ProjectSaveState()); // 保存基准与编辑修订各自维护。
+const dirty = computed(() => saveState.dirty);
 const diagnostics = ref<Diagnostic[]>([]);
 const codeSnapshot = shallowRef<CodeSnapshot>();
 const scaffoldSnapshot = shallowRef<{ source: string; revision: number; signature: string }>();
@@ -228,7 +246,7 @@ function checkpoint() {
   undoStack.value.push(captureSnapshot(project.value, treeID.value, selected.value));
   if (undoStack.value.length > 100) undoStack.value.shift();
   redoStack.value = [];
-  dirty.value = true;
+  saveState.changed();
 }
 // 只有语义变更使生成结果和在途请求过期；画布坐标不参与。
 function invalidateCode() {
@@ -273,7 +291,7 @@ function restore(snapshot: EditorSnapshot) {
     ? snapshot.treeID : project.value.trees[0]?.id ?? "";
   selected.value = nodeIndex.value.has(snapshot.selected) ? snapshot.selected : "";
   cancelTreeID();
-  dirty.value = true;
+  saveState.restore(snapshot.project);
   if (codeSnapshot.value?.signature === signature)
     codeSnapshot.value = { ...codeSnapshot.value, revision: semanticRevision.value };
   if (scaffoldSnapshot.value?.signature === signature)
@@ -295,9 +313,25 @@ function redo() {
     restore(state);
   }
 }
+// 文本框原生撤销不经过工程历史；仅在原生历史操作后核对保存基准。
+function nativeHistory(event: Event) {
+  if (!projectReady.value || catalogDialog.value || projectDialog.value) return;
+  if (event instanceof InputEvent && (event.inputType === "historyUndo" || event.inputType === "historyRedo")) {
+    saveState.restore(stringifyJSON(project.value));
+  }
+}
 // 提交文本属性变更，保留可撤销历史。
 function changeText(event: Event, fn: (text: string) => void) {
   mutate(() => fn((event.target as HTMLInputElement).value));
+}
+// 清空可选节点名恢复缺省字段，使原生撤销不会凭空留下 name: ""。
+function changeNodeName(event: Event) {
+  const name = (event.target as HTMLInputElement).value;
+  if (name === (node.value?.name ?? "")) return;
+  mutate(() => {
+    if (name) node.value!.name = name;
+    else delete node.value!.name;
+  });
 }
 // 展示名只进入保存和历史，不淘汰生成结果或在途请求。
 function changeTreeName(event: Event) {
@@ -484,16 +518,14 @@ function deleteTree() {
     selected.value = "";
   });
 }
-// 新建示例工程，并为原内容保留撤销快照。
-function resetProject() {
-  if (dirty.value && !confirm("当前修改尚未保存，创建新工程？")) return;
-  checkpoint();
-  project.value = emptyProject();
-  resetResults();
-  treeID.value = project.value.trees[0]!.id;
-  selected.value = "root";
-  fileName.value = "new-project.json";
-  notice("已创建工程，请保存为新的 JSON 文件");
+// 新建和示例各自开启独立编辑会话，避免撤销恢复另一文件的内容。
+function resetProject(example = false) {
+  return action(async () => {
+    if (!await allowReplacement()) return;
+    installProject(example ? emptyProject() : blankProject(), "", true);
+    suggestedName.value = example ? "example.json" : "new-project.json";
+    notice(example ? "已打开示例，尚未保存" : "已创建空白工程，尚未保存");
+  });
 }
 // 统一使用无损 JSON，防止黑板中的 64 位整数被截断。
 async function request<T>(path: string, body?: unknown): Promise<T> {
@@ -531,43 +563,130 @@ async function action(fn: () => Promise<void>) {
     busy.value = false;
   }
 }
-// 按需读取工作目录中的工程文件。
-async function refreshFiles() {
-  files.value = (await request<{ files: string[] }>("/api/projects")).files;
+// 浏览器禁用存储时降级为手动选择，不影响文件读写。
+function recentStorage(): RecentStorage | undefined {
+  try { return window.localStorage; } catch { return undefined; }
 }
-// 保存工程后刷新文件列表，清除未保存标记。
-function save() {
+// 按需读取一次顶层列表，同时更新服务端实际工作目录。
+async function refreshFiles() {
+  const result = await request<WorkspaceFiles>("/api/projects");
+  workspace.value = result.workspace;
+  files.value = result.files;
+  return result;
+}
+// 列表刷新不修改当前工程，也不清除撤销历史或未保存标记。
+function refreshProjectList() {
   return action(async () => {
-    const snapshot = stringifyJSON(project.value);
-    const name = fileName.value;
-    await request("/api/project", {
-      name,
-      project: parseJSON(snapshot),
-    });
-    if (snapshot === stringifyJSON(project.value) && name === fileName.value) dirty.value = false;
     await refreshFiles();
-    notice(`已保存 ${name}${dirty.value ? "，后续修改尚未保存" : ""}`);
+    notice("工程列表已刷新，当前编辑内容保持不变");
   });
 }
-// 加载工程并重置该文件的编辑历史。
-function open(name: string) {
-  return action(async () => {
-    if (dirty.value && !confirm("当前修改尚未保存，打开其他工程？")) return;
+// 显示原生模态框，将取消和提交结果交回原来的串行操作。
+function askProject(kind: "save" | "switch", reload = false): Promise<string | undefined> {
+  return new Promise((resolve) => { projectDialog.value = { kind, reload, resolve }; });
+}
+// 先卸载旧对话框再继续，确保保存并切换中的下一对话框重新获得焦点。
+async function closeProjectDialog(value?: string) {
+  const pending = projectDialog.value;
+  projectDialog.value = undefined;
+  await nextTick();
+  pending?.resolve(value);
+}
+// 写入成功才绑定文件身份；修订号使保存期间的新编辑保持未保存状态。
+async function saveCurrent(saveAs = false): Promise<boolean> {
+  if (!projectReady.value) return false;
+  const name = saveAs || !fileName.value ? await askProject("save") : fileName.value;
+  if (!name) return false;
+  const revision = editRevision;
+  const snapshot = stringifyJSON(project.value);
+  await request("/api/project", { name, project: parseJSON(snapshot) });
+  fileName.value = name;
+  suggestedName.value = name;
+  saveState.saved(snapshot, revision === editRevision ? snapshot : stringifyJSON(project.value));
+  rememberProject(workspace.value, name, recentStorage());
+  // 本次写入已知成功，只更新内存列表，避免保存后重复枚举目录。
+  if (!files.value.includes(name)) files.value = [...files.value, name].sort();
+  notice(`已保存 ${name}${dirty.value ? "，后续修改尚未保存，已停止切换" : ""}`);
+  return !dirty.value;
+}
+// 工具栏和快捷键共用同一串行保存入口。
+function save(saveAs = false) {
+  return action(async () => { await saveCurrent(saveAs); });
+}
+// 未保存时必须完成保存或明确放弃；保存失败、取消或新编辑都会停止替换。
+async function allowReplacement(reload = false): Promise<boolean> {
+  if (!projectReady.value || !dirty.value) return true;
+  const choice = await askProject("switch", reload);
+  return choice === "discard" || (choice === "save" && await saveCurrent());
+}
+// 工程内容、文件身份和历史在同一个同步步骤更新。
+function installProject(loaded: Project, name: string, unsaved = false) {
+  project.value = loaded;
+  fileName.value = name;
+  treeID.value = loaded.trees[0]!.id;
+  selected.value = "";
+  undoStack.value = [];
+  redoStack.value = [];
+  saveState.reset(unsaved ? undefined : stringifyJSON(loaded));
+  resetResults();
+  projectReady.value = true;
+  workspaceError.value = "";
+  failedOpen.value = "";
+  inspectorOpen.value = false;
+  void nextTick(() => { updateOutputBounds(); fitView({ padding: 0.18 }); });
+}
+// 内部加载步骤可供启动及手动切换复用，避免嵌套 action 被 busy 跳过。
+async function openCurrent(name: string, reload = false) {
+  openingName.value = name;
+  failedOpen.value = "";
+  workspaceError.value = "";
+  try {
     const loaded = await loadProject(() => request<Project>(`/api/project?name=${encodeURIComponent(name)}`));
     if (!loaded) return;
     validateProjectTypes(loaded);
-    project.value = loaded;
-    fileName.value = name;
-    treeID.value = loaded.trees[0]!.id;
-    selected.value = "";
-    undoStack.value = [];
-    redoStack.value = [];
-    dirty.value = false;
-    diagnostics.value = [];
-    resetResults();
-    notice(`已打开 ${name}`);
-    await readGenerated(true);
+    installProject(loaded, name);
+    suggestedName.value = name;
+    rememberProject(workspace.value, name, recentStorage());
+    notice(`${reload ? "已从磁盘重新加载" : "已打开"} ${name}`);
+  } catch (e) {
+    failedOpen.value = name;
+    workspaceError.value = `打开 ${name} 失败：${e instanceof Error ? e.message : String(e)}`;
+    throw e;
+  } finally {
+    openingName.value = "";
+  }
+  // 工程已成功打开，附属产物失败只报告产物错误，不误报文件切换失败。
+  try { await readGenerated(true); }
+  catch (e) { notice(`工程已打开，读取上次生成结果失败：${e instanceof Error ? e.message : String(e)}`, true); }
+}
+// 用户切换前先保护当前修改，失败时保持原文件身份与画布。
+function open(name: string, reload = false) {
+  return action(async () => {
+    if (await allowReplacement(reload)) await openCurrent(name, reload);
   });
+}
+// 首屏只自动读取单候选或本工作目录仍存在的最近工程。
+function initializeWorkspace() {
+  return action(async () => {
+    initializing.value = true;
+    workspaceError.value = "";
+    try {
+      const list = await refreshFiles();
+      const name = startupProject(list, recentStorage());
+      if (name) await openCurrent(name);
+      else notice(list.files.length ? "请选择要打开的工程" : "工作目录中尚无工程");
+    } catch (e) {
+      workspaceError.value ||= e instanceof Error ? e.message : String(e);
+      throw e;
+    } finally {
+      initializing.value = false;
+    }
+  });
+}
+// 复制服务端路径，供用户在文件管理器中定位工作目录。
+async function copyWorkspace() {
+  try { await navigator.clipboard.writeText(workspace.value); notice("已复制工作目录"); }
+  catch { notice("复制失败，可选中工作目录文字手动复制", true); }
 }
 // 替换工程之前检查编辑代次，用户在读取期间的新修改优先保留。
 async function loadProject(load: () => Promise<Project>) {
@@ -588,12 +707,12 @@ function showOutput(tab: string) {
     void nextTick(() => fitView({ padding: 0.18 }));
   }
 }
-// 文件列表作为打开命令使用，复位选择后允许再次重开同名工程。
+// 选择器始终反映实际文件，取消或失败不会停留在尚未打开的目标。
 function selectProject(event: Event) {
   const element = event.target as HTMLSelectElement;
   const name = element.value;
-  element.value = "";
-  if (name) void open(name);
+  element.value = fileName.value;
+  if (name && name !== fileName.value) void open(name);
 }
 // 调用 Go 共用校验器，并展示可定位到节点的诊断。
 function validate() {
@@ -692,6 +811,7 @@ async function importProject(event: Event) {
     file = input.files?.[0];
   if (!file) return;
   await action(async () => {
+    if (!await allowReplacement()) return;
     const loaded = await loadProject(async () => {
       const parsed: unknown = parseJSON(await file.text());
       validateProjectTypes(parsed);
@@ -699,12 +819,8 @@ async function importProject(event: Event) {
     });
     if (!loaded) return;
     validateProjectTypes(loaded);
-    checkpoint();
-    project.value = loaded;
-    resetResults();
-    treeID.value = loaded.trees[0]!.id;
-    selected.value = "";
-    fileName.value = file.name;
+    installProject(loaded, "", true);
+    suggestedName.value = file.name;
     notice(`已导入 ${file.name}，尚未保存`);
   });
   input.value = "";
@@ -794,7 +910,7 @@ function focusDiagnostic(d: Diagnostic) {
 }
 // 处理保存、撤销和删除快捷键，不干扰文本原生撤销。
 function keydown(e: KeyboardEvent) {
-  if (catalogDialog.value) return;
+  if (catalogDialog.value || projectDialog.value || !projectReady.value) return;
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
     e.preventDefault();
     (e.target as HTMLElement)?.blur();
@@ -831,7 +947,7 @@ onMounted(() => {
   if (workbench.value) outputResizeObserver.observe(workbench.value);
   if (outputPanel.value) outputResizeObserver.observe(outputPanel.value);
   updateOutputBounds();
-  void action(refreshFiles);
+  void initializeWorkspace();
   window.addEventListener("keydown", keydown);
   window.addEventListener("beforeunload", beforeUnload);
 });
@@ -873,7 +989,10 @@ onMounted(() => {
       additionalProperties: false,
     },
     annotations: { readOnlyHint: true },
-    execute: () => clone(project.value),
+    execute: () => {
+      if (!projectReady.value) throw new Error("请先打开或新建工程");
+      return clone(project.value);
+    },
   });
   register({
     name: "validate_behavior_project",
@@ -885,6 +1004,7 @@ onMounted(() => {
     },
     annotations: { readOnlyHint: true },
     execute: async () => {
+      if (!projectReady.value) throw new Error("请先打开或新建工程");
       await validate();
       return { diagnostics: clone(diagnostics.value) };
     },
@@ -897,6 +1017,7 @@ onUnmounted(() => toolLifecycle.abort());
   <div
     ref="workbench"
     class="workbench"
+    @input="nativeHistory"
     :class="{ 'resizing-output': resizingOutput }"
     :style="outputHeight === undefined ? {} : { '--output-height': `${outputHeight}px` }"
   >
@@ -905,46 +1026,65 @@ onUnmounted(() => toolLifecycle.abort());
         <span class="brandmark">⑂</span><strong>行为树工作台</strong
         ><span class="local-badge">LOCAL</span>
       </div>
-      <div class="project-title">
-        {{ project.name
-        }}<span v-if="dirty" class="unsaved" title="尚未保存">●</span>
+      <div class="workspace-context">
+        <div class="workspace-location">
+          <span>工作目录</span><span class="workspace-path mono" :title="workspace">{{ workspace || '正在读取…' }}</span>
+          <button class="text-button" :disabled="!workspace" @click="copyWorkspace">复制路径</button>
+        </div>
+        <div class="project-identity">
+          <label for="current-project">当前工程</label>
+          <select id="current-project" aria-label="当前工程" :value="fileName" :disabled="busy || !workspace" @change="selectProject">
+            <!-- 无文件时只显示占位文字，展开列表仅列出实际工程文件。 -->
+            <option v-if="!fileName" value="" disabled hidden>{{ projectReady ? '草稿（尚未保存）' : '请选择工程…' }}</option>
+            <option v-if="fileName && !files.includes(fileName)" :value="fileName">{{ fileName }}</option>
+            <option v-for="file in files" :key="file" :value="file">{{ file }}</option>
+          </select>
+          <button class="refresh-projects" title="只更新可打开的文件列表，保留当前编辑内容" :disabled="busy || !workspace" @click="refreshProjectList">刷新列表</button>
+          <button class="refresh-projects" title="从磁盘重新加载当前文件" :disabled="busy || !fileName" @click="open(fileName, true)">重载文件</button>
+          <span v-if="projectReady" class="save-state" :class="{ unsaved: dirty }">{{ dirty ? '● 未保存' : '已保存' }}</span>
+          <span v-if="projectReady" class="project-caption" :title="project.name">{{ project.name }}</span>
+        </div>
       </div>
       <div class="toolbar">
-        <button @click="resetProject">新建</button
-        ><button @click="importInput?.click()">导入</button>
-        <button @click="download(fileName, stringifyJSON(project, 2))">
+        <button :disabled="busy || !workspace" @click="resetProject()">新建</button
+        ><button :disabled="busy || !workspace" @click="importInput?.click()">导入</button>
+        <button :disabled="!projectReady" @click="download(fileName || suggestedName, stringifyJSON(project, 2))">
           导出 JSON
         </button>
-        <button :disabled="busy" @click="save">保存 <kbd>Ctrl S</kbd></button>
-        <button :disabled="busy" @click="validate">校验</button>
-        <button :disabled="busy" @click="generate(false)">预览 Go</button>
-        <button class="primary" :disabled="busy" @click="generate(true)">
+        <button :disabled="busy || !projectReady" @click="save()">保存 <kbd>Ctrl S</kbd></button>
+        <button :disabled="busy || !projectReady" @click="save(true)">另存为</button>
+        <button :disabled="busy || !projectReady" @click="validate">校验</button>
+        <button :disabled="busy || !projectReady" @click="generate(false)">预览 Go</button>
+        <button class="primary" :disabled="busy || !projectReady" @click="generate(true)">
           生成到目录 <span>↗</span>
         </button>
       </div>
     </header>
 
-    <aside class="library">
+    <section v-if="!projectReady" class="workspace-start" aria-live="polite">
+      <div class="workspace-start-card">
+        <h1>{{ busy ? (openingName ? `正在打开 ${openingName}` : '正在读取工作目录') : files.length ? '打开工作目录中的工程' : '开始创建行为树' }}</h1>
+        <p class="muted">{{ files.length ? '选择一个工程继续编辑。' : '新建空白工程，或打开示例了解编辑方式。' }}</p>
+        <p v-if="workspaceError" class="identity-error" role="alert">{{ workspaceError }}</p>
+        <div v-if="!initializing" class="workspace-project-list">
+          <button v-for="file in files" :key="file" :disabled="busy" @click="open(file)"><span class="mono">{{ file }}</span><span>打开 →</span></button>
+        </div>
+        <div class="workspace-start-actions">
+          <button v-if="failedOpen" :disabled="busy" @click="open(failedOpen)">重试打开</button>
+          <button :disabled="busy" @click="initializeWorkspace">刷新目录</button>
+          <button :disabled="busy || !workspace" @click="resetProject(true)">打开示例</button>
+          <button class="primary" :disabled="busy || !workspace" @click="resetProject()">新建工程</button>
+        </div>
+      </div>
+    </section>
+
+    <aside v-show="projectReady" class="library">
       <div class="panel-heading">
-        工程
+        行为树
         <button class="icon-button" title="新增行为树" @click="addTree">
           ＋
         </button>
       </div>
-      <label class="field-label"
-        >文件名<input
-          v-model="fileName"
-          aria-label="工程文件名"
-          placeholder="project.json"
-      /></label>
-      <select
-        aria-label="打开已有工程"
-        value=""
-        @change="selectProject"
-      >
-        <option value="" disabled>打开已保存的工程…</option>
-        <option v-for="file in files" :key="file">{{ file }}</option>
-      </select>
       <nav class="tree-list">
         <button
           v-for="item in project.trees"
@@ -1085,7 +1225,8 @@ onUnmounted(() => toolLifecycle.abort());
       </template>
     </aside>
 
-    <main class="canvas-area">
+    <main v-show="projectReady" class="canvas-area">
+      <div v-if="workspaceError" class="project-open-error" role="alert">{{ workspaceError }} <button :disabled="busy" @click="open(failedOpen)">重试</button><button @click="workspaceError = ''">关闭</button></div>
       <div class="canvas-toolbar">
         <div>
           <strong>{{ tree?.name }}</strong
@@ -1174,7 +1315,7 @@ onUnmounted(() => toolLifecycle.abort());
       <div class="canvas-hint">从节点库拖入画布添加 · 拖动节点端点连接 · 子节点顺序在右侧调整</div>
     </main>
 
-    <aside :class="['inspector', { opened: inspectorOpen }]">
+    <aside v-show="projectReady" :class="['inspector', { opened: inspectorOpen }]">
       <button
         class="narrow-only text-button inspector-close"
         @click="inspectorOpen = false"
@@ -1196,7 +1337,7 @@ onUnmounted(() => toolLifecycle.abort());
         <label class="field-label"
           >名称<input
             :value="node.name"
-            @input="changeText($event, (v) => (node!.name = v))"
+            @input="changeNodeName"
         /></label>
         <label class="field-label"
           >节点 ID（自动生成）<input :value="node.id" readonly class="mono" :title="node.id"
@@ -1396,7 +1537,7 @@ onUnmounted(() => toolLifecycle.abort());
       </template>
     </aside>
 
-    <section id="output-panel" ref="outputPanel" class="output-panel">
+    <section v-show="projectReady" id="output-panel" ref="outputPanel" class="output-panel">
       <div
         class="output-resizer"
         role="separator"
@@ -1479,7 +1620,7 @@ onUnmounted(() => toolLifecycle.abort());
     </section>
     <footer :class="['statusbar', { error }]">
       <span><i :class="{ busy }"></i>{{ message }}</span
-      ><span
+      ><span v-if="projectReady"
         >Schema {{ project.schemaVersion }}<b>·</b
         >{{ project.trees.length }} 棵树<b>·</b
         >{{ project.blackboard.length }} 个字段</span
@@ -1494,5 +1635,6 @@ onUnmounted(() => toolLifecycle.abort());
     />
     <CatalogManager v-if="catalogDialog" :catalog="project.catalog" :initial-mode="catalogDialog.mode" :initial-kind="catalogDialog.kind"
       @apply="applyCatalog" @close="catalogDialog = undefined" />
+    <ProjectDialog v-if="projectDialog" :kind="projectDialog.kind" :reload="projectDialog.reload" :workspace="workspace" :suggestion="fileName || suggestedName" :files="files" @close="closeProjectDialog" />
   </div>
 </template>

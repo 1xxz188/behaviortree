@@ -73,21 +73,23 @@ pre {
   color: #8196a6;
 }
 .workbench {
+  --topbar-height: 116px;
   --canvas-min-height: 260px;
   --default-output-height: 170px;
   height: 100vh;
   min-height: 620px;
   display: grid;
   grid-template-columns: 235px minmax(340px, 1fr) 292px;
-  grid-template-rows: 62px minmax(var(--canvas-min-height), 1fr) var(--output-height, var(--default-output-height)) 30px;
+  grid-template-rows: var(--topbar-height) minmax(var(--canvas-min-height), 1fr) var(--output-height, var(--default-output-height)) 30px;
   overflow: hidden;
 }
 .topbar {
   grid-column: 1/-1;
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
-  gap: 28px;
-  padding: 0 20px;
+  gap: 6px 24px;
+  padding: 10px 20px;
   border-bottom: 1px solid #2b3c49;
   background: #18242e;
 }
@@ -119,12 +121,37 @@ pre {
   border-radius: 3px;
   padding: 3px 5px;
 }
-.project-title {
-  color: #9cb0bf;
-  flex: 1;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.workspace-context { min-width: 0; }
+.workspace-location, .project-identity { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.workspace-location { font-size: 12px; color: #9cb0bf; margin-bottom: 6px; }
+.workspace-location > span:first-child, .project-identity label, .save-state { flex-shrink: 0; white-space: nowrap; }
+.workspace-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; user-select: text; }
+.workspace-location button { flex-shrink: 0; font-size: 12px; padding: 0; margin-left: auto; }
+.project-identity select { width: 260px; padding: 5px 9px; }
+.refresh-projects { flex-shrink: 0; padding: 3px 7px; }
+.project-caption { color: #8196a6; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.save-state { color: #7ee4b1; font-size: 12px; }
+.save-state.unsaved { font-size: 12px; margin-left: 0; }
+.workspace-start { grid-column: 1/-1; grid-row: 2/4; display: grid; place-items: center; padding: 28px; overflow: auto; }
+.workspace-start-card { width: min(660px, 100%); }
+.workspace-start h1 { font-size: 24px; margin: 0 0 12px; }
+.workspace-project-list { display: grid; gap: 8px; max-height: 280px; overflow-y: auto; margin: 24px 0; }
+.workspace-project-list button { display: flex; justify-content: space-between; gap: 16px; text-align: left; padding: 15px; }
+.workspace-project-list button span:first-child { overflow-wrap: anywhere; }
+.workspace-project-list button span:last-child { white-space: nowrap; color: #7ee4b1; }
+.workspace-start-actions, .dialog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; margin-top: 24px; }
+.project-dialog { color: #dce6ee; background: #18242e; border: 1px solid #49606c; border-radius: 10px; padding: 24px; width: min(540px, calc(100vw - 40px)); box-shadow: 0 24px 80px #0008; }
+.project-dialog::backdrop { background: #050c14aa; }
+.project-dialog h2 { margin: 0 0 16px; font-size: 20px; }
+.dialog-path { overflow-wrap: anywhere; color: #a5efd0; font-size: 13px; }
+.overwrite-choice { display: flex; align-items: center; gap: 8px; overflow-wrap: anywhere; }
+.overwrite-choice input { width: auto; }
+.project-open-error { position: absolute; z-index: 10; top: 50px; left: 12px; right: 12px; background: #402b28; color: #ffccbc; border: 1px solid #99614d; border-radius: 5px; padding: 12px; }
+.project-open-error button { margin-left: 8px; }
+@media (max-width: 860px) {
+  .workspace-location, .project-identity { gap: 6px; }
+  .project-caption, .brand .local-badge { display: none; }
+  .project-identity select { flex: 1; width: 160px; }
 }
 .unsaved {
   font-size: 9px;
@@ -132,6 +159,8 @@ pre {
   margin-left: 8px;
 }
 .toolbar {
+  grid-column: 1/-1;
+  justify-content: flex-end;
   display: flex;
   gap: 7px;
   align-items: center;
@@ -715,7 +744,7 @@ input::placeholder {
     --canvas-min-height: 280px;
     --default-output-height: 180px;
     grid-template-columns: 175px minmax(300px, 1fr);
-    grid-template-rows: 94px minmax(var(--canvas-min-height), 1fr) var(--output-height, var(--default-output-height)) 30px;
+    grid-template-rows: var(--topbar-height) minmax(var(--canvas-min-height), 1fr) var(--output-height, var(--default-output-height)) 30px;
     min-width: 650px;
   }
   .topbar {
@@ -792,9 +821,10 @@ input::placeholder {
   .inspector.opened {
     display: block;
     position: absolute;
+    grid-area: auto;
     z-index: 10;
     right: 0;
-    top: 94px;
+    top: var(--topbar-height);
     bottom: 30px;
     width: 292px;
     box-shadow: -8px 0 24px #0006;
