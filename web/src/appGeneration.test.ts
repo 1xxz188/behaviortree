@@ -41,6 +41,7 @@ function editor(options: { dirty?: boolean; name?: string; chosenName?: string; 
     projectReady: { value: true },
     fileName: { value: name }, suggestedName: { value: "project.json" },
     workspace: { value: "E:/workspace" }, files: { value: name ? [name] : [] },
+    allFiles: { value: name ? [name] : [] },
     dirty: { get value() { return saveState.dirty; } },
     busy: { value: false }, message: { value: "" }, error: { value: false },
     diagnostics: { value: [] }, semanticRevision: { value: 0 }, editRevision: 0,

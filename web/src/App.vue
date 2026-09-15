@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, onUnmounted, reactive, ref, shallowRef, 
 import CatalogManager from "./CatalogManager.vue";
 import SourceViewer from "./SourceViewer.vue";
 import ProjectDialog from "./ProjectDialog.vue";
+import ImportErrorDialog from "./ImportErrorDialog.vue";
 import { startupProject, rememberProject, selectNativeDirectory } from "./workspace";
 import type { WorkspaceFiles, RecentStorage, ProjectDialogResult } from "./workspace";
 import { ProjectSaveState } from "./saveState";
@@ -89,6 +90,8 @@ const projectDialog = shallowRef<{
   resolve: (value?: ProjectDialogResult) => void; // 用户关闭对话框后继续原操作。
 }>();
 const files = ref<string[]>([]);
+const allFiles = ref<string[]>([]); // 保存覆盖确认使用完整候选，不受工程有效性筛选影响。
+const importFailure = shallowRef<{ name: string; message: string }>(); // 导入错误的文件名及具体原因，由模态框展示。
 const message = ref("本地工程 · 修改后请保存");
 const error = ref(false);
 const busy = ref(false);
@@ -339,7 +342,7 @@ function redo() {
 }
 // 文本框原生撤销不经过工程历史；仅在原生历史操作后核对保存基准。
 function nativeHistory(event: Event) {
-  if (!projectReady.value || catalogDialog.value || projectDialog.value) return;
+  if (!projectReady.value || catalogDialog.value || projectDialog.value || importFailure.value) return;
   if (event instanceof InputEvent && (event.inputType === "historyUndo" || event.inputType === "historyRedo")) {
     saveState.restore(stringifyJSON(project.value));
   }
@@ -620,8 +623,8 @@ async function request<T>(path: string, body?: unknown): Promise<T> {
   }
   return data as T;
 }
-// 串行化文件请求并将服务端错误显示到状态栏。
-async function action(fn: () => Promise<void>) {
+// 串行化文件请求；调用方可指定错误弹窗，其余操作沿用状态栏。
+async function action(fn: () => Promise<void>, onError?: (message: string) => void) {
   if (busy.value) return;
   busy.value = true;
   try {
@@ -631,7 +634,9 @@ async function action(fn: () => Promise<void>) {
       diagnostics.value = e.diagnostics;
       showOutput("diagnostics");
     }
-    notice(e instanceof Error ? e.message : String(e), true);
+    const detail = e instanceof Error ? e.message : String(e);
+    if (onError) onError(detail);
+    else notice(detail, true);
   } finally {
     busy.value = false;
   }
@@ -648,6 +653,7 @@ async function refreshFiles() {
   }
   workspace.value = result.workspace;
   files.value = result.files;
+  allFiles.value = result.allFiles ?? result.files;
   return result;
 }
 // 列表刷新不修改当前工程，也不清除撤销历史或未保存标记。
@@ -680,10 +686,11 @@ async function saveCurrent(saveAs = false): Promise<boolean> {
   const name = target.name;
   const revision = editRevision;
   const snapshot = stringifyJSON(project.value);
-  const result = await request<{ workspace: string; files?: string[] }>("/api/project", { ...target, project: parseJSON(snapshot) });
+  const result = await request<{ workspace: string; files?: string[]; allFiles?: string[] }>("/api/project", { ...target, project: parseJSON(snapshot) });
   const moved = workspace.value !== result.workspace;
   workspace.value = result.workspace;
   if (result.files) files.value = result.files;
+  if (result.allFiles || result.files) allFiles.value = result.allFiles ?? result.files!;
   if (moved) resetResults();
   fileName.value = name;
   suggestedName.value = name;
@@ -691,6 +698,7 @@ async function saveCurrent(saveAs = false): Promise<boolean> {
   rememberProject(workspace.value, name, recentStorage());
   // 本次写入已知成功，只更新内存列表，避免保存后重复枚举目录。
   if (!files.value.includes(name)) files.value = [...files.value, name].sort();
+  if (!allFiles.value.includes(name)) allFiles.value = [...allFiles.value, name].sort();
   notice(`已保存 ${name}${dirty.value ? "，后续修改尚未保存" : ""}`);
   return !dirty.value;
 }
@@ -781,6 +789,7 @@ function chooseWorkspace() {
       const list = await request<WorkspaceFiles>("/api/workspace", { directory: target.directory });
       workspace.value = list.workspace;
       files.value = list.files;
+      allFiles.value = list.allFiles ?? list.files;
       fileName.value = "";
       suggestedName.value = "project.json";
       projectReady.value = false;
@@ -949,7 +958,7 @@ async function importProject(event: Event) {
     installProject(loaded, "", true);
     suggestedName.value = file.name;
     notice(`已导入 ${file.name}，尚未保存`);
-  });
+  }, message => { importFailure.value = { name: file.name, message }; });
   input.value = "";
 }
 // 从节点属性或节点库打开同一目录管理入口。
@@ -1038,7 +1047,7 @@ function focusDiagnostic(d: Diagnostic) {
 // 处理保存、撤销和删除快捷键，不干扰文本原生撤销。
 function keydown(e: KeyboardEvent) {
   if (workspaceChanging.value) return;
-  if (catalogDialog.value || projectDialog.value || !projectReady.value) return;
+  if (catalogDialog.value || projectDialog.value || importFailure.value || !projectReady.value) return;
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
     e.preventDefault();
     (e.target as HTMLElement)?.blur();
@@ -1172,7 +1181,7 @@ onUnmounted(() => toolLifecycle.abort());
           <select id="current-project" aria-label="当前工程" :value="fileName" :disabled="busy || !workspace" @change="selectProject">
             <!-- 无文件时只显示占位文字，展开列表仅列出实际工程文件。 -->
             <option v-if="!fileName" value="" disabled hidden>{{ projectReady ? '草稿（尚未保存）' : '请选择工程…' }}</option>
-            <option v-if="fileName && !files.includes(fileName)" :value="fileName">{{ fileName }}</option>
+            <option v-if="fileName && !files.includes(fileName)" :value="fileName" disabled hidden>{{ fileName }}（磁盘文件不可用）</option>
             <option v-for="file in files" :key="file" :value="file">{{ file }}</option>
           </select>
           <button class="refresh-projects" title="只更新可打开的文件列表，保留当前编辑内容" :disabled="busy || !workspace" @click="refreshProjectList">刷新列表</button>
@@ -1792,6 +1801,7 @@ onUnmounted(() => toolLifecycle.abort());
     />
     <CatalogManager v-if="catalogDialog" :catalog="project.catalog" :initial-mode="catalogDialog.mode" :initial-kind="catalogDialog.kind"
       @apply="applyCatalog" @close="catalogDialog = undefined" />
-    <ProjectDialog v-if="projectDialog" :kind="projectDialog.kind" :reload="projectDialog.reload" :workspace="workspace" :suggestion="fileName || suggestedName" :files="files" @close="closeProjectDialog" />
+    <ProjectDialog v-if="projectDialog" :kind="projectDialog.kind" :reload="projectDialog.reload" :workspace="workspace" :suggestion="fileName || suggestedName" :files="allFiles" @close="closeProjectDialog" />
+    <ImportErrorDialog v-if="importFailure" :name="importFailure.name" :message="importFailure.message" @close="importFailure = undefined" />
   </div>
 </template>

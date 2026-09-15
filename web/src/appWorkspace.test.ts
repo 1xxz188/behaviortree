@@ -67,6 +67,7 @@ function session(options: SessionOptions = {}) {
     startupProject, rememberProject,
     projectReady: { value: true }, fileName: { value: name }, suggestedName: { value: "original.json" },
     workspace: { value: serverWorkspace }, files: { value: name ? [name] : [] },
+    allFiles: { value: name ? [name] : [] },
     dirty: { get value() { return saveState.dirty; } },
     busy: { value: false }, workspaceChanging: { value: false }, message: { value: "" }, error: { value: false },
     diagnostics: { value: [{ message: "旧诊断" }] }, semanticRevision: { value: 0 }, editRevision: 0,
@@ -77,6 +78,7 @@ function session(options: SessionOptions = {}) {
     undoStack: { value: ["原撤销记录"] }, redoStack: { value: ["原重做记录"] },
     workspaceError: { value: "" }, failedOpen: { value: "" }, openingName: { value: "" }, inspectorOpen: { value: true },
     catalogDialog: { value: undefined }, projectDialog: { value: undefined },
+    importFailure: { value: undefined },
     window: { localStorage: { getItem: (key: string) => records.get(key) ?? null, setItem: (key: string, value: string) => records.set(key, value) } },
     askProject: async (kind: string) => { dialogs.push(kind); return choices.shift(); },
     showOutput: () => {}, cancelTreeID: () => {}, cancelNodeID: () => {},
@@ -96,7 +98,7 @@ function session(options: SessionOptions = {}) {
         else {
           const moved = body.directory && body.directory !== serverWorkspace;
           serverWorkspace = body.directory ?? serverWorkspace;
-          data = { workspace: serverWorkspace, ...(moved ? { files: [body.name, "existing.json"] } : {}) };
+          data = { workspace: serverWorkspace, ...(moved ? { files: [body.name, "existing.json"], allFiles: [body.name, "existing.json", "invalid.json"] } : {}) };
         }
       } else if (path.startsWith("/api/project?")) data = targetProject;
       else throw new Error(`未模拟的请求 ${path}`);
@@ -121,6 +123,8 @@ test("跨目录另存为更新身份与候选列表，清除旧源码并继续�
   assert.equal(s.context.workspace.value, "E:/目标 目录");
   assert.equal(s.context.fileName.value, "copy.json");
   assert.deepEqual(Array.from(s.context.files.value), ["copy.json", "existing.json"]);
+  // 无效 JSON 不出现在工程选择中，但仍参与另存为的同名覆盖确认。
+  assert.deepEqual(Array.from(s.context.allFiles.value), ["copy.json", "existing.json", "invalid.json"]);
   assert.equal(s.context.codeSnapshot.value, undefined);
   assert.equal(s.context.dirty.value, false);
   assert.equal(s.records.get(recentProjectKey("E:/目标 目录")), "copy.json");

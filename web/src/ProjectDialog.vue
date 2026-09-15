@@ -19,7 +19,7 @@ const overwrite = ref(false); // 覆盖已有文件需要明确勾选。
 const selecting = ref(false); // 系统窗口打开期间阻止重复选择或提交。
 const directoryError = ref(""); // 原生窗口或目录读取失败的具体原因。
 const destination = ref<WorkspaceFiles>({ workspace: props.workspace, files: props.files }); // 取消选择保留上一次成功的保存位置。
-const existing = computed(() => new Map(destination.value?.files.map(file => [projectFileKey(destination.value!.workspace, file), file]) ?? [])); // 目标目录变化时建立一次索引。
+const existing = computed(() => new Map((destination.value.allFiles ?? destination.value.files).map(file => [projectFileKey(destination.value.workspace, file), file]))); // 目标目录变化时建立一次索引，无效工程也须确认覆盖。
 const collision = computed(() => existing.value.get(projectFileKey(destination.value?.workspace ?? "", name.value.trim())));
 const valid = computed(() => validProjectFileName(name.value.trim()));
 // 保存名称验证通过后交给调用方执行 IO。

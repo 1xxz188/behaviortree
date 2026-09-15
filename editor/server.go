@@ -205,7 +205,7 @@ func normalizeDraft(p *model.Project) error {
 	return nil
 }
 
-// listProjects 返回工作目录绝对路径和已有工程文件名，不递归遍历整个工作目录。
+// listProjects 按需枚举顶层文件，仅将可读取的工程列入选择列表。
 func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
 	f, err := s.root.Open(".")
 	if err != nil {
@@ -219,13 +219,18 @@ func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	files := []string{}
+	allFiles := []string{}
 	for _, entry := range entries {
-		if !entry.IsDir() && projectName(entry.Name()) && entry.Type()&fs.ModeSymlink == 0 {
-			files = append(files, entry.Name())
+		if entry.Type().IsRegular() && projectName(entry.Name()) {
+			allFiles = append(allFiles, entry.Name())
+			if readableProject(s.root, entry.Name()) {
+				files = append(files, entry.Name())
+			}
 		}
 	}
 	sort.Strings(files)
-	reply(w, 200, map[string]any{"workspace": s.path, "files": files})
+	sort.Strings(allFiles)
+	reply(w, 200, map[string]any{"workspace": s.path, "files": files, "allFiles": allFiles})
 }
 
 // readProject 从受限目录读取和解析工程。
@@ -322,6 +327,7 @@ func (s *Server) saveProject(w http.ResponseWriter, r *http.Request) {
 	response := map[string]any{"name": req.Name, "workspace": s.path}
 	if listing != nil {
 		response["files"] = listing.Files
+		response["allFiles"] = listing.AllFiles
 	}
 	reply(w, 200, response)
 }

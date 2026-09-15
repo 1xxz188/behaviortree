@@ -3,10 +3,13 @@ package editor
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
+
+	"github.com/1xxz188/behaviortree/model"
 )
 
 // directoryEntry 表示可进入的直接子目录，不递归扫描文件树。
@@ -20,7 +23,27 @@ type directoryListing struct {
 	Workspace   string           `json:"workspace"`   // 已验证可读取的绝对目录。
 	Parent      string           `json:"parent"`      // 上级目录；文件系统根目录为空。
 	Directories []directoryEntry `json:"directories"` // 仅包含直接子目录。
-	Files       []string         `json:"files"`       // 当前目录内的 JSON 候选。
+	Files       []string         `json:"files"`       // 当前目录内可读取的工程 JSON。
+	AllFiles    []string         `json:"allFiles"`    // 全部候选文件名，供保存时确认同名覆盖。
+}
+
+// readableProject 按打开工程的规则检查单个候选；有界读取一次，不修改文件或启动后台扫描。
+func readableProject(root *os.Root, name string) bool {
+	f, err := root.Open(name)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() > MaxProjectBytes {
+		return false
+	}
+	data, err := io.ReadAll(io.LimitReader(f, MaxProjectBytes+1))
+	if err != nil || len(data) > MaxProjectBytes {
+		return false
+	}
+	p, err := model.Decode(data)
+	return err == nil && normalizeDraft(&p) == nil
 }
 
 // openDirectory 打开已有目录并一次枚举直接子项；失败时不创建目录或改变工作区。
@@ -39,15 +62,18 @@ func openDirectory(path string) (*os.Root, directoryListing, error) {
 		_ = root.Close()
 		return nil, listing, err
 	}
-	listing = directoryListing{Workspace: path, Directories: []directoryEntry{}, Files: []string{}}
+	listing = directoryListing{Workspace: path, Directories: []directoryEntry{}, Files: []string{}, AllFiles: []string{}}
 	if parent := filepath.Dir(path); parent != path {
 		listing.Parent = parent
 	}
 	for _, entry := range entries {
 		if entry.IsDir() {
 			listing.Directories = append(listing.Directories, directoryEntry{Name: entry.Name(), Path: filepath.Join(path, entry.Name())})
-		} else if entry.Type()&fs.ModeSymlink == 0 && projectName(entry.Name()) {
-			listing.Files = append(listing.Files, entry.Name())
+		} else if entry.Type().IsRegular() && projectName(entry.Name()) {
+			listing.AllFiles = append(listing.AllFiles, entry.Name())
+			if readableProject(root, entry.Name()) {
+				listing.Files = append(listing.Files, entry.Name())
+			}
 		}
 	}
 	return root, listing, nil

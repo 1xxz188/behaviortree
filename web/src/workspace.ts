@@ -1,7 +1,8 @@
-// 工作目录返回绝对路径及顶层候选文件；读取时才验证工程内容。
+// 工作目录返回绝对路径及可读取的工程，另保留完整候选供覆盖确认。
 export interface WorkspaceFiles {
   workspace: string; // 服务端实际使用的绝对目录。
-  files: string[]; // 可按名称打开的 JSON 候选文件。
+  files: string[]; // 通过工程读取校验的 JSON 文件。
+  allFiles?: string[]; // 包括无效工程在内的同名覆盖候选。
 }
 
 // 调用本地服务打开系统目录窗口；选择阶段只返回目录信息，不切换或写文件。
