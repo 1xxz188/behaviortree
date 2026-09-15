@@ -79,7 +79,50 @@ test("创建复制和删除保持已有代码名稳定，提交校验不扫描�
   assert.equal(copied.codeName, "WaitMove");
 });
 
-// 保存前补全后的工程和旧数据具有相同语义，修改代码名会淘汰在途请求。
+// 从业务目录创建时只分配一次名称；重复动作与条件共享占用表，重绑和重载保留已保存名称。
+test("业务节点采用函数名并独立保存，重名和复制使用数字后缀", () => {
+  const tree = makeTree([]);
+  const index = new CodeNameIndex(tree);
+  const first: BTNode = { id: "random?1", type: "action", binding: "move_to", codeName: index.allocateBusiness("MoveTo") };
+  index.add(first);
+  tree.nodes.push(first);
+  const second: BTNode = { id: "random?2", type: "action", binding: "move_to", codeName: index.allocateBusiness("MoveTo") };
+  index.add(second);
+  tree.nodes.push(second);
+  assert.deepEqual(tree.nodes.map((node) => node.codeName), ["MoveTo", "MoveTo1"]);
+  assert.equal(index.allocateCopy(second.codeName!), "MoveTo2");
+  const condition: BTNode = { id: "random?3", type: "condition", binding: "at_target", codeName: index.allocateBusiness("AtTarget") };
+  index.add(condition);
+  tree.nodes.push(condition);
+  assert.equal(condition.codeName, "AtTarget");
+  first.binding = "other_action";
+  first.name = "另一个动作";
+  new CodeNameIndex(tree);
+  assert.equal(first.codeName, "MoveTo");
+  index.rename(first, "MoveToTarget");
+  assert.equal(first.codeName, "MoveToTarget");
+  const restored = makeTree(JSON.parse(JSON.stringify(tree.nodes)));
+  new CodeNameIndex(restored);
+  assert.deepEqual(restored.nodes.map((node) => node.codeName), ["MoveToTarget", "MoveTo1", "AtTarget"]);
+});
+
+// 长业务名碰撞复用现有后缀游标；无法用作 ASCII 代码名的函数仍可通过节点类型得到合法名称。
+test("业务默认名满足长度限制，不适用的函数名回退类型规则", () => {
+  const index = new CodeNameIndex(makeTree([]));
+  const longName = "Move".repeat(15);
+  const first = index.allocateBusiness(longName)!;
+  assert.equal(first, longName.slice(0, 40));
+  index.add({ id: "a", type: "action", codeName: first });
+  assert.equal(index.allocateBusiness(longName + "Other"), longName.slice(0, 39) + "1");
+  for (const goName of ["", "移动", "_MoveTo", "Move-To", "func"]) {
+    assert.equal(index.allocateBusiness(goName), undefined);
+  }
+  const fallback: BTNode = { id: "random?", type: "action", codeName: index.allocateBusiness("移动") };
+  index.add(fallback);
+  assert.equal(fallback.codeName, "Action1");
+});
+
+// 保存前补全后的工程和缺省代码名数据具有相同语义，修改代码名会淘汰在途请求。
 test("补全代码名签名稳定且显式改名使源码失效", () => {
   const project = blankProject();
   delete project.trees[0]!.nodes[0]!.codeName;

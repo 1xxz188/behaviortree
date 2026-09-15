@@ -199,7 +199,7 @@ onUnmounted(() => previousFocus?.focus());
               <label>定义 ID<input v-model="draft.id" :readonly="Boolean(editingID)" :disabled="busy" placeholder="move_to" required /><small>绑定使用的稳定 ID{{ editingID ? '，编辑时保持固定' : '，请使用未占用的标识' }}。</small></label>
               <label>显示名称<input v-model="draft.name" :disabled="busy" placeholder="移动到目标" required /></label>
               <label>种类<select v-model="draft.kind" :disabled="busy"><option value="action">动作</option><option value="condition">条件</option></select></label>
-              <label>Go 函数名<input v-model="draft.goName" :disabled="busy" placeholder="MoveTo" required /><small>同包中的手写函数名，目录内必须唯一。</small></label>
+              <label>业务实现函数<input v-model="draft.goName" :disabled="busy" placeholder="MoveTo" required /><small>同包中的手写 Go 函数，目录内名称必须唯一，可被多个节点复用。节点代码名独立保存。</small></label>
             </div>
             <div class="catalog-section-title"><h3>参数声明</h3><button type="button" :disabled="busy" @click="addParameter">添加参数</button></div>
             <p class="catalog-hint">参数名称使用 Go 导出成员名，例如 Target。默认值填写 JSON；字符串写为 "文本"，留空表示未设置。duration 单位为纳秒。</p>
@@ -211,7 +211,7 @@ onUnmounted(() => previousFocus?.focus());
               <label v-if="parameter.type === 'enum'" class="catalog-wide">允许的枚举值（每行一个）<textarea v-model="parameter.enumText" :disabled="busy" rows="3" /></label>
             </div>
             <label class="catalog-events">宿主事件（每行一个，可留空）<textarea v-model="draft.events" :disabled="busy" placeholder="movement_completed" rows="2" /></label>
-            <div v-if="editingID" class="catalog-warning"><strong>更新已有定义会影响所有引用它的节点。</strong><p>修改种类、Go 函数名或参数声明后，需要同步手写 Go 实现。已有节点的种类和参数会保留，请在应用后校验工程并修正不匹配项。</p><label class="catalog-check"><input v-model="acknowledged" :disabled="busy" type="checkbox" />我已了解影响，确认更新此定义</label></div>
+            <div v-if="editingID" class="catalog-warning"><strong>更新已有定义会影响所有引用它的节点。</strong><p>修改种类、业务实现函数或参数声明后，需要同步手写 Go 实现。已有节点的代码名、种类和参数会保留，请在应用后校验工程并修正不匹配项。</p><label class="catalog-check"><input v-model="acknowledged" :disabled="busy" type="checkbox" />我已了解影响，确认更新此定义</label></div>
             <label v-if="initialKind && !editingID && draft.kind === initialKind" class="catalog-check"><input v-model="bindNew" :disabled="busy" type="checkbox" />保存并绑定当前节点</label>
           </form>
           <div v-else class="catalog-import">
@@ -224,7 +224,7 @@ onUnmounted(() => previousFocus?.focus());
               <label>处理方式<select v-model="choices[row.id]" :disabled="busy" @change="acknowledged = false"><option :value="undefined" disabled>请选择处理方式</option><option value="keep">保留现有定义</option><option value="replace">使用导入定义</option></select></label>
             </article>
             <p v-if="fileLabel && !conflictRows.length" class="catalog-hint">没有同 ID 变更；应用时将验证合并后的整个目录。</p>
-            <div v-if="updatesExisting" class="catalog-warning"><p>更新的定义可能改变种类、Go 函数名或参数。已有节点的种类和参数会保留；请同步手写 Go 实现，并校验工程、修正不匹配项。</p><label class="catalog-check"><input v-model="acknowledged" :disabled="busy" type="checkbox" />确认使用所选导入定义更新已有绑定</label></div>
+            <div v-if="updatesExisting" class="catalog-warning"><p>更新的定义可能改变种类、业务实现函数或参数。已有节点的代码名、种类和参数会保留；请同步手写 Go 实现，并校验工程、修正不匹配项。</p><label class="catalog-check"><input v-model="acknowledged" :disabled="busy" type="checkbox" />确认使用所选导入定义更新已有绑定</label></div>
           </div>
           <p v-if="error" class="catalog-error" role="alert">{{ error }}</p>
         </div>

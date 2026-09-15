@@ -442,7 +442,10 @@ function addNode(type: NodeType, binding?: string, position?: NodePosition) {
       item: BTNode = { id, type, name: kinds[type]?.label ?? type };
     if (binding) {
       item.binding = binding;
-      item.name = definitionIndex.value.get(binding)?.name;
+      const business = definitionIndex.value.get(binding);
+      item.name = business?.name;
+      // 业务目录创建时一次分配可读名称，之后改绑定或业务函数名不改节点代码名。
+      if (business) item.codeName = nodeIdentity.value.codeNames.allocateBusiness(business.goName);
     }
     if (["repeat", "retry"].includes(type)) item.count = 3;
     if (["wait", "timeout"].includes(type)) item.durationMs = 1000;
@@ -1425,11 +1428,11 @@ onUnmounted(() => toolLifecycle.abort());
             @input="changeNodeName"
         /></label>
         <label class="field-label"
-          >代码名<input v-model="codeNameDraft" class="mono" maxlength="40"
+          >节点代码名<input v-model="codeNameDraft" class="mono" maxlength="40"
             :aria-invalid="!!codeNameError" aria-describedby="code-name-help code-name-error"
             @input="codeNameError = ''" @keydown.enter.prevent="applyCodeName" @keydown.esc.prevent="cancelCodeName"
         /></label>
-        <p id="code-name-help" class="muted identity-help">树内唯一，1–40 位，英文开头，可含数字和下划线，不能是 Go 关键字。用于生成常量和函数名；修改名称或排序不会改变代码名。</p>
+        <p id="code-name-help" class="muted identity-help">树内唯一，1–40 位，英文开头，可含数字和下划线，不能是 Go 关键字。用于生成节点常量和节点函数；从业务目录创建时默认采用业务函数名，之后独立保存，修改绑定不会自动改名。</p>
         <p v-if="codeNameError" id="code-name-error" class="identity-error" role="alert">{{ codeNameError }}</p>
         <div class="identity-actions">
           <button @click="applyCodeName" :disabled="codeNameDraft === node.codeName">应用代码名</button>
@@ -1481,7 +1484,7 @@ onUnmounted(() => toolLifecycle.abort());
         >
         <template v-if="['action', 'condition'].includes(node.type)">
           <label class="field-label"
-            >Go 节点绑定<select
+            >业务实现函数<select
               :value="node.binding ?? ''"
               @change="
                 changeText($event, (v) => {
@@ -1512,7 +1515,7 @@ onUnmounted(() => toolLifecycle.abort());
             <button @click="manageCatalog('manage', true)">管理定义</button>
             <button :disabled="busy || !project.catalog.length" @click="previewScaffold">预览业务骨架</button>
           </div>
-          <p class="muted empty-note">定义决定生成代码调用哪个函数，业务实现请写入同包的独立 Go 文件。</p>
+          <p class="muted empty-note">可供多个节点复用的手写 Go 函数，请写入同包的独立 Go 文件。切换绑定不会修改节点代码名。</p>
           <div
             v-for="p in definition?.params ?? []"
             :key="p.name"

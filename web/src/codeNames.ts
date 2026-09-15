@@ -55,6 +55,13 @@ export class CodeNameIndex {
     }
   }
 
+  // 仅在从业务目录新建节点时取业务函数名；不适合作为代码名时交给类型默认规则。
+  // 长函数名截取 40 位后使用同一占用表消歧，名称分配后由节点独立持久保存。
+  allocateBusiness(goName: string): string | undefined {
+    if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(goName) || keywords.has(goName)) return undefined;
+    return this.allocate(goName.slice(0, 40));
+  }
+
   // 复制名称沿用可读基名并分配数字，Wait1 的副本为 Wait2，避免逐次堆叠数字。
   allocateCopy(name: string): string {
     return this.allocate(name.replace(/[0-9]+$/, ""), true);
