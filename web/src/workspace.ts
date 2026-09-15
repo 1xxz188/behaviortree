@@ -4,6 +4,21 @@ export interface WorkspaceFiles {
   files: string[]; // 可按名称打开的 JSON 候选文件。
 }
 
+// 调用本地服务打开系统目录窗口；选择阶段只返回目录信息，不切换或写文件。
+export async function selectNativeDirectory(workspace: string, initial = workspace, fetcher: typeof fetch = fetch): Promise<WorkspaceFiles | undefined> {
+  const response = await fetcher("/api/directory-picker", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-BT-Workspace": encodeURIComponent(workspace) },
+    body: JSON.stringify({ directory: initial }),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || "无法打开系统目录选择窗口");
+  return result.cancelled ? undefined : result;
+}
+
+// 对话框返回明确的保存位置，或未保存修改的处理选择。
+export type ProjectDialogResult = { name: string; directory: string; overwrite: boolean } | "save" | "discard";
+
 // 浏览器存储只记录成功打开的文件名，不保存工程内容。
 export interface RecentStorage {
   getItem(key: string): string | null; // 读取本目录最近工程。

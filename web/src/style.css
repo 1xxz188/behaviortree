@@ -126,7 +126,9 @@ pre {
 .workspace-location { font-size: 12px; color: #9cb0bf; margin-bottom: 6px; }
 .workspace-location > span:first-child, .project-identity label, .save-state { flex-shrink: 0; white-space: nowrap; }
 .workspace-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; user-select: text; }
-.workspace-location button { flex-shrink: 0; font-size: 12px; padding: 0; margin-left: auto; }
+.workspace-location button { flex-shrink: 0; font-size: 12px; padding: 0; }
+.workspace-location .text-button { margin-left: auto; }
+.workspace-location .open-workspace { padding: 2px 6px; white-space: nowrap; }
 .project-identity select { width: 260px; padding: 5px 9px; }
 .refresh-projects { flex-shrink: 0; padding: 3px 7px; }
 .project-caption { color: #8196a6; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
@@ -144,6 +146,7 @@ pre {
 .project-dialog::backdrop { background: #050c14aa; }
 .project-dialog h2 { margin: 0 0 16px; font-size: 20px; }
 .dialog-path { overflow-wrap: anywhere; color: #a5efd0; font-size: 13px; }
+.project-dialog { max-height: calc(100vh - 40px); overflow-y: auto; }
 .overwrite-choice { display: flex; align-items: center; gap: 8px; overflow-wrap: anywhere; }
 .overwrite-choice input { width: auto; }
 .project-open-error { position: absolute; z-index: 10; top: 50px; left: 12px; right: 12px; background: #402b28; color: #ffccbc; border: 1px solid #99614d; border-radius: 5px; padding: 12px; }

@@ -3,8 +3,8 @@ import { computed, nextTick, onMounted, onUnmounted, reactive, ref, shallowRef, 
 import CatalogManager from "./CatalogManager.vue";
 import SourceViewer from "./SourceViewer.vue";
 import ProjectDialog from "./ProjectDialog.vue";
-import { startupProject, rememberProject } from "./workspace";
-import type { WorkspaceFiles, RecentStorage } from "./workspace";
+import { startupProject, rememberProject, selectNativeDirectory } from "./workspace";
+import type { WorkspaceFiles, RecentStorage, ProjectDialogResult } from "./workspace";
 import { ProjectSaveState } from "./saveState";
 import { createGeneratedSourceIndex, GenerationRequests, selectGeneratedFile, semanticSignature } from "./generation";
 import type { GeneratedFile, GeneratedSourceIndex, SourceLocation } from "./generation";
@@ -84,14 +84,15 @@ const openingName = ref(""); // 加载提示中的目标文件。
 const failedOpen = ref(""); // 保留失败目标供用户重试。
 const workspaceError = ref(""); // 首屏错误保留具体原因。
 const projectDialog = shallowRef<{
-  kind: "save" | "switch"; // 选择名称或处理未保存修改。
+  kind: "save" | "switch"; // 保存位置或未保存修改的网页确认框。
   reload: boolean; // 同名重载时明确说明读取磁盘和覆盖当前内容。
-  resolve: (value?: string) => void; // 用户关闭对话框后继续原操作。
+  resolve: (value?: ProjectDialogResult) => void; // 用户关闭对话框后继续原操作。
 }>();
 const files = ref<string[]>([]);
 const message = ref("本地工程 · 修改后请保存");
 const error = ref(false);
 const busy = ref(false);
+const workspaceChanging = ref(false); // 切换请求期间冻结编辑，避免丢弃响应途中产生的修改。
 const saveState = reactive(new ProjectSaveState()); // 保存基准与编辑修订各自维护。
 const dirty = computed(() => saveState.dirty);
 const diagnostics = ref<Diagnostic[]>([]);
@@ -604,10 +605,10 @@ async function request<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(
     path,
     body === undefined
-      ? undefined
+      ? { headers: { "X-BT-Workspace": encodeURIComponent(workspace.value) } }
       : {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", "X-BT-Workspace": encodeURIComponent(workspace.value) },
           body: stringifyJSON(body),
         },
   );
@@ -642,6 +643,9 @@ function recentStorage(): RecentStorage | undefined {
 // 按需读取一次顶层列表，同时更新服务端实际工作目录。
 async function refreshFiles() {
   const result = await request<WorkspaceFiles>("/api/projects");
+  if (projectReady.value && workspace.value && workspace.value !== result.workspace) {
+    throw new Error("工作目录已被其他页面切换，请先导出当前草稿，再刷新页面");
+  }
   workspace.value = result.workspace;
   files.value = result.files;
   return result;
@@ -653,12 +657,16 @@ function refreshProjectList() {
     notice("工程列表已刷新，当前编辑内容保持不变");
   });
 }
-// 显示原生模态框，将取消和提交结果交回原来的串行操作。
-function askProject(kind: "save" | "switch", reload = false): Promise<string | undefined> {
+// 工作目录使用系统选择窗口；命名和未保存修改使用网页确认框。
+async function askProject(kind: "save" | "switch" | "workspace", reload = false): Promise<ProjectDialogResult | undefined> {
+  if (kind === "workspace") {
+    const selected = await selectNativeDirectory(workspace.value);
+    return selected ? { name: "", directory: selected.workspace, overwrite: false } : undefined;
+  }
   return new Promise((resolve) => { projectDialog.value = { kind, reload, resolve }; });
 }
 // 先卸载旧对话框再继续，确保保存并切换中的下一对话框重新获得焦点。
-async function closeProjectDialog(value?: string) {
+async function closeProjectDialog(value?: ProjectDialogResult) {
   const pending = projectDialog.value;
   projectDialog.value = undefined;
   await nextTick();
@@ -667,11 +675,16 @@ async function closeProjectDialog(value?: string) {
 // 写入成功才绑定文件身份；修订号使保存期间的新编辑保持未保存状态。
 async function saveCurrent(saveAs = false): Promise<boolean> {
   if (!projectReady.value) return false;
-  const name = saveAs || !fileName.value ? await askProject("save") : fileName.value;
-  if (!name) return false;
+  const target = saveAs || !fileName.value ? await askProject("save") : { name: fileName.value };
+  if (!target || typeof target === "string") return false;
+  const name = target.name;
   const revision = editRevision;
   const snapshot = stringifyJSON(project.value);
-  await request("/api/project", { name, project: parseJSON(snapshot) });
+  const result = await request<{ workspace: string; files?: string[] }>("/api/project", { ...target, project: parseJSON(snapshot) });
+  const moved = workspace.value !== result.workspace;
+  workspace.value = result.workspace;
+  if (result.files) files.value = result.files;
+  if (moved) resetResults();
   fileName.value = name;
   suggestedName.value = name;
   saveState.saved(snapshot, revision === editRevision ? snapshot : stringifyJSON(project.value));
@@ -755,6 +768,33 @@ function initializeWorkspace() {
       throw e;
     } finally {
       initializing.value = false;
+    }
+  });
+}
+// 先选目录再保护当前修改，成功切换后按启动规则恢复目标目录中的工程。
+function chooseWorkspace() {
+  return action(async () => {
+    const target = await askProject("workspace");
+    if (!target || typeof target === "string" || !await allowReplacement()) return;
+    workspaceChanging.value = true;
+    try {
+      const list = await request<WorkspaceFiles>("/api/workspace", { directory: target.directory });
+      workspace.value = list.workspace;
+      files.value = list.files;
+      fileName.value = "";
+      suggestedName.value = "project.json";
+      projectReady.value = false;
+      saveState.reset();
+      undoStack.value = [];
+      redoStack.value = [];
+      resetResults();
+      workspaceError.value = "";
+      failedOpen.value = "";
+      const name = startupProject(list, recentStorage());
+      if (name) await openCurrent(name);
+      else notice(list.files.length ? "工作目录已切换，请选择要打开的工程" : "工作目录已切换，尚无工程");
+    } finally {
+      workspaceChanging.value = false;
     }
   });
 }
@@ -997,6 +1037,7 @@ function focusDiagnostic(d: Diagnostic) {
 }
 // 处理保存、撤销和删除快捷键，不干扰文本原生撤销。
 function keydown(e: KeyboardEvent) {
+  if (workspaceChanging.value) return;
   if (catalogDialog.value || projectDialog.value || !projectReady.value) return;
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
     e.preventDefault();
@@ -1020,7 +1061,7 @@ function keydown(e: KeyboardEvent) {
 }
 // 离开页面前提示尚未保存的修改。
 function beforeUnload(e: BeforeUnloadEvent) {
-  if (dirty.value) e.preventDefault();
+  if (projectReady.value && dirty.value) e.preventDefault();
 }
 // 仅在实际树对象替换时重建；普通输入、改号和连线通过增量索引处理。
 watch(tree, (current) => {
@@ -1110,6 +1151,7 @@ onUnmounted(() => toolLifecycle.abort());
   <div
     ref="workbench"
     class="workbench"
+    :inert="workspaceChanging"
     @input="nativeHistory"
     :class="{ 'resizing-output': resizingOutput }"
     :style="outputHeight === undefined ? {} : { '--output-height': `${outputHeight}px` }"
@@ -1122,6 +1164,7 @@ onUnmounted(() => toolLifecycle.abort());
       <div class="workspace-context">
         <div class="workspace-location">
           <span>工作目录</span><span class="workspace-path mono" :title="workspace">{{ workspace || '正在读取…' }}</span>
+          <button class="open-workspace" title="选择工作目录并重新加载，相当于切换 --workspace" aria-label="打开工作目录" :disabled="busy || !workspace" @click="chooseWorkspace">📁 打开目录</button>
           <button class="text-button" :disabled="!workspace" @click="copyWorkspace">复制路径</button>
         </div>
         <div class="project-identity">
@@ -1140,12 +1183,12 @@ onUnmounted(() => toolLifecycle.abort());
       </div>
       <div class="toolbar">
         <button :disabled="busy || !workspace" @click="resetProject()">新建</button
-        ><button :disabled="busy || !workspace" @click="importInput?.click()">导入</button>
+        ><button title="将 JSON 内容读入未保存草稿，不会直接修改源文件；保存时选择目录和文件名，确认覆盖同名文件后才会覆盖。" :disabled="busy || !workspace" @click="importInput?.click()">导入</button>
         <button :disabled="!projectReady" @click="download(fileName || suggestedName, stringifyJSON(project, 2))">
           导出 JSON
         </button>
         <button :disabled="busy || !projectReady" @click="save()">保存 <kbd>Ctrl S</kbd></button>
-        <button :disabled="busy || !projectReady" @click="save(true)">另存为</button>
+        <button title="选择目录和文件名另存为；保存成功后使用目标工作目录" :disabled="busy || !projectReady" @click="save(true)">另存为</button>
         <button :disabled="busy || !projectReady" @click="validate">校验</button>
         <button :disabled="busy || !projectReady" @click="generate(false)">预览 Go</button>
         <button class="primary" :disabled="busy || !projectReady" @click="generate(true)">

@@ -27,12 +27,15 @@ import (
 // MaxProjectBytes 限制单个工程的输入体积，避免误导入大型非工程文件。
 const MaxProjectBytes = 8 << 20
 
-// Server 通过 os.Root 将工程读写限制在固定目录内，包括符号链接访问。
+// Server 通过 os.Root 将工程读写限制在当前选定目录内，包括符号链接访问。
 type Server struct {
-	root *os.Root       // 受限文件系统根。
-	path string         // 展示工作目录和生成产物的绝对路径。
-	mu   sync.Mutex     // 串行化文件发布，防止同一生成文件交错写入。
-	mux  *http.ServeMux // HTTP 路由与内嵌前端。
+	workspaceMu     sync.RWMutex                 // 请求持有目录读锁；切换和另存为持有写锁，避免关闭在用句柄。
+	pickerMu        sync.Mutex                   // 同一服务最多打开一个系统目录选择窗口。
+	directoryPicker func(string) (string, error) // 原生选择器边界，测试可注入确定性的用户选择。
+	root            *os.Root                     // 受限文件系统根。
+	path            string                       // 展示工作目录和生成产物的绝对路径。
+	mu              sync.Mutex                   // 串行化文件发布，防止同一生成文件交错写入。
+	mux             *http.ServeMux               // HTTP 路由与内嵌前端。
 }
 
 // New 创建本地工程服务；不会覆盖已有工程或启动后台协程。
@@ -48,8 +51,11 @@ func New(workspace string) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{root: root, path: abs, mux: http.NewServeMux()}
+	s := &Server{root: root, path: abs, mux: http.NewServeMux(), directoryPicker: pickNativeDirectory}
 	s.mux.HandleFunc("GET /api/projects", s.listProjects)
+	s.mux.HandleFunc("GET /api/directories", s.listDirectories)
+	s.mux.HandleFunc("POST /api/directory-picker", s.selectDirectory)
+	s.mux.HandleFunc("POST /api/workspace", s.switchWorkspace)
 	s.mux.HandleFunc("GET /api/project", s.readProject)
 	s.mux.HandleFunc("POST /api/project", s.saveProject)
 	s.mux.HandleFunc("POST /api/import", s.importProject)
@@ -93,6 +99,26 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost && !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
 			reply(w, 415, map[string]string{"error": "请求必须使用 application/json"})
 			return
+		}
+		// 系统窗口等待用户操作时不持有工作区锁，选择器自行检查前后的目录身份。
+		if r.URL.Path == "/api/directory-picker" {
+			s.mux.ServeHTTP(w, r)
+			return
+		}
+		// 文件操作与目录切换在同一锁边界内，旧页面不能把工程误存到新目录。
+		if r.Method == http.MethodPost && (r.URL.Path == "/api/workspace" || r.URL.Path == "/api/project") {
+			s.workspaceMu.Lock()
+			defer s.workspaceMu.Unlock()
+		} else {
+			s.workspaceMu.RLock()
+			defer s.workspaceMu.RUnlock()
+		}
+		if expected := r.Header.Get("X-BT-Workspace"); expected != "" && r.URL.Path != "/api/projects" {
+			path, err := url.PathUnescape(expected)
+			if err != nil || path != s.path {
+				reply(w, 409, map[string]string{"error": "工作目录已被其他页面切换，请先导出当前草稿，再刷新页面"})
+				return
+			}
 		}
 	}
 	s.mux.ServeHTTP(w, r)
@@ -235,8 +261,10 @@ func (s *Server) readProject(w http.ResponseWriter, r *http.Request) {
 func (s *Server) saveProject(w http.ResponseWriter, r *http.Request) {
 	data, err := readBody(w, r)
 	var req struct {
-		Name    string          `json:"name"`
-		Project json.RawMessage `json:"project"`
+		Name      string          `json:"name"`      // 目标目录内的 JSON 文件名。
+		Project   json.RawMessage `json:"project"`   // 待保存的工程快照。
+		Directory string          `json:"directory"` // 另存为目录，省略时沿用当前目录。
+		Overwrite bool            `json:"overwrite"` // 另存为遇到同名文件时须显式确认覆盖。
 	}
 	if err == nil {
 		err = json.Unmarshal(data, &req)
@@ -254,16 +282,48 @@ func (s *Server) saveProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data, err = model.Encode(p)
-	if err == nil {
-		s.mu.Lock()
-		err = atomicWrite(s.root, req.Name, data)
-		s.mu.Unlock()
+	if err != nil {
+		reply(w, 400, map[string]string{"error": err.Error()})
+		return
 	}
+	root, path := s.root, s.path
+	var listing *directoryListing
+	if req.Directory != "" {
+		var target directoryListing
+		root, target, err = openDirectory(req.Directory)
+		if err != nil {
+			reply(w, 400, map[string]string{"error": err.Error()})
+			return
+		}
+		defer func() {
+			if root != s.root {
+				_ = root.Close()
+			}
+		}()
+		path, listing = target.Workspace, &target
+		if _, statErr := root.Lstat(req.Name); !req.Overwrite && !errors.Is(statErr, fs.ErrNotExist) {
+			reply(w, 409, map[string]string{"error": "目标文件已存在或无法检查，请重新选择并确认覆盖"})
+			return
+		}
+	}
+	s.mu.Lock()
+	err = atomicWrite(root, req.Name, data)
+	s.mu.Unlock()
 	if err != nil {
 		reply(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
-	reply(w, 200, map[string]string{"name": req.Name})
+	// 完整写入成功后才发布新目录，失败不会改变原工程的保存位置。
+	if root != s.root {
+		old := s.root
+		s.root, s.path = root, path
+		_ = old.Close()
+	}
+	response := map[string]any{"name": req.Name, "workspace": s.path}
+	if listing != nil {
+		response["files"] = listing.Files
+	}
+	reply(w, 200, response)
 }
 
 // importProject 只规范化导入数据，不写入磁盘。

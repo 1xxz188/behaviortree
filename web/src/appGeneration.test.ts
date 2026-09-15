@@ -46,14 +46,16 @@ function editor(options: { dirty?: boolean; name?: string; chosenName?: string; 
     diagnostics: { value: [] }, semanticRevision: { value: 0 }, editRevision: 0,
     generationRequests: new GenerationRequests(),
     window: { localStorage: undefined }, rememberProject: () => {},
-    askProject: async (_kind: string) => options.chosenName,
-    showOutput: () => {}, acceptCodeSnapshot: () => {},
+    askProject: async (_kind: string) => options.chosenName
+      ? { name: options.chosenName, directory: "E:/workspace", overwrite: false } : undefined,
+    showOutput: () => {}, acceptCodeSnapshot: () => {}, resetResults: () => {},
     fetch: async (path: string, init: { body: string }) => {
       calls.push({ path, body: parseJSON(init.body) });
       if (path === "/api/project") await options.saveWait;
       const failed = path === "/api/project" && options.saveError;
       return { ok: !failed, status: failed ? 500 : 200,
-        text: async () => stringifyJSON(failed ? { error: "磁盘写入失败" } : { version: "123456789012abcdef" }) };
+        text: async () => stringifyJSON(failed ? { error: "磁盘写入失败" }
+          : path === "/api/project" ? { workspace: "E:/workspace" } : { version: "123456789012abcdef" }) };
     },
   };
   const generate = runInNewContext(`${workflowJS}\ngenerate;`, context) as (write?: boolean) => Promise<void>;
