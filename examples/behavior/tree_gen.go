@@ -10,6 +10,21 @@ import (
 
 type btDuration = time.Duration
 
+// 编译槽位仅用于本版本运行时；稳定身份保留在节点元数据中。
+const (
+	// nodeMainRoot 对应树 "main" 的节点 "root"（显示名 ""）。
+	nodeMainRoot = iota
+	// nodeMainGate 对应树 "main" 的节点 "gate"（显示名 ""）。
+	nodeMainGate
+	// nodeMainRecord 对应树 "main" 的节点 "record"（显示名 ""）。
+	nodeMainRecord
+	// btNodeCount 是所有节点槽位的排他上界。
+	btNodeCount
+)
+
+// btNodeNoParent 表示独立树入口没有父节点。
+const btNodeNoParent = -1
+
 // GateParams 是业务函数的强类型参数。
 type GateParams struct {
 }
@@ -32,27 +47,27 @@ func NewProgram(version string) *bt.Program[*ctxpkg.Context] {
 		version = "6dc314e272c0a523777b2d765eaa6699"
 	}
 	return &bt.Program[*ctxpkg.Context]{Version: version, Roots: map[string]int{
-		"main": 0,
+		"main": nodeMainRoot,
 	}, Nodes: []bt.Node{
-		{ID: "root", TreeID: "main", Parent: -1, End: 3},
-		{ID: "gate", TreeID: "main", Parent: 0, End: 2},
-		{ID: "record", TreeID: "main", Parent: 0, End: 3},
+		{ID: "root", TreeID: "main", Parent: btNodeNoParent, End: btNodeCount},
+		{ID: "gate", TreeID: "main", Parent: nodeMainRoot, End: nodeMainRecord},
+		{ID: "record", TreeID: "main", Parent: nodeMainRoot, End: btNodeCount},
 	}, Fields: []bt.Field{
 		{ID: "message", Name: "Message", Type: bt.StringType, Default: bt.Value{String: "completed"}, Enum: []string{}},
 	}, Dependencies: map[string][]int{
-		"field:message": []int{2},
+		"field:message": []int{nodeMainRecord},
 	}, Step: btStep, Abort: btAbort}
 }
 
 // btStep 通过整数槽位分派到编译后的节点函数。
 func btStep(f *bt.Frame[*ctxpkg.Context], node int) bt.Status {
 	switch node {
-	case 0:
-		return btNode0(f)
-	case 1:
-		return btNode1(f)
-	case 2:
-		return btNode2(f)
+	case nodeMainRoot:
+		return btNodeMainRoot(f)
+	case nodeMainGate:
+		return btNodeMainGate(f)
+	case nodeMainRecord:
+		return btNodeMainRecord(f)
 	}
 	return bt.Failure
 }
@@ -60,75 +75,78 @@ func btStep(f *bt.Frame[*ctxpkg.Context], node int) bt.Status {
 // btAbort 仅清理当前动作；运行时负责活跃子树取消和状态失效。
 func btAbort(f *bt.Frame[*ctxpkg.Context], node int) {
 	switch node {
-	case 1:
-		Gate(f, 1, bt.Abort, GateParams{})
-	case 2:
-		Record(f, 2, bt.Abort, RecordParams{Message: f.Board.String(0)})
+	case nodeMainGate:
+		Gate(f, nodeMainGate, bt.Abort, GateParams{})
+	case nodeMainRecord:
+		Record(f, nodeMainRecord, bt.Abort, RecordParams{Message: f.Board.String(0)})
 	}
 }
 
-// btNode0 执行树 "main" 中的节点 "root"。
-func btNode0(f *bt.Frame[*ctxpkg.Context]) bt.Status {
-	if cached, run := f.Enter(0); !run {
+// btNodeMainRoot 执行树 "main" 中的节点 "root"（显示名 ""）。
+func btNodeMainRoot(f *bt.Frame[*ctxpkg.Context]) bt.Status {
+	const node = nodeMainRoot
+	if cached, run := f.Enter(node); !run {
 		return cached
 	}
-	s := f.State(0)
+	s := f.State(node)
 	_ = s
 	for {
 		switch s.Cursor {
 		case 0:
-			status := btNode1(f)
+			status := btNodeMainGate(f)
 			if status == bt.Running {
-				return f.Exit(0, status)
+				return f.Exit(node, status)
 			}
 			if status == bt.Failure {
 				s.Cursor = 0
-				return f.Exit(0, status)
+				return f.Exit(node, status)
 			}
 			s.Cursor++
 		case 1:
-			status := btNode2(f)
+			status := btNodeMainRecord(f)
 			if status == bt.Running {
-				return f.Exit(0, status)
+				return f.Exit(node, status)
 			}
 			if status == bt.Failure {
 				s.Cursor = 0
-				return f.Exit(0, status)
+				return f.Exit(node, status)
 			}
 			s.Cursor++
 		default:
 			s.Cursor = 0
-			return f.Exit(0, bt.Success)
+			return f.Exit(node, bt.Success)
 		}
 	}
 }
 
-// btNode1 执行树 "main" 中的节点 "gate"。
-func btNode1(f *bt.Frame[*ctxpkg.Context]) bt.Status {
-	if cached, run := f.Enter(1); !run {
+// btNodeMainGate 执行树 "main" 中的节点 "gate"（显示名 ""）。
+func btNodeMainGate(f *bt.Frame[*ctxpkg.Context]) bt.Status {
+	const node = nodeMainGate
+	if cached, run := f.Enter(node); !run {
 		return cached
 	}
-	s := f.State(1)
+	s := f.State(node)
 	_ = s
 	phase := bt.Start
 	if s.Started {
 		phase = bt.Resume
 	}
 	s.Started = true
-	return f.Exit(1, Gate(f, 1, phase, GateParams{}))
+	return f.Exit(node, Gate(f, node, phase, GateParams{}))
 }
 
-// btNode2 执行树 "main" 中的节点 "record"。
-func btNode2(f *bt.Frame[*ctxpkg.Context]) bt.Status {
-	if cached, run := f.Enter(2); !run {
+// btNodeMainRecord 执行树 "main" 中的节点 "record"（显示名 ""）。
+func btNodeMainRecord(f *bt.Frame[*ctxpkg.Context]) bt.Status {
+	const node = nodeMainRecord
+	if cached, run := f.Enter(node); !run {
 		return cached
 	}
-	s := f.State(2)
+	s := f.State(node)
 	_ = s
 	phase := bt.Start
 	if s.Started {
 		phase = bt.Resume
 	}
 	s.Started = true
-	return f.Exit(2, Record(f, 2, phase, RecordParams{Message: f.Board.String(0)}))
+	return f.Exit(node, Record(f, node, phase, RecordParams{Message: f.Board.String(0)}))
 }

@@ -10,6 +10,7 @@ import { GenerationRequests, semanticSignature } from "./generation";
 import type { SourceLocation } from "./generation";
 import { TreeIdentityIndex, captureSnapshot, restoreSnapshot } from "./treeIdentity";
 import type { EditorSnapshot } from "./treeIdentity";
+import { NodeIdentityIndex } from "./nodeIdentity";
 import { VueFlow, Handle, Position, useVueFlow } from "@vue-flow/core";
 import type { Connection, NodeDragEvent, NodeMouseEvent } from "@vue-flow/core";
 import { Background } from "@vue-flow/background";
@@ -21,7 +22,6 @@ import {
   emptyProject,
   blankProject,
   kinds,
-  removeNodes,
   allocateID,
 } from "./project";
 import type {
@@ -67,6 +67,8 @@ const treeIDDraft = ref(treeID.value); // ID 输入草稿，应用前不影响�
 const treeIDError = ref(""); // 当前改号失败原因。
 let renamingTree = false; // 同一棵树改号时保留选择与视口。
 const selected = ref("root");
+const nodeIDDraft = ref(selected.value); // 节点身份草稿，显式应用前不修改工程。
+const nodeIDError = ref(""); // 当前节点改号失败原因。
 const inspectorOpen = ref(false);
 const search = ref("");
 const fileName = ref(""); // 仅表示当前工作目录内已成功打开或保存的文件。
@@ -192,7 +194,8 @@ const tree = computed(
     treeIdentity.value.byID.get(treeID.value) ??
     project.value.trees[0]!,
 );
-const nodeIndex = computed(() => new Map(tree.value.nodes.map((n) => [n.id, n])));
+const nodeIdentity = shallowRef(reactive(new NodeIdentityIndex(tree.value))); // 当前树的增量身份及入边索引。
+const nodeIndex = computed(() => nodeIdentity.value.byID);
 const node = computed(() => nodeIndex.value.get(selected.value));
 const definitionIndex = computed(() => new Map(project.value.catalog.map((d) => [d.id, d])));
 const definition = computed(() => definitionIndex.value.get(node.value?.binding ?? ""));
@@ -277,6 +280,7 @@ function resetResults() {
   treeIdentity.value = new TreeIdentityIndex(project.value);
   rebuildIDs();
   cancelTreeID();
+  cancelNodeID();
 }
 // 恢复工程和选择快照；布局与展示名撤销不使源码过期。
 function restore(snapshot: EditorSnapshot) {
@@ -291,6 +295,7 @@ function restore(snapshot: EditorSnapshot) {
     ? snapshot.treeID : project.value.trees[0]?.id ?? "";
   selected.value = nodeIndex.value.has(snapshot.selected) ? snapshot.selected : "";
   cancelTreeID();
+  cancelNodeID();
   saveState.restore(snapshot.project);
   if (codeSnapshot.value?.signature === signature)
     codeSnapshot.value = { ...codeSnapshot.value, revision: semanticRevision.value };
@@ -343,6 +348,29 @@ function cancelTreeID() {
   treeIDDraft.value = treeID.value;
   treeIDError.value = "";
 }
+// 放弃尚未应用的节点身份草稿，不产生历史记录。
+function cancelNodeID() {
+  nodeIDDraft.value = selected.value;
+  nodeIDError.value = "";
+}
+// 根、入边、布局和选择在同一次历史操作中更新，并使源码与诊断过期。
+function applyNodeID() {
+  const previous = selected.value;
+  const next = nodeIDDraft.value;
+  const failure = nodeIdentity.value.validateRename(previous, next);
+  if (failure) {
+    nodeIDError.value = failure;
+    return;
+  }
+  if (previous === next) return cancelNodeID();
+  mutate(() => {
+    nodeIdentity.value.rename(previous, next);
+    occupiedIDs.add(next);
+    selected.value = next;
+  });
+  cancelNodeID();
+  notice("节点 ID 已更新，已同步根、连线和布局，请保存并重新生成");
+}
 // 先校验再在一次历史边界内更新 ID、反向引用和当前选择。
 function applyTreeID() {
   const previous = treeID.value;
@@ -383,6 +411,7 @@ function addNode(type: NodeType, binding?: string, position?: NodePosition) {
     if (["wait", "timeout"].includes(type)) item.durationMs = 1000;
     tree.value.nodes.push(item);
     treeIdentity.value.addNode(tree.value.nodes[tree.value.nodes.length - 1]!);
+    nodeIdentity.value.addNode(tree.value.nodes[tree.value.nodes.length - 1]!);
     tree.value.layout ??= {};
     tree.value.layout[id] = position ?? {
       x: 100 + (tree.value.nodes.length % 3) * 230,
@@ -434,7 +463,7 @@ function link(connection: Connection) {
   if (failure) return notice(failure, true);
   mutate(() => {
     // 只写实际变化的父连接，保留反向引用索引持有的节点对象。
-    nodeIndex.value.get(connection.source!)!.children = copy.nodes.find((n) => n.id === connection.source)!.children;
+    nodeIdentity.value.setChildren(nodeIndex.value.get(connection.source!)!, copy.nodes.find((n) => n.id === connection.source)!.children);
     tree.value.root = copy.root;
   });
 }
@@ -450,7 +479,7 @@ function deleteSelected() {
   if (node.value)
     mutate(() => {
       treeIdentity.value.removeNode(node.value!);
-      removeNodes(tree.value, [selected.value]);
+      nodeIdentity.value.removeNode(node.value!);
       selected.value = "";
     });
 }
@@ -464,6 +493,7 @@ function duplicate() {
     n.children = [];
     tree.value.nodes.push(n);
     treeIdentity.value.addNode(tree.value.nodes[tree.value.nodes.length - 1]!);
+    nodeIdentity.value.addNode(tree.value.nodes[tree.value.nodes.length - 1]!);
     tree.value.layout ??= {};
     const p = tree.value.layout[selected.value] ?? { x: 100, y: 100 };
     tree.value.layout[n.id] = { x: p.x + 35, y: p.y + 100 };
@@ -474,14 +504,15 @@ function duplicate() {
 function reorder(index: number, offset: number) {
   if (!node.value?.children) return;
   mutate(() => {
-    const list = node.value!.children!,
+    const list = [...node.value!.children!],
       other = index + offset;
     [list[index], list[other]] = [list[other]!, list[index]!];
+    nodeIdentity.value.setChildren(node.value!, list);
   });
 }
 // 解除一条父子连接，保留被断开的节点。
 function disconnect(index: number) {
-  mutate(() => node.value!.children!.splice(index, 1));
+  mutate(() => nodeIdentity.value.setChildren(node.value!, node.value!.children!.filter((_, position) => position !== index)));
 }
 // 重新计算画布布局，保持行为语义不变。
 function layout() {
@@ -935,6 +966,12 @@ function keydown(e: KeyboardEvent) {
 function beforeUnload(e: BeforeUnloadEvent) {
   if (dirty.value) e.preventDefault();
 }
+// 仅在实际树对象替换时重建；普通输入、改号和连线通过增量索引处理。
+watch(tree, (current) => {
+  nodeIdentity.value = reactive(new NodeIdentityIndex(current));
+  cancelNodeID();
+}, { flush: "sync" });
+watch(selected, cancelNodeID, { flush: "sync" });
 watch(treeID, () => {
   cancelTreeID();
   if (renamingTree) return;
@@ -1340,9 +1377,16 @@ onUnmounted(() => toolLifecycle.abort());
             @input="changeNodeName"
         /></label>
         <label class="field-label"
-          >节点 ID（自动生成）<input :value="node.id" readonly class="mono" :title="node.id"
+          >Node ID<input v-model="nodeIDDraft" class="mono"
+            :aria-invalid="!!nodeIDError" aria-describedby="node-id-help node-id-error"
+            @input="nodeIDError = ''" @keydown.enter.prevent="applyNodeID" @keydown.esc.prevent="cancelNodeID"
         /></label>
-        <p class="muted empty-note">ID 是固定身份标识；修改上方名称即可重命名显示，不改变连线和绑定。</p>
+        <p id="node-id-help" class="muted identity-help">当前树内唯一且不能为空。应用时同步根、连线和布局；修改名称不会改变 ID。显式改号后需更新外部旧 ID 关联。</p>
+        <p v-if="nodeIDError" id="node-id-error" class="identity-error" role="alert">{{ nodeIDError }}</p>
+        <div class="identity-actions">
+          <button @click="applyNodeID" :disabled="nodeIDDraft === node.id">应用</button>
+          <button @click="cancelNodeID" :disabled="nodeIDDraft === node.id && !nodeIDError">取消</button>
+        </div>
         <label
           v-if="['repeat', 'retry'].includes(node.type)"
           class="field-label"

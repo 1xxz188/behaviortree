@@ -9,6 +9,7 @@ export interface SourceLocation {
   nodeId: string; // 定义树中的稳定节点 ID。
   index: number; // 本次生成的独立执行槽位。
   line: number; // 生成文件中从 1 开始的函数声明行。
+  functionName: string; // 实际生成函数名，必须与对应源码声明一致。
 }
 
 // SourceIndex 将一次线性扫描的结果用于节点和代码行的 O(1) 导航。
@@ -117,8 +118,8 @@ export function createSourceIndex(source: string, sourceMap: SourceLocation[]): 
     const line = index + 1;
     const text = lines[index]!;
     const location = starts.get(line);
-    // 同时核对函数名与展开槽位，错误或过期映射不能把辅助函数关联到节点。
-    if (location && text.startsWith(`func btNode${location.index}(`)) {
+    // 只接受明确提供且与源码一致的函数名，避免错配辅助函数。
+    if (location?.functionName && text.startsWith(`func ${location.functionName}(`)) {
       active = location;
       const key = sourceNodeKey(location.treeId, location.nodeId);
       const occurrences = byNode.get(key);

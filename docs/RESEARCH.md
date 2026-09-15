@@ -18,7 +18,7 @@
 - [behaviac workspace](E:/fl/develop/behaviac-3.6.38/src/common/workspace.cpp)：工作区加载、变更和实例处理。其现有重载机制不是本项目的 Go 插件发布单元。
 - [roommgr/hotfix.go](E:/fl/develop/server/server_go/appfw/mapcore/roommgr/hotfix.go)：借鉴宿主持有状态、插件提供逻辑的边界。行为树另设完整 Program 发布，不依赖该入口。
 
-调研发现 behaviac C++ 导出依然创建和连接运行时节点图，因此“导出源码”不等同于生成原生控制流。本项目生成 `btNodeN` 函数及直接分支调用；节点描述只用于状态范围、依赖索引和日志定位。
+调研发现 behaviac C++ 导出依然创建和连接运行时节点图，因此“导出源码”不等同于生成原生控制流。本项目生成基于 TreeID + NodeID 命名的 `btNode…` 函数及直接分支调用，槽位用语义化整数常量表示；节点描述只用于状态范围、依赖索引和日志定位。
 
 ## 一手资料
 

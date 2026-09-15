@@ -45,6 +45,11 @@ func TestPreviewGenerateAndReopen(t *testing.T) {
 	}
 	project := model.Example()
 	preview := decodePreview(t, callEditor(t, server, "POST", "/api/preview", project))
+	for _, location := range preview.SourceMap {
+		if location.FunctionName == "" || !strings.Contains(preview.Source, "func "+location.FunctionName+"(") {
+			t.Fatal("预览缺少实际语义函数名", location)
+		}
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil || len(entries) != 0 {
 		t.Fatal("预览写入了磁盘", err)
@@ -110,7 +115,7 @@ func TestGeneratedRejectsCorruptionAndPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"hash", "missing-hash", "version", "line", "node", "index", "count"} {
+	for _, name := range []string{"hash", "missing-hash", "version", "line", "node", "index", "count", "function", "empty-function", "missing-function", "swapped-functions"} {
 		t.Run(name, func(t *testing.T) {
 			var mapping generatedMapping
 			if err := json.Unmarshal(original, &mapping); err != nil {
@@ -131,8 +136,31 @@ func TestGeneratedRejectsCorruptionAndPaths(t *testing.T) {
 				mapping.Locations[0].Index++
 			case "count":
 				mapping.Locations = mapping.Locations[1:]
+			case "function":
+				mapping.Locations[0].FunctionName = "NewProgram"
+			case "empty-function":
+				mapping.Locations[0].FunctionName = ""
+			case "swapped-functions":
+				// 同时调换函数名和行号，仍必须通过真实 switch 分派检出错联。
+				first, second := &mapping.Locations[0], &mapping.Locations[1]
+				first.FunctionName, second.FunctionName = second.FunctionName, first.FunctionName
+				first.Line, second.Line = second.Line, first.Line
 			}
 			data, _ := json.Marshal(mapping)
+			if name == "missing-function" {
+				// 真正删除 JSON 字段，与显式空字符串分别验证必填约束。
+				var object map[string]json.RawMessage
+				if err := json.Unmarshal(data, &object); err != nil {
+					t.Fatal(err)
+				}
+				var locations []map[string]json.RawMessage
+				if err := json.Unmarshal(object["locations"], &locations); err != nil {
+					t.Fatal(err)
+				}
+				delete(locations[0], "functionName")
+				object["locations"], _ = json.Marshal(locations)
+				data, _ = json.Marshal(object)
+			}
 			if err := os.WriteFile(mapPath, data, 0644); err != nil {
 				t.Fatal(err)
 			}

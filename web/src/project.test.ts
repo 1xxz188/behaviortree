@@ -175,7 +175,7 @@ test("源码语义签名统一JSON保存后的可选空属性", () => {
 test("源码映射支持节点多实例且导航仅限对应函数范围", () => {
   const source = [
     "package behavior",
-    "func btNode0(f *Frame) Status {",
+    "func btNodeMainShared_Slot0(f *Frame) Status {",
     "\tif true {",
     "\t\treturn Success",
     "\t}",
@@ -184,18 +184,18 @@ test("源码映射支持节点多实例且导航仅限对应函数范围", () =>
     "",
     "func helper() {",
     "}",
-    "func btNode1(f *Frame) Status {",
+    "func btNodeMainShared_Slot1(f *Frame) Status {",
     "\treturn Success",
     "}",
-    "func btNode2(f *Frame) Status {",
+    "func btNodeOtherShared(f *Frame) Status {",
     "\treturn Success",
     "}",
   ].join("\n");
   const locations = [
-    { treeId: "main", nodeId: "shared", index: 0, line: 2 },
-    { treeId: "main", nodeId: "shared", index: 1, line: 11 },
-    { treeId: "other", nodeId: "shared", index: 2, line: 14 },
-    { treeId: "main", nodeId: "wrong", index: 3, line: 9 },
+    { treeId: "main", nodeId: "shared", index: 0, line: 2, functionName: "btNodeMainShared_Slot0" },
+    { treeId: "main", nodeId: "shared", index: 1, line: 11, functionName: "btNodeMainShared_Slot1" },
+    { treeId: "other", nodeId: "shared", index: 2, line: 14, functionName: "btNodeOtherShared" },
+    { treeId: "main", nodeId: "wrong", index: 3, line: 9, functionName: "btNodeMainWrong" },
   ];
   const index = createSourceIndex(source, locations);
   assert.deepEqual(index.byNode.get(sourceNodeKey("main", "shared")), locations.slice(0, 2));
@@ -205,6 +205,57 @@ test("源码映射支持节点多实例且导航仅限对应函数范围", () =>
   for (const line of [1, 8, 9, 10, 17]) assert.equal(index.byLine.has(line), false);
   assert.equal(index.byNode.has(sourceNodeKey("main", "wrong")), false);
   assert.notEqual(sourceNodeKey("a:b", "c"), sourceNodeKey("a", "b:c"));
+});
+
+// 映射按实际符号区分重复展开，错误名称和过期行号不得匹配。
+test("语义函数名映射拒绝不匹配的函数", () => {
+  const source = [
+    "package behavior",
+    "func btNodePatrolWalk(f *Frame) Status {",
+    "\tconst node = nodePatrolWalk",
+    "\treturn f.Exit(node, Success)",
+    "}",
+    "func btNodePatrolWalk_Slot7(f *Frame) Status {",
+    "\treturn Success",
+    "}",
+    "func btNodeOtherWalk(f *Frame) Status {",
+    "\treturn Success",
+    "}",
+    "func btNodeWrongName(f *Frame) Status {",
+    "\treturn Success",
+    "}",
+    "func helper() {",
+    "}",
+  ].join("\n");
+  const locations = [
+    { treeId: "patrol", nodeId: "walk", index: 3, line: 2, functionName: "btNodePatrolWalk" },
+    { treeId: "patrol", nodeId: "walk", index: 7, line: 6, functionName: "btNodePatrolWalk_Slot7" },
+    { treeId: "other", nodeId: "walk", index: 8, line: 9, functionName: "btNodeOtherWalk" },
+    { treeId: "wrong", nodeId: "name", index: 9, line: 12, functionName: "btNodeOther" },
+    { treeId: "wrong", nodeId: "line", index: 10, line: 15, functionName: "btNodePatrolWalk" },
+  ];
+  const index = createSourceIndex(source, locations);
+  assert.deepEqual(index.byNode.get(sourceNodeKey("patrol", "walk")), locations.slice(0, 2));
+  assert.deepEqual(index.byNode.get(sourceNodeKey("other", "walk")), [locations[2]]);
+  assert.equal(index.byLine.get(3)?.index, 3);
+  assert.equal(index.byLine.get(7)?.index, 7);
+  assert.equal(index.byLine.get(10)?.index, 8);
+  for (const line of [1, 12, 13, 14, 15, 16]) assert.equal(index.byLine.has(line), false);
+  assert.equal(index.byNode.has(sourceNodeKey("wrong", "name")), false);
+  assert.equal(index.byNode.has(sourceNodeKey("wrong", "line")), false);
+});
+
+// 模拟不完整 JSON 响应，缺失或空函数名不得根据整数槽位推测源码身份。
+test("源码映射必须明确提供函数名", () => {
+  const source = "func btNode3(f *Frame) Status {\n\treturn Success\n}";
+  for (const json of [
+    '[{"treeId":"main","nodeId":"walk","index":3,"line":1}]',
+    '[{"treeId":"main","nodeId":"walk","index":3,"line":1,"functionName":""}]',
+  ]) {
+    const index = createSourceIndex(source, JSON.parse(json));
+    assert.equal(index.byNode.size, 0);
+    assert.equal(index.byLine.size, 0);
+  }
 });
 
 // 用迟到响应、连续请求和工程切换复现竞争；单独修改布局仍可接收正确源码。

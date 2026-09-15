@@ -32,7 +32,7 @@ func TestStableNativeSource(t *testing.T) {
 	}
 	lines := strings.Split(string(a.Source), "\n")
 	for _, loc := range a.SourceMap {
-		if !strings.Contains(lines[loc.Line-1], "func btNode") {
+		if loc.FunctionName == "" || !strings.Contains(lines[loc.Line-1], "func "+loc.FunctionName+"(") {
 			t.Fatalf("错误源码映射: %+v", loc)
 		}
 	}
@@ -113,7 +113,10 @@ func TestGeneratedRuntime(t *testing.T) {
 	for _, location := range result.SourceMap {
 		if location.TreeID == "priority1000" && location.NodeID == "root" {
 			source := string(result.Source)
-			start := strings.Index(source, fmt.Sprintf("func btNode%d(", location.Index))
+			start := strings.Index(source, "func "+location.FunctionName+"(")
+			if start < 0 {
+				t.Fatal("找不到优先级节点函数")
+			}
 			reselection := strings.Index(source[start:], "previousGuard0 :=")
 			if start < 0 || reselection < 0 {
 				t.Fatal("找不到优先级控制流")

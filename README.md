@@ -26,7 +26,7 @@ go run ./cmd/bttool serve --workspace ./.workspace
 
 目录按定义 ID 合并：新 ID 追加，同 ID 的变更逐项选择保留现有或使用导入定义；未导入的现有定义保持不变。更新已有定义时会说明对节点和手写函数的影响，原节点参数保留供后续校验。Go 函数名冲突及非法参数会阻止提交。业务定义 ID 用于绑定，画布节点 ID 用于节点身份，两者独立。
 
-节点 ID 保持只读；新增和复制使用完整 UUID，并在已占用集合中查重重试。日常重命名修改“名称”即可。导入工程仍要求节点 ID 在所属树内唯一，源节点由 TreeID + NodeID 标识。
+节点 ID 可在属性面板中显式修改并提交，要求非空且在所属树内唯一；提交会同步根、连线和布局，并可整体撤销。新增和复制仍使用完整 UUID，并在已占用集合中查重重试。日常重命名修改“名称”即可；修改 ID 属于身份变更，不会自动延续外部旧 ID 关联。源节点由 TreeID + NodeID 标识，整数槽位仅属于本次编译结果，不会写回节点 ID。
 
 行为树名称仅供展示，允许重复；树列表和子树选项同时展示 ID。行为树 ID 是工程内唯一、区分大小写的运行时入口主键，只能包含英文、数字、下划线，允许数字开头；不接受空值，也不会自动裁剪或转换。新建树自动分配 ID，改名称、保存和重新生成均不会改变已有 ID。
 
@@ -92,7 +92,7 @@ go run ./examples/host
 
 动作函数的形状为 `func(*bt.Frame[Context], node int, phase bt.Phase, params ActionParams) bt.Status`；条件为 `func(*bt.Frame[Context], node int, params ConditionParams) bool`。参数结构体由 Go 元数据生成。`Start` 启动操作并快速返回 `Running`；`Resume` 用 `Frame.Consume(node)` 读取完成结果；`Abort` 撤销仍在进行的操作。动作需要主动捕获 `Frame.Token(node)`，外部完成事件携带该令牌回到宿主队列。
 
-GoLand 直接打开本仓库根目录，使用 Go 1.26.7 工具链即可，无需额外构建标签。`tree_gen.map.json` 保留源 TreeID、NodeID、展开后的整数索引和 Go 行号；同一子树的多个调用位置有各自索引。当前没有 Web 断点、单步或 Delve 集成。
+GoLand 直接打开本仓库根目录，使用 Go 1.26.7 工具链即可，无需额外构建标签。生成代码使用 TreeID + NodeID 派生的语义化槽位常量和节点函数名，重复展开或命名冲突通过 `_Slot<index>` 后缀区分；执行仍为整数 `switch` 与直接函数调用。`tree_gen.map.json` 保留源 TreeID、NodeID、展开后的整数索引、实际函数名 `functionName` 和 Go 行号；同一子树的多个调用位置有各自索引。源码映射必须提供实际函数名，缺失时需重新生成产物。当前没有 Web 断点、单步或 Delve 集成。
 
 ## 作为 Go 依赖使用
 
@@ -176,7 +176,7 @@ JSON 与日志仍使用 `"sequence"`、`"action"`、`"int64"` 等可读名称，
 
 ## 日志、验证与边界
 
-默认使用标准库 `slog` 输出发布、切换和错误等生命周期日志。注册表可通过 `SetLogger`，实例可通过 `Options.Logger` 接入宿主日志；`SetLogger(nil)` 显式关闭注册表日志，实例使用空接收函数可关闭日志。节点追踪默认关闭，可用 `Options.Trace` 或 `SetTrace` 按实例开启。关闭追踪时不构造节点日志字符串或黑板快照。记录包含版本、入口树、实例、节点 ID、展开索引、状态、原因和事件序号；子树源位置按 NodeIndex 查询源码映射。
+默认使用标准库 `slog` 输出发布、切换和错误等生命周期日志。注册表可通过 `SetLogger`，实例可通过 `Options.Logger` 接入宿主日志；`SetLogger(nil)` 显式关闭注册表日志，实例使用空接收函数可关闭日志。节点追踪默认关闭，可用 `Options.Trace` 或 `SetTrace` 按实例开启。关闭追踪时不构造节点日志字符串或黑板快照。记录包含版本、入口树、节点定义树、实例、节点 ID、展开索引、状态、原因和事件序号；默认日志的 `tree` 为入口树，`node_tree`（LogRecord.NodeTreeID）为定义树，`node` 与 `node_index` 分别为稳定身份和编译槽位。结合版本和 NodeIndex 可查询对应源码映射；当前热更新仍重建节点状态，不按节点 ID 迁移运行中状态。
 
 ```sh
 go test -count=1 ./...

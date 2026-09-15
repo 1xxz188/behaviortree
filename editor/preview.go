@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -164,6 +163,8 @@ func validateGenerated(source []byte, pkg string, mapping generatedMapping) erro
 		return errors.New("源码包名不匹配")
 	}
 	lines := make(map[string]int)
+	slots := generatedSlots(file)
+	var step *ast.FuncDecl
 	var identities []codegen.SourceLocation
 	version := ""
 	for _, decl := range file.Decls {
@@ -172,6 +173,9 @@ func validateGenerated(source []byte, pkg string, mapping generatedMapping) erro
 			continue
 		}
 		lines[function.Name.Name] = fset.Position(function.Pos()).Line
+		if function.Name.Name == "btStep" {
+			step = function
+		}
 		if function.Name.Name != "NewProgram" {
 			continue
 		}
@@ -225,13 +229,106 @@ func validateGenerated(source []byte, pkg string, mapping generatedMapping) erro
 	if version == "" || mapping.Version != version || len(identities) == 0 || len(identities) != len(mapping.Locations) {
 		return errors.New("版本或节点数量不匹配")
 	}
+	dispatch, err := generatedDispatch(step, slots)
+	if err != nil || len(dispatch) != len(identities) {
+		return errors.New("节点分派与源码不匹配")
+	}
 	for i, identity := range identities {
-		identity.Line = lines[fmt.Sprintf("btNode%d", i)]
+		location := mapping.Locations[i]
+		name := location.FunctionName
+		if name == "" || dispatch[i] != name {
+			return errors.New("节点函数与分派槽位不匹配")
+		}
+		identity.FunctionName = location.FunctionName
+		identity.Line = lines[name]
 		if identity.Line == 0 || identity.NodeID == "" || identity.TreeID == "" || identity != mapping.Locations[i] {
 			return errors.New("节点位置与源码不匹配")
 		}
 	}
 	return nil
+}
+
+// generatedSlots 读取生成器的顶层 iota 槽位常量，不执行源码。
+func generatedSlots(file *ast.File) map[string]int {
+	slots := make(map[string]int)
+	for _, declaration := range file.Decls {
+		group, ok := declaration.(*ast.GenDecl)
+		if !ok || group.Tok != token.CONST {
+			continue
+		}
+		var inherited []ast.Expr
+		for ordinal, declaration := range group.Specs {
+			spec, ok := declaration.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			if len(spec.Values) != 0 {
+				inherited = spec.Values
+			}
+			if len(spec.Names) != 1 || len(inherited) != 1 {
+				continue
+			}
+			if name, ok := inherited[0].(*ast.Ident); ok && name.Name == "iota" {
+				slots[spec.Names[0].Name] = ordinal
+			}
+		}
+	}
+	return slots
+}
+
+// generatedDispatch 一次读取 btStep 的直接分派，确保映射不能将一个槽位关联到其他节点函数。
+func generatedDispatch(step *ast.FuncDecl, slots map[string]int) (map[int]string, error) {
+	invalid := errors.New("无效的节点分派")
+	if step == nil || step.Body == nil || len(step.Body.List) != 2 {
+		return nil, invalid
+	}
+	statement, ok := step.Body.List[0].(*ast.SwitchStmt)
+	if !ok {
+		return nil, invalid
+	}
+	tag, ok := statement.Tag.(*ast.Ident)
+	if !ok || tag.Name != "node" || statement.Init != nil {
+		return nil, invalid
+	}
+	dispatch := make(map[int]string)
+	for _, entry := range statement.Body.List {
+		branch, ok := entry.(*ast.CaseClause)
+		if !ok {
+			return nil, invalid
+		}
+		if len(branch.List) == 0 {
+			continue
+		}
+		if len(branch.List) != 1 || len(branch.Body) != 1 {
+			return nil, invalid
+		}
+		constant, ok := branch.List[0].(*ast.Ident)
+		if !ok {
+			return nil, invalid
+		}
+		slot, ok := slots[constant.Name]
+		if !ok || dispatch[slot] != "" {
+			return nil, invalid
+		}
+		returned, ok := branch.Body[0].(*ast.ReturnStmt)
+		if !ok || len(returned.Results) != 1 {
+			return nil, invalid
+		}
+		call, ok := returned.Results[0].(*ast.CallExpr)
+		if !ok || len(call.Args) != 1 {
+			return nil, invalid
+		}
+		function, ok := call.Fun.(*ast.Ident)
+		if !ok {
+			return nil, invalid
+		}
+		frame, ok := call.Args[0].(*ast.Ident)
+		if !ok || frame.Name != "f" {
+			return nil, invalid
+		}
+		dispatch[slot] = function.Name
+	}
+	return dispatch, nil
 }
 
 // stringLiteral 读取 AST 字符串常量，不执行源码表达式。

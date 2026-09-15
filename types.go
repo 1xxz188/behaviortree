@@ -106,6 +106,7 @@ type LogRecord struct {
 	InstanceID string  // InstanceID 是宿主提供的实例标识。
 	TreeID     string  // TreeID 是实例入口树。
 	NodeID     string  // NodeID 是编辑器节点标识。
+	NodeTreeID string  // NodeTreeID 是节点定义树，与子树调用时的实例入口树区分。
 	NodeIndex  int     // NodeIndex 区分子树复用时同一源节点的多个调用位置。
 	Sequence   uint64  // Sequence 是该实例日志事件序号。
 	From       Status  // From 是节点变化前状态。

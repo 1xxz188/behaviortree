@@ -598,6 +598,7 @@ func (i *Instance[C]) log(kind LogKind, node int, from, to Status, reason string
 	record := LogRecord{Kind: kind, Version: i.Version(), InstanceID: i.id, TreeID: i.treeID, Sequence: i.logSeq, From: from, To: to, Reason: reason}
 	if node >= 0 {
 		record.NodeID = i.program.program.Nodes[node].ID
+		record.NodeTreeID = i.program.program.Nodes[node].TreeID
 		record.NodeIndex = node
 	}
 	emitLog(i.options.Logger, record)
