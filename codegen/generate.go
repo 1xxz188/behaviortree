@@ -355,9 +355,28 @@ func TreeFileName(id string) string {
 // line 追加一行可格式化的 Go 文本。
 func (g *generator) line(format string, args ...any) { fmt.Fprintf(&g.buf, format+"\n", args...) }
 
-// symbolPart 保留代码名大小写并转义下划线，避免字段内容和单下划线分隔符混淆。
+// symbolPart 在内部引用链中转义下划线，最终显示名称由 readableSymbol 整理。
 func symbolPart(id string) string {
 	return strings.ReplaceAll(id, "_", "__")
+}
+
+// readableSymbol 单遍合并连续下划线并去掉首尾分隔符，保留可读名称的大小写。
+func readableSymbol(name string) string {
+	var result strings.Builder
+	result.Grow(len(name))
+	separator := false
+	for i := 0; i < len(name); i++ {
+		if name[i] == '_' {
+			separator = result.Len() > 0
+			continue
+		}
+		if separator {
+			result.WriteByte('_')
+			separator = false
+		}
+		result.WriteByte(name[i])
+	}
+	return result.String()
 }
 
 // treeSymbolPart 仅提升树 ID 首字母；树 ID 的大小写折叠唯一校验保证不会合并不同树。
@@ -392,7 +411,8 @@ func (g *generator) assignSymbols() error {
 	g.noParentSymbol = claim("btNodeNoParent")
 	identities := make(map[string]bool, len(g.nodes))
 	shortChains := make(map[string]string)
-	bases := make(map[string]string, len(g.nodes))
+	bases := make([]string, len(g.nodes))
+	baseCounts := make(map[string]int, len(g.nodes))
 	allocated := make(map[string]bool, len(g.nodes)*2)
 	for i, n := range g.nodes {
 		if identities[n.identity] {
@@ -405,11 +425,16 @@ func (g *generator) assignSymbols() error {
 			}
 			shortChains[n.via] = n.chain
 		}
-		base := treeSymbolPart(n.tree) + "_" + symbolPart(n.node.CodeName) + n.via
-		if prior, exists := bases[base]; exists {
-			return fmt.Errorf("节点代码名冲突 %s: %s 与 %s", base, prior, n.identity)
+		base := readableSymbol(treeSymbolPart(n.tree) + "_" + symbolPart(n.node.CodeName) + n.via)
+		bases[i] = base
+		baseCounts[base]++
+	}
+	// 先收集再消歧，碰撞组统一使用稳定身份摘要，避免名称依赖节点遍历顺序。
+	for i, n := range g.nodes {
+		base := bases[i]
+		if baseCounts[base] > 1 {
+			base += "_ID" + identityHash(n.identity)[:12]
 		}
-		bases[base] = n.identity
 		suffix := ""
 		// 业务声明碰撞只增加固定后缀，不依赖全局槽位或展开次数。
 		for used["node"+base+suffix] || used["btNode"+base+suffix] {
@@ -546,6 +571,7 @@ func (g *generator) emitNode(i int) {
 		g.line("if %s(f,node,%s) { return f.Exit(node,bt.Success) }", g.defs[n.node.Binding].GoName, g.params(n.node))
 		exit("bt.Failure")
 	case model.NodeSequence, model.NodeSelector:
+		// 游标是函数内部的直接孩子序号，使用数字即可；全局节点槽位仍使用具名常量。
 		g.line("for { switch s.Cursor {")
 		for j, child := range n.children {
 			g.line("case %d: status:=%s(f);if status==bt.Running{return f.Exit(node,status)}", j, g.nodes[child].function)

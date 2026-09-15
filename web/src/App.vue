@@ -678,7 +678,7 @@ async function saveCurrent(saveAs = false): Promise<boolean> {
   rememberProject(workspace.value, name, recentStorage());
   // 本次写入已知成功，只更新内存列表，避免保存后重复枚举目录。
   if (!files.value.includes(name)) files.value = [...files.value, name].sort();
-  notice(`已保存 ${name}${dirty.value ? "，后续修改尚未保存，已停止切换" : ""}`);
+  notice(`已保存 ${name}${dirty.value ? "，后续修改尚未保存" : ""}`);
   return !dirty.value;
 }
 // 工具栏和快捷键共用同一串行保存入口。
@@ -820,9 +820,14 @@ async function currentProjectRequest<T>(path: string) {
     if (generationRequests.acceptsRevision(token)) throw e;
   }
 }
-// 预览与写盘复用同一后端生成器；旧结果持续保留至新结果成功返回。
+// 写盘前保存当前工程，确保源码对应已落盘内容；预览仍只读取当前草稿。
 function generate(write = true) {
   return action(async () => {
+    // 复用首次命名和保存快照校验，取消、失败或保存期间的新编辑都会停止生成。
+    if (write && (dirty.value || !fileName.value) && !await saveCurrent()) {
+      notice("工程尚未完成保存，已停止生成，请保存后重试");
+      return;
+    }
     const result = await currentProjectRequest<GeneratedCode>(write ? "/api/generate" : "/api/preview");
     if (!result) return;
     acceptCodeSnapshot(result.data, result.signature, result.revision, write ? "generated" : "preview");
@@ -1714,7 +1719,7 @@ onUnmounted(() => toolLifecycle.abort());
             >{{ d.message }}
           </button>
           <p v-if="!diagnostics.length" class="muted">
-            点击「校验」检查结构与类型。「预览 Go」查看源码，「生成到目录」写入生成文件。
+            点击「校验」检查结构与类型。「预览 Go」查看源码，「生成到目录」先保存工程再写入生成文件。
           </p></template
         >
       </div>
