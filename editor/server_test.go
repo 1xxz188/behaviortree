@@ -66,11 +66,11 @@ func TestEditorRoundTrip(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatal(w.Code, w.Body.String())
 	}
-	generated, err := os.ReadFile(filepath.Join(dir, "generated", p.Generation.Package, "tree_gen.go"))
+	generated, err := os.ReadFile(filepath.Join(dir, "generated", p.Generation.Package, "glue.gen.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(generated), "18446744073709551615") || !strings.Contains(string(generated), "func btNode") {
+	if !strings.Contains(string(generated), "18446744073709551615") || !strings.Contains(string(generated), "func btStep") {
 		t.Fatal("未生成实际控制流或整数精度丢失")
 	}
 	w = callEditor(t, s, "GET", "/", nil)
@@ -109,7 +109,7 @@ func TestEditorDraftAndProtection(t *testing.T) {
 		t.Fatal(err)
 	}
 	handwritten := []byte("package generated\n// 手写逻辑不能被自动生成覆盖。\n")
-	file := filepath.Join(generatedDir, "tree_gen.go")
+	file := filepath.Join(generatedDir, "glue.gen.go")
 	if err = os.WriteFile(file, handwritten, 0644); err != nil {
 		t.Fatal(err)
 	}

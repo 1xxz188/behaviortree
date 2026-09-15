@@ -1,9 +1,7 @@
 package codegen
 
 import (
-	"bytes"
 	"encoding/json"
-	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -25,8 +23,9 @@ func TestSemanticNamesCompile(t *testing.T) {
 		return model.Tree{ID: tree, Name: "显示树", Root: id, Nodes: []model.Node{{ID: id, Name: "攻击目标\nfunc injected() {}\r\u2028", Type: model.NodeWait}}}
 	}
 	p.Trees = []model.Tree{
-		leaf("patrol", "walk"), leaf("Patrol", "walk"),
+		leaf("patrol", "walk"), leaf("Patrol2", "walk"),
 		leaf("foo", "bar_baz"), leaf("foo_bar", "baz"),
+		leaf("fooBar", "baz"),
 		leaf("12", "攻击/目标"), leaf("0", "--"),
 		leaf("shared", "root"),
 		{ID: "main", Name: "主树", Root: "root", Nodes: []model.Node{
@@ -35,10 +34,20 @@ func TestSemanticNamesCompile(t *testing.T) {
 			{ID: "two", Type: model.NodeSubtree, Tree: "shared"},
 		}},
 	}
-	// 同包合法业务名占用槽位常量及第一次消歧结果，生成器必须继续消歧。
+	initial, err := Generate(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reserved := ""
+	for _, loc := range initial.SourceMap {
+		if loc.TreeID == "main" && loc.NodeID == "root" {
+			reserved = "node" + strings.TrimPrefix(loc.FunctionName, "btNode")
+		}
+	}
+	// 同包合法业务名占用可读槽位常量及第一次消歧结果，生成器必须继续消歧。
 	p.Catalog = []model.Definition{
-		{ID: "reserved", Name: "冲突声明", Kind: model.DefinitionAction, GoName: "nodeMainRoot"},
-		{ID: "reservedSuffix", Name: "冲突后缀", Kind: model.DefinitionAction, GoName: "nodeMainRoot_Slot5"},
+		{ID: "reserved", Name: "冲突声明", Kind: model.DefinitionAction, GoName: reserved},
+		{ID: "reservedSuffix", Name: "冲突后缀", Kind: model.DefinitionAction, GoName: reserved + "_Generated"},
 	}
 	a, err := Generate(p)
 	if err != nil {
@@ -53,16 +62,11 @@ func TestSemanticNamesCompile(t *testing.T) {
 		seen[loc.FunctionName] = true
 		if loc.TreeID == "shared" {
 			shared++
-			if !strings.HasSuffix(loc.FunctionName, fmt.Sprintf("_Slot%d", loc.Index)) {
-				t.Fatalf("重复展开未用槽位消歧: %+v", loc)
-			}
 		}
-		if loc.TreeID == "patrol" || loc.TreeID == "Patrol" || loc.TreeID == "foo" || loc.TreeID == "foo_bar" {
-			if !strings.Contains(loc.FunctionName, "_Slot") {
-				t.Fatalf("转换冲突未消歧: %+v", loc)
-			}
+		if !strings.Contains(loc.FunctionName, "_") || strings.Contains(loc.FunctionName, "_Slot") {
+			t.Fatalf("函数名没有可读片段分隔符或仍依赖槽位: %+v", loc)
 		}
-		if loc.TreeID == "main" && loc.NodeID == "root" && !strings.HasSuffix(loc.FunctionName, "_Slot5_Slot5") {
+		if loc.TreeID == "main" && loc.NodeID == "root" && !strings.HasSuffix(loc.FunctionName, "_Generated_Generated") {
 			t.Fatalf("业务后缀冲突未继续消歧: %+v", loc)
 		}
 	}
@@ -83,7 +87,7 @@ func TestSemanticNamesCompile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(a.Source, b.Source) || !reflect.DeepEqual(a.SourceMap, b.SourceMap) || a.Version != b.Version {
+	if !reflect.DeepEqual(a.Files, b.Files) || !reflect.DeepEqual(a.SourceMap, b.SourceMap) || a.Version != b.Version {
 		t.Fatal("无语义集合重排改变了生成产物")
 	}
 	compileNamedProject(t, p, a, "")
@@ -91,7 +95,7 @@ func TestSemanticNamesCompile(t *testing.T) {
 
 // TestContextNameCollisions 验证上下文类型占用节点函数、边界或槽位名时仍可编译。
 func TestContextNameCollisions(t *testing.T) {
-	for _, name := range []string{"btNodeMainRoot", "nodeMainRoot", "btNodeCount", "btNodeNoParent"} {
+	for _, name := range []string{"btNodeMain_Root", "nodeMain_Root", "btNodeCount", "btNodeNoParent"} {
 		t.Run(name, func(t *testing.T) {
 			p := model.Project{SchemaVersion: 1, Name: "上下文冲突", Generation: model.Generation{Package: "generated", ContextType: "*" + name}, Trees: []model.Tree{{ID: "main", Name: "主树", Root: "root", Nodes: []model.Node{{ID: "root", Type: model.NodeWait}}}}}
 			r, err := Generate(p)
@@ -116,7 +120,8 @@ func compileNamedProject(t *testing.T, p model.Project, r Result, extra string) 
 		t.Fatal(err)
 	}
 	mod := "module bt.names.test\n\ngo 1.26.7\n\nrequire github.com/1xxz188/behaviortree v0.0.0\nreplace github.com/1xxz188/behaviortree => " + strconv.Quote(filepath.ToSlash(root)) + "\n"
-	for name, data := range map[string][]byte{"go.mod": []byte(mod), "tree.gen.go": r.Source, "actions.go": scaffold, "context.go": []byte("package generated\n" + extra)} {
+	writeGeneratedFiles(t, dir, r)
+	for name, data := range map[string][]byte{"go.mod": []byte(mod), "actions.go": scaffold, "context.go": []byte("package generated\n" + extra)} {
 		if err := os.WriteFile(filepath.Join(dir, name), data, 0600); err != nil {
 			t.Fatal(err)
 		}
@@ -135,30 +140,32 @@ func TestNodeSlotsAreSymbolic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f, err := parser.ParseFile(token.NewFileSet(), "tree.gen.go", r.Source, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
 	methods := map[string]bool{"Enter": true, "State": true, "Exit": true, "Abort": true, "AbortChildren": true, "Reset": true, "Consume": true, "After": true, "OnlyDirtyChild": true, "IsDirty": true, "PopDirtyChild": true}
-	ast.Inspect(f, func(n ast.Node) bool {
-		switch n := n.(type) {
-		case *ast.CallExpr:
-			if selector, ok := n.Fun.(*ast.SelectorExpr); ok && methods[selector.Sel.Name] && len(n.Args) > 0 {
-				if _, ok := n.Args[0].(*ast.BasicLit); ok {
-					t.Errorf("Frame.%s 使用裸槽位", selector.Sel.Name)
-				}
-			}
-		case *ast.KeyValueExpr:
-			if key, ok := n.Key.(*ast.Ident); ok && (key.Name == "Parent" || key.Name == "End") {
-				if _, ok := n.Value.(*ast.Ident); !ok {
-					t.Errorf("元数据 %s 没有使用具名常量", key.Name)
-				}
-			}
+	for _, file := range r.Files {
+		f, err := parser.ParseFile(token.NewFileSet(), file.Name, file.Source, 0)
+		if err != nil {
+			t.Fatal(err)
 		}
-		return true
-	})
-	lines := strings.Split(string(r.Source), "\n")
+		ast.Inspect(f, func(n ast.Node) bool {
+			switch n := n.(type) {
+			case *ast.CallExpr:
+				if selector, ok := n.Fun.(*ast.SelectorExpr); ok && methods[selector.Sel.Name] && len(n.Args) > 0 {
+					if _, ok := n.Args[0].(*ast.BasicLit); ok {
+						t.Errorf("Frame.%s 使用裸槽位", selector.Sel.Name)
+					}
+				}
+			case *ast.KeyValueExpr:
+				if key, ok := n.Key.(*ast.Ident); ok && (key.Name == "Parent" || key.Name == "End") {
+					if _, ok := n.Value.(*ast.Ident); !ok {
+						t.Errorf("元数据 %s 没有使用具名常量", key.Name)
+					}
+				}
+			}
+			return true
+		})
+	}
 	for _, loc := range r.SourceMap {
+		lines := strings.Split(string(generatedSource(t, r, loc.File)), "\n")
 		line := lines[loc.Line-1]
 		if !strings.HasPrefix(line, "func "+loc.FunctionName+"(") {
 			t.Fatalf("映射没有指向实际函数: %+v", loc)

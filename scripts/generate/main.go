@@ -27,7 +27,7 @@ func main() {
 	check(err)
 	write(filepath.Join(*root, "examples", "catalog.json"), catalog)
 	check(editor.WriteGenerated(filepath.Join(*root, "examples", "behavior"), result))
-	fmt.Println("generated examples/project.json, catalog.json and behavior/tree_gen.go")
+	fmt.Printf("generated examples/project.json, catalog.json and %d Go files in examples/behavior\n", len(result.Files))
 }
 
 // write 保存生成输出并保留手写文件。

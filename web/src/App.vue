@@ -6,11 +6,12 @@ import ProjectDialog from "./ProjectDialog.vue";
 import { startupProject, rememberProject } from "./workspace";
 import type { WorkspaceFiles, RecentStorage } from "./workspace";
 import { ProjectSaveState } from "./saveState";
-import { GenerationRequests, semanticSignature } from "./generation";
-import type { SourceLocation } from "./generation";
+import { createGeneratedSourceIndex, GenerationRequests, selectGeneratedFile, semanticSignature } from "./generation";
+import type { GeneratedFile, GeneratedSourceIndex, SourceLocation } from "./generation";
 import { TreeIdentityIndex, captureSnapshot, restoreSnapshot } from "./treeIdentity";
 import type { EditorSnapshot } from "./treeIdentity";
 import { NodeIdentityIndex } from "./nodeIdentity";
+import { normalizeCodeNames } from "./codeNames";
 import { VueFlow, Handle, Position, useVueFlow } from "@vue-flow/core";
 import type { Connection, NodeDragEvent, NodeMouseEvent } from "@vue-flow/core";
 import { Background } from "@vue-flow/background";
@@ -40,16 +41,17 @@ import {
 } from "./enums";
 import type { DefinitionKind, NodeType, ValueType } from "./enums";
 
-// 生成接口统一返回源码、版本及节点位置；读取磁盘时附带工程匹配结果。
+// 生成接口统一返回文件集合、版本及节点位置；读取磁盘时附带工程匹配结果。
 interface GeneratedCode {
-  source: string; // 完整 Go 源码。
+  files: GeneratedFile[]; // 每棵定义树及公共 glue 的独立源码。
   sourceMap: SourceLocation[]; // 各展开实例的位置。
   version: string; // 生成内容的版本摘要。
-  path?: string; // 实际落盘路径，预览无路径。
+  directory?: string; // 实际落盘目录，预览无路径。
   matchesCurrent?: boolean; // 已保存源码是否对应当前工程。
 }
 // 结果保留生成时的修订号，编辑后只标记过期，不丢弃源码。
 interface CodeSnapshot extends GeneratedCode {
+  index: GeneratedSourceIndex; // 接收快照时建立，切换文件无需重新扫描。
   revision: number; // 对应当前编辑会话的语义修订。
   signature: string; // 撤销恢复时判断内容是否一致。
   origin: "preview" | "generated" | "saved"; // 区分预览和磁盘产物。
@@ -69,6 +71,8 @@ let renamingTree = false; // 同一棵树改号时保留选择与视口。
 const selected = ref("root");
 const nodeIDDraft = ref(selected.value); // 节点身份草稿，显式应用前不修改工程。
 const nodeIDError = ref(""); // 当前节点改号失败原因。
+const codeNameDraft = ref(""); // 代码名草稿仅在显式应用后写入工程。
+const codeNameError = ref(""); // 代码名格式或树内占用校验结果。
 const inspectorOpen = ref(false);
 const search = ref("");
 const fileName = ref(""); // 仅表示当前工作目录内已成功打开或保存的文件。
@@ -96,10 +100,24 @@ const scaffoldSnapshot = shallowRef<{ source: string; revision: number; signatur
 const semanticRevision = ref(0);
 let editRevision = 0; // 包含布局编辑，防止加载请求覆盖期间的新草稿。
 const generationRequests = new GenerationRequests();
-const source = computed(() => codeSnapshot.value?.source ?? "");
+const sourceFileName = ref(""); // 当前显示文件；手动切换不改变画布选择。
+const sourceFile = computed(() => codeSnapshot.value?.index.filesByName.get(sourceFileName.value));
+const source = computed(() => sourceFile.value?.source ?? "");
+const sourceIndex = computed(() => codeSnapshot.value?.index.sourceIndexes.get(sourceFileName.value));
 const sourceStale = computed(() => !!codeSnapshot.value && codeSnapshot.value.revision !== semanticRevision.value);
 const scaffoldStale = computed(() => !!scaffoldSnapshot.value && scaffoldSnapshot.value.revision !== semanticRevision.value);
-const outputPath = computed(() => codeSnapshot.value?.path ?? "仅预览 · 尚未写入目录");
+const outputPath = computed(() => codeSnapshot.value?.directory ?? "仅预览 · 尚未写入目录");
+// 选中树或节点后自动切到定义树文件，旧映射在工程修改后禁止联动。
+function followSourceSelection() {
+  if (!codeSnapshot.value || sourceStale.value) return;
+  sourceFileName.value = selectGeneratedFile(codeSnapshot.value.index, sourceFileName.value, treeID.value)?.name ?? "";
+}
+watch([treeID, selected, sourceStale], followSourceSelection);
+// 再次点击已选节点时仍恢复其源码文件，支持用户先手动查看公共 glue 的场景。
+function selectCanvasNode({ node: item }: NodeMouseEvent) {
+  selected.value = item.id;
+  followSourceSelection();
+}
 const catalogDialog = ref<{ mode: "create" | "import" | "manage"; kind?: DefinitionKind }>();
 // 加载工程时一次建立集合，后续新增与复制只做集合查重。
 let occupiedIDs = new Set<string>();
@@ -352,6 +370,25 @@ function cancelTreeID() {
 function cancelNodeID() {
   nodeIDDraft.value = selected.value;
   nodeIDError.value = "";
+  cancelCodeName();
+}
+// 放弃代码名草稿，选中节点变化或历史恢复时同时刷新输入。
+function cancelCodeName() {
+  codeNameDraft.value = node.value?.codeName ?? "";
+  codeNameError.value = "";
+}
+// 代码名在单次历史边界内提交，只更新生成符号并使已有源码过期。
+function applyCodeName() {
+  if (!node.value) return;
+  const failure = nodeIdentity.value.codeNames.validateRename(node.value, codeNameDraft.value);
+  if (failure) {
+    codeNameError.value = failure;
+    return;
+  }
+  if (codeNameDraft.value === node.value.codeName) return cancelCodeName();
+  mutate(() => nodeIdentity.value.codeNames.rename(node.value!, codeNameDraft.value));
+  cancelCodeName();
+  notice("代码名已更新，请保存并重新生成");
 }
 // 根、入边、布局和选择在同一次历史操作中更新，并使源码与诊断过期。
 function applyNodeID() {
@@ -489,6 +526,7 @@ function duplicate() {
   mutate(() => {
     const n = clone(node.value!);
     n.id = allocateID(occupiedIDs);
+    n.codeName = nodeIdentity.value.codeNames.allocateCopy(n.codeName!);
     n.name = `${n.name ?? kinds[n.type]?.label} 副本`;
     n.children = [];
     tree.value.nodes.push(n);
@@ -652,6 +690,9 @@ async function allowReplacement(reload = false): Promise<boolean> {
 }
 // 工程内容、文件身份和历史在同一个同步步骤更新。
 function installProject(loaded: Project, name: string, unsaved = false) {
+  normalizeCodeNames(loaded);
+  // 替换响应式工程前完成身份校验，失败时继续保留当前工程。
+  new TreeIdentityIndex(loaded);
   project.value = loaded;
   fileName.value = name;
   treeID.value = loaded.trees[0]!.id;
@@ -781,7 +822,7 @@ function generate(write = true) {
   return action(async () => {
     const result = await currentProjectRequest<GeneratedCode>(write ? "/api/generate" : "/api/preview");
     if (!result) return;
-    codeSnapshot.value = { ...result.data, signature: result.signature, revision: result.revision, origin: write ? "generated" : "preview" };
+    acceptCodeSnapshot(result.data, result.signature, result.revision, write ? "generated" : "preview");
     diagnostics.value = [];
     showOutput("source");
     notice(`${write ? "已生成到目录" : "预览已更新"} · ${result.data.version.slice(0, 12)}`);
@@ -793,13 +834,20 @@ async function readGenerated(silent = false) {
     const result = await currentProjectRequest<GeneratedCode>("/api/generated");
     if (!result) return;
     const matches = result.data.matchesCurrent === true;
-    codeSnapshot.value = { ...result.data, signature: matches ? result.signature : "", revision: matches ? result.revision : -1, origin: "saved" };
+    acceptCodeSnapshot(result.data, matches ? result.signature : "", matches ? result.revision : -1, "saved");
     showOutput("source");
     notice(matches ? "已载入上次生成，内容与当前工程一致" : "已载入上次生成，内容与当前工程不同，请更新预览");
   } catch (e) {
     if (silent && e instanceof RequestError && e.status === 404) return;
     throw e;
   }
+}
+// 在响应边界一次建立文件与节点索引，并保持旧快照只在新快照完整可用时被替换。
+function acceptCodeSnapshot(data: GeneratedCode, signature: string, revision: number, origin: CodeSnapshot["origin"]) {
+  const index = createGeneratedSourceIndex(data.files, data.sourceMap);
+  const file = selectGeneratedFile(index, sourceFileName.value, revision === semanticRevision.value ? treeID.value : undefined);
+  codeSnapshot.value = { ...data, index, signature, revision, origin };
+  sourceFileName.value = file?.name ?? "";
 }
 // 骨架只供预览、复制或下载，实际业务仍由独立手写文件实现。
 function previewScaffold() {
@@ -1298,7 +1346,7 @@ onUnmounted(() => toolLifecycle.abort());
         :delete-key-code="null"
         fit-view-on-init
         @connect="link"
-        @node-click="({ node: n }: NodeMouseEvent) => (selected = n.id)"
+        @node-click="selectCanvasNode"
         @pane-click="selected = ''"
         @node-drag-stop="moveNode"
         @dragover="dragOverCanvas"
@@ -1376,6 +1424,17 @@ onUnmounted(() => toolLifecycle.abort());
             :value="node.name"
             @input="changeNodeName"
         /></label>
+        <label class="field-label"
+          >代码名<input v-model="codeNameDraft" class="mono" maxlength="40"
+            :aria-invalid="!!codeNameError" aria-describedby="code-name-help code-name-error"
+            @input="codeNameError = ''" @keydown.enter.prevent="applyCodeName" @keydown.esc.prevent="cancelCodeName"
+        /></label>
+        <p id="code-name-help" class="muted identity-help">树内唯一，1–40 位，英文开头，可含数字和下划线，不能是 Go 关键字。用于生成常量和函数名；修改名称或排序不会改变代码名。</p>
+        <p v-if="codeNameError" id="code-name-error" class="identity-error" role="alert">{{ codeNameError }}</p>
+        <div class="identity-actions">
+          <button @click="applyCodeName" :disabled="codeNameDraft === node.codeName">应用代码名</button>
+          <button @click="cancelCodeName" :disabled="codeNameDraft === node.codeName && !codeNameError">取消</button>
+        </div>
         <label class="field-label"
           >Node ID<input v-model="nodeIDDraft" class="mono"
             :aria-invalid="!!nodeIDError" aria-describedby="node-id-help node-id-error"
@@ -1545,7 +1604,7 @@ onUnmounted(() => toolLifecycle.abort());
             :aria-invalid="!!treeIDError" aria-describedby="tree-id-help tree-id-error"
             @input="treeIDError = ''" @keydown.enter.prevent="applyTreeID" @keydown.esc.prevent="cancelTreeID"
         /></label>
-        <p id="tree-id-help" class="muted identity-help">仅英文、数字、下划线；工程内唯一。应用时同步当前工程全部引用。已上线入口改号需调整外部调用并重启。</p>
+        <p id="tree-id-help" class="muted identity-help">1–80 位英文、数字或下划线；工程内唯一，且不能仅大小写不同。直接用作生成文件名。应用时同步当前工程全部引用，外部入口调用需同步调整。</p>
         <p v-if="treeIDError" id="tree-id-error" class="identity-error" role="alert">{{ treeIDError }}</p>
         <div class="identity-actions">
           <button @click="applyTreeID" :disabled="treeIDDraft === tree.id">应用</button>
@@ -1624,8 +1683,11 @@ onUnmounted(() => toolLifecycle.abort());
           {{ bottomTab === 'scaffold' ? '更新业务骨架' : '更新预览' }}
         </button>
         <template v-if="bottomTab === 'source' ? !!source : !!scaffoldSnapshot">
+          <select v-if="bottomTab === 'source'" v-model="sourceFileName" class="source-file-select" aria-label="生成文件">
+            <option v-for="file in codeSnapshot!.files" :key="file.name" :value="file.name">{{ file.name }}</option>
+          </select>
           <button @click="copySource">复制</button>
-          <button @click="bottomTab === 'scaffold' ? download('actions.go', scaffoldSnapshot!.source, 'text/plain') : download('tree_gen.go', source, 'text/plain')">下载 {{ bottomTab === 'scaffold' ? 'actions.go' : 'Go' }}</button>
+          <button @click="bottomTab === 'scaffold' ? download('actions.go', scaffoldSnapshot!.source, 'text/plain') : download(sourceFile!.name, sourceFile!.source, 'text/plain')">下载 {{ bottomTab === 'scaffold' ? 'actions.go' : '当前文件' }}</button>
           <span class="code-state" :class="{ stale: bottomTab === 'source' ? sourceStale : scaffoldStale }">
             {{ (bottomTab === 'source' ? sourceStale : scaffoldStale) ? '已过期 · 请更新' : bottomTab === 'scaffold' ? '待实现 TODO' : codeSnapshot?.origin === 'preview' ? '当前预览' : '已生成文件' }}
           </span>
@@ -1653,7 +1715,7 @@ onUnmounted(() => toolLifecycle.abort());
           </p></template
         >
       </div>
-      <SourceViewer v-else-if="bottomTab === 'source' && source" :source="source" :source-map="codeSnapshot!.sourceMap"
+      <SourceViewer v-else-if="bottomTab === 'source' && source" :source="source" :source-index="sourceIndex"
         :tree-id="treeID" :node-id="selected" :stale="sourceStale" @locate="locateSource" />
       <SourceViewer v-else-if="bottomTab === 'scaffold' && scaffoldSnapshot" :source="scaffoldSnapshot.source" />
       <div v-else class="output-empty">

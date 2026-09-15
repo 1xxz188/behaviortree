@@ -137,6 +137,7 @@ test("响应式索引支持连续改号、复制和删除", () => {
   const occupied = new Set(index.byID.keys());
   const copy = clone(index.byID.get("custom")!);
   copy.id = allocateID(occupied, "node", () => "copy-uuid");
+  copy.codeName = index.codeNames.allocateCopy(copy.codeName!);
   copy.children = [];
   tree.nodes.push(copy);
   index.addNode(tree.nodes[tree.nodes.length - 1]!);

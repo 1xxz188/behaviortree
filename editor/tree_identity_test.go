@@ -30,7 +30,7 @@ func TestTreeIDBoundaries(t *testing.T) {
 				p.Trees = append(p.Trees, second)
 			}
 			want := 400
-			if model.ValidTreeID(id) && id != "duplicate" {
+			if model.ValidTreeID(id) && id != "duplicate" && id != "MAIN" {
 				want = 200
 			}
 			raw, err := model.Encode(p)

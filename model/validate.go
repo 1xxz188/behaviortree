@@ -15,9 +15,9 @@ import (
 	bt "github.com/1xxz188/behaviortree"
 )
 
-// ValidTreeID 逐字节检查非空 ASCII 树 ID，允许字母、数字和下划线及数字开头。
+// ValidTreeID 检查长度为 1 到 80 字节的 ASCII 树 ID，允许字母、数字和下划线及数字开头。
 func ValidTreeID(id string) bool {
-	if id == "" {
+	if id == "" || len(id) > 80 {
 		return false
 	}
 	for i := 0; i < len(id); i++ {
@@ -224,13 +224,17 @@ func Validate(p Project) []Diagnostic {
 		}
 	}
 	trees := map[string]Tree{}
+	foldedTreeIDs := make(map[string]string, len(p.Trees))
 	for _, tree := range p.Trees {
 		if !ValidTreeID(tree.ID) {
-			add(tree.ID, "", "id", "行为树 ID 不能为空，且只能包含英文字母、数字和下划线")
+			add(tree.ID, "", "id", "行为树 ID 必须为 1 到 80 个英文字母、数字或下划线")
 		}
 		if _, ok := trees[tree.ID]; ok {
 			add(tree.ID, "", "id", "重复树 ID")
+		} else if previous, ok := foldedTreeIDs[strings.ToLower(tree.ID)]; ok {
+			add(tree.ID, "", "id", "树 ID 与 "+previous+" 仅大小写不同，生成文件名冲突")
 		}
+		foldedTreeIDs[strings.ToLower(tree.ID)] = tree.ID
 		trees[tree.ID] = tree
 	}
 	if len(p.Trees) == 0 {
@@ -238,6 +242,7 @@ func Validate(p Project) []Diagnostic {
 	}
 	for _, tree := range p.Trees {
 		nodes := map[string]Node{}
+		codeNames := make(map[string]struct{}, len(tree.Nodes))
 		for _, n := range tree.Nodes {
 			if n.ID == "" {
 				add(tree.ID, n.ID, "id", "节点 ID 不能为空")
@@ -246,6 +251,15 @@ func Validate(p Project) []Diagnostic {
 				add(tree.ID, n.ID, "id", "重复节点 ID")
 			}
 			nodes[n.ID] = n
+			if n.CodeName != "" {
+				if !ValidCodeName(n.CodeName) {
+					add(tree.ID, n.ID, "codeName", "代码名必须为 1 到 40 个 ASCII 字符，以英文字母开头，仅含字母、数字和下划线，且不能是 Go 关键字")
+				}
+				if _, exists := codeNames[n.CodeName]; exists {
+					add(tree.ID, n.ID, "codeName", "树内代码名重复: "+n.CodeName)
+				}
+				codeNames[n.CodeName] = struct{}{}
+			}
 		}
 		if _, ok := nodes[tree.Root]; !ok {
 			add(tree.ID, tree.Root, "root", "根节点不存在")

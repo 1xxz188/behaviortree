@@ -8,7 +8,7 @@ go run ./examples/host
 go test ./examples/... ./hotload ./scripts/...
 ```
 
-`definition/project.go` 用 Go 声明节点目录及示例树。生成命令写出 `project.json`、`catalog.json`、`behavior/tree_gen.go`、`behavior/tree_gen.map.json`；仅覆盖这些生成文件。`behavior/actions.go` 是 GoLand 中编写的手工动作，参数结构体由生成器产生。编辑 `project.json` 后使用根工具的 `generate` 命令，不要再次运行上述重建默认示例的命令。
+`definition/project.go` 用 Go 声明节点目录及示例树。生成命令写出 `project.json`、`catalog.json`、`behavior/glue.gen.go`、每棵定义树对应的 `behavior/tree_<TreeID>.gen.go` 和 `behavior/tree_gen.map.json`。例如默认示例输出 `tree_main.gen.go`，节点代码名使用 `Root`、`Gate`、`Record`；工程 JSON 同时保留节点稳定 ID 和可读 `codeName`。生成器只更新变化的文件，并清理旧清单中的废弃生成文件。`behavior/actions.go` 是 GoLand 中编写的手工动作，参数结构体由公共 glue 提供。编辑 `project.json` 后使用根工具的 `generate` 命令，不要再次运行上述重建默认示例的命令。
 
 `shared.Context` 是宿主固定业务 ABI，角色/房间对象和异步回调令牌归宿主持有。`behavior` 整个子树包括 `helper` 都是可以改变的版本私有代码。树返回 Running 后，宿主在实例所属串行队列中调用 `Complete(token, result)`。日志使用稳定树 ID、节点 ID、版本和事件序号。
 

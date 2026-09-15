@@ -99,7 +99,7 @@ func run(args []string) error {
 		if err = editor.WriteGenerated(*out, result); err != nil {
 			return err
 		}
-		fmt.Printf("已生成 %s/tree_gen.go，版本 %s\n", *out, result.Version)
+		fmt.Printf("已生成到 %s，共 %d 个 Go 文件，版本 %s\n", *out, len(result.Files), result.Version)
 		return nil
 	default:
 		return fmt.Errorf("未知命令 %q", args[0])

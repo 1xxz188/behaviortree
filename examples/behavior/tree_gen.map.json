@@ -1,27 +1,42 @@
 {
-  "version": "6dc314e272c0a523777b2d765eaa6699",
-  "sourceHash": "bdc30819d1928816cc5fed87963f7d9d81400f1d156fd3ff0c13d0d8a1242a9a",
+  "generator": "behaviortree/codegen",
+  "version": "cf5412f11962ea38244c17e05c3e9546",
+  "files": [
+    {
+      "name": "glue.gen.go",
+      "treeId": "",
+      "sha256": "946739fd9958e801fa52d578e0e0103542d8f8640d9bf0139df4078aad3c2404"
+    },
+    {
+      "name": "tree_main.gen.go",
+      "treeId": "main",
+      "sha256": "80a43a352c16d1d14589a39cbf8b5d6a9e2bd604d9f8ebf2738d43b8c80373b3"
+    }
+  ],
   "locations": [
     {
       "treeId": "main",
       "nodeId": "root",
+      "file": "tree_main.gen.go",
       "index": 0,
-      "line": 86,
-      "functionName": "btNodeMainRoot"
+      "line": 11,
+      "functionName": "btNodeMain_Root"
     },
     {
       "treeId": "main",
       "nodeId": "gate",
+      "file": "tree_main.gen.go",
       "index": 1,
-      "line": 123,
-      "functionName": "btNodeMainGate"
+      "line": 64,
+      "functionName": "btNodeMain_Gate"
     },
     {
       "treeId": "main",
       "nodeId": "record",
+      "file": "tree_main.gen.go",
       "index": 2,
-      "line": 139,
-      "functionName": "btNodeMainRecord"
+      "line": 48,
+      "functionName": "btNodeMain_Record"
     }
   ]
 }

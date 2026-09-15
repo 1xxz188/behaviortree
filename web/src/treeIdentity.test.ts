@@ -29,7 +29,9 @@ test("树 ID 严格校验格式与工程内唯一性，名称允许重复", () =
     assert.doesNotThrow(() => new TreeIdentityIndex(makeProject(makeTree(id))));
   }
   assert.throws(() => new TreeIdentityIndex(makeProject(makeTree("a"), makeTree("a"))), /已存在/);
-  assert.equal(new TreeIdentityIndex(makeProject(makeTree("a"), makeTree("A"))).byID.size, 2);
+  assert.throws(() => new TreeIdentityIndex(makeProject(makeTree("a"), makeTree("A"))), /已存在/);
+  assert.equal(validTreeID("a".repeat(80)), true);
+  assert.equal(validTreeID("a".repeat(81)), false);
 });
 
 // 多树及非子树类型中的引用一起改号，并保持节点身份、布局和顺序。

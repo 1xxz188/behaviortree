@@ -39,6 +39,7 @@
       "nodes": [
         {
           "id": "root",
+          "codeName": "Root",
           "type": "sequence",
           "children": [
             "gate",
@@ -47,11 +48,13 @@
         },
         {
           "id": "gate",
+          "codeName": "Gate",
           "type": "action",
           "binding": "gate"
         },
         {
           "id": "record",
+          "codeName": "Record",
           "type": "action",
           "binding": "record",
           "params": {

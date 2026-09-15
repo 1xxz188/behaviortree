@@ -1,4 +1,5 @@
 import type { BTNode, Tree } from "./project.ts";
+import { CodeNameIndex } from "./codeNames.ts";
 
 // 每条引用记录父节点及孩子位置，改号时直接定位，避免扫描父节点的孩子列表。
 interface ChildReference {
@@ -14,6 +15,7 @@ export function validNodeID(value: unknown): value is string {
 // 每棵树独立维护身份及反向引用索引；输入草稿不触发工程扫描。
 export class NodeIdentityIndex {
   readonly byID = new Map<string, BTNode>(); // 树内常数时间身份查找及查重。
+  readonly codeNames: CodeNameIndex; // 当前树的代码名占用与分配缓存。
   private readonly references = new Map<string, Set<ChildReference>>(); // 按孩子 ID 分组的入边。
   private readonly outgoing = new Map<BTNode, ChildReference[]>(); // 按父节点记录已登记出边。
   private readonly tree: Tree; // 身份和布局所属的实际树对象。
@@ -21,11 +23,13 @@ export class NodeIdentityIndex {
   // 打开、切换或恢复树时建立索引，普通编辑随后增量更新。
   constructor(tree: Tree) {
     this.tree = tree;
+    this.codeNames = new CodeNameIndex(tree);
     for (const node of tree.nodes) this.addNode(node);
   }
 
   // 新增和复制完成后登记节点，不改变工程数组。
   addNode(node: BTNode): void {
+    this.codeNames.add(node);
     this.byID.set(node.id, node);
     this.indexChildren(node);
   }
@@ -68,6 +72,7 @@ export class NodeIdentityIndex {
       this.setChildren(parent, parent.children!.filter((id) => id !== node.id));
     this.unindexChildren(node);
     this.byID.delete(node.id);
+    this.codeNames.remove(node);
     const position = this.tree.nodes.indexOf(node);
     if (position >= 0) this.tree.nodes.splice(position, 1);
     if (this.tree.root === node.id) this.tree.root = "";

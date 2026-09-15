@@ -28,6 +28,7 @@ export interface Definition {
 }
 export interface BTNode {
   id: string;
+  codeName?: string; // 树内唯一的稳定代码名，与展示名和节点 ID 独立。
   type: NodeType;
   name?: string;
   children?: string[];
@@ -259,7 +260,7 @@ export function blankProject(): Project {
     blackboard: [],
     catalog: [],
     trees: [{ id: "main", name: "主行为树", root: "root", nodes: [
-      { id: "root", type: "sequence", name: "根节点", children: [] },
+      { id: "root", codeName: "Root", type: "sequence", name: "根节点", children: [] },
     ], layout: { root: { x: 80, y: 80 } } }],
     generation: { package: "behavior", contextImport: "", contextType: "any" },
   };
@@ -274,19 +275,21 @@ export function emptyProject(): Project {
     nodes: [
       {
         id: "root",
+        codeName: "Root",
         type: "sequence",
         name: "巡逻流程",
         children: ["pause", "again"],
       },
-      { id: "pause", type: "wait", name: "观察周围", durationMs: 500 },
+      { id: "pause", codeName: "Pause", type: "wait", name: "观察周围", durationMs: 500 },
       {
         id: "again",
+        codeName: "Again",
         type: "repeat",
         name: "巡视三次",
         count: 3,
         children: ["walk"],
       },
-      { id: "walk", type: "wait", name: "等待移动完成", durationMs: 1000 },
+      { id: "walk", codeName: "Walk", type: "wait", name: "等待移动完成", durationMs: 1000 },
     ],
   };
   autoLayout(tree);

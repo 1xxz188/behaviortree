@@ -52,7 +52,7 @@ func TestRenamedTreeIDGeneratesNewReferences(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if before.Version == after.Version || bytes.Contains(after.Source, []byte(`"main"`)) || !strings.Contains(string(after.Source), `"9_Main":`) {
+	if before.Version == after.Version || bytes.Contains(allGeneratedSource(after), []byte(`"main"`)) || !strings.Contains(string(allGeneratedSource(after)), `"9_Main":`) {
 		t.Fatal("改号未更新运行版本或生成入口")
 	}
 	count := 0

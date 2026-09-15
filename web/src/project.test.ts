@@ -197,9 +197,9 @@ test("源码映射支持节点多实例且导航仅限对应函数范围", () =>
     { treeId: "other", nodeId: "shared", index: 2, line: 14, functionName: "btNodeOtherShared" },
     { treeId: "main", nodeId: "wrong", index: 3, line: 9, functionName: "btNodeMainWrong" },
   ];
-  const index = createSourceIndex(source, locations);
-  assert.deepEqual(index.byNode.get(sourceNodeKey("main", "shared")), locations.slice(0, 2));
-  assert.deepEqual(index.byNode.get(sourceNodeKey("other", "shared")), [locations[2]]);
+  const index = createSourceIndex(source, locations.map((location) => ({ ...location, file: "tree_test.gen.go" })));
+  assert.deepEqual(index.byNode.get(sourceNodeKey("main", "shared"))?.map((location) => location.index), [0, 1]);
+  assert.deepEqual(index.byNode.get(sourceNodeKey("other", "shared"))?.map((location) => location.index), [2]);
   assert.equal(index.byLine.get(6)?.index, 0);
   assert.equal(index.byLine.get(7)?.index, 0);
   for (const line of [1, 8, 9, 10, 17]) assert.equal(index.byLine.has(line), false);
@@ -234,9 +234,9 @@ test("语义函数名映射拒绝不匹配的函数", () => {
     { treeId: "wrong", nodeId: "name", index: 9, line: 12, functionName: "btNodeOther" },
     { treeId: "wrong", nodeId: "line", index: 10, line: 15, functionName: "btNodePatrolWalk" },
   ];
-  const index = createSourceIndex(source, locations);
-  assert.deepEqual(index.byNode.get(sourceNodeKey("patrol", "walk")), locations.slice(0, 2));
-  assert.deepEqual(index.byNode.get(sourceNodeKey("other", "walk")), [locations[2]]);
+  const index = createSourceIndex(source, locations.map((location) => ({ ...location, file: "tree_test.gen.go" })));
+  assert.deepEqual(index.byNode.get(sourceNodeKey("patrol", "walk"))?.map((location) => location.index), [3, 7]);
+  assert.deepEqual(index.byNode.get(sourceNodeKey("other", "walk"))?.map((location) => location.index), [8]);
   assert.equal(index.byLine.get(3)?.index, 3);
   assert.equal(index.byLine.get(7)?.index, 7);
   assert.equal(index.byLine.get(10)?.index, 8);

@@ -16,10 +16,11 @@ import (
 
 // previewResponse 解码实际接口产物用于端到端比较。
 type previewResponse struct {
+	Files          []generatedResponseFile  `json:"files"`          // 返回的多文件源码。
 	Source         string                   `json:"source"`         // 返回的实际源码。
 	SourceMap      []codegen.SourceLocation `json:"sourceMap"`      // 节点映射。
 	Version        string                   `json:"version"`        // 语义版本。
-	Path           string                   `json:"path"`           // 写盘路径。
+	Directory      string                   `json:"directory"`      // 写盘路径。
 	MatchesCurrent bool                     `json:"matchesCurrent"` // 持久产物与请求工程是否一致。
 }
 
@@ -46,7 +47,7 @@ func TestPreviewGenerateAndReopen(t *testing.T) {
 	project := model.Example()
 	preview := decodePreview(t, callEditor(t, server, "POST", "/api/preview", project))
 	for _, location := range preview.SourceMap {
-		if location.FunctionName == "" || !strings.Contains(preview.Source, "func "+location.FunctionName+"(") {
+		if location.FunctionName == "" || !strings.Contains(previewFile(t, preview, location.File).Source, "func "+location.FunctionName+"(") {
 			t.Fatal("预览缺少实际语义函数名", location)
 		}
 	}
@@ -54,14 +55,14 @@ func TestPreviewGenerateAndReopen(t *testing.T) {
 	if err != nil || len(entries) != 0 {
 		t.Fatal("预览写入了磁盘", err)
 	}
-	if preview.Path != "" {
+	if preview.Directory != "" {
 		t.Fatal("预览不应声称已经写盘")
 	}
 	generated := decodePreview(t, callEditor(t, server, "POST", "/api/generate", project))
-	if preview.Source != generated.Source || preview.Version != generated.Version || !reflect.DeepEqual(preview.SourceMap, generated.SourceMap) {
+	if !reflect.DeepEqual(preview.Files, generated.Files) || preview.Version != generated.Version || !reflect.DeepEqual(preview.SourceMap, generated.SourceMap) {
 		t.Fatal("预览与正式生成不一致")
 	}
-	if generated.Path != filepath.Join(dir, "generated", project.Generation.Package, "tree_gen.go") {
+	if generated.Directory != filepath.Join(dir, "generated", project.Generation.Package) {
 		t.Fatal("生成路径不正确")
 	}
 	if err := server.Close(); err != nil {
@@ -73,7 +74,7 @@ func TestPreviewGenerateAndReopen(t *testing.T) {
 	}
 	defer server.Close()
 	loaded := decodePreview(t, callEditor(t, server, "POST", "/api/generated", project))
-	if loaded.Source != generated.Source || !loaded.MatchesCurrent || !reflect.DeepEqual(loaded.SourceMap, generated.SourceMap) {
+	if !reflect.DeepEqual(loaded.Files, generated.Files) || !loaded.MatchesCurrent || !reflect.DeepEqual(loaded.SourceMap, generated.SourceMap) {
 		t.Fatal("重开未读回同一版本")
 	}
 	project.Trees[0].Layout["root"] = model.Position{X: 77, Y: 88}
@@ -82,7 +83,7 @@ func TestPreviewGenerateAndReopen(t *testing.T) {
 	}
 	project.Trees[0].Root = "unfinished"
 	loaded = decodePreview(t, callEditor(t, server, "POST", "/api/generated", project))
-	if loaded.MatchesCurrent || loaded.Source != generated.Source {
+	if loaded.MatchesCurrent || !reflect.DeepEqual(loaded.Files, generated.Files) {
 		t.Fatal("未完成草稿应仍可查看旧源码并标记过期")
 	}
 	if response := callEditor(t, server, "POST", "/api/preview", project); response.Code != 422 || !strings.Contains(response.Body.String(), "diagnostics") {
@@ -110,22 +111,32 @@ func TestGeneratedRejectsCorruptionAndPaths(t *testing.T) {
 		}
 	}
 	generated := decodePreview(t, callEditor(t, server, "POST", "/api/generate", project))
-	mapPath := filepath.Join(filepath.Dir(generated.Path), "tree_gen.map.json")
+	mapPath := filepath.Join(generated.Directory, "tree_gen.map.json")
 	original, err := os.ReadFile(mapPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"hash", "missing-hash", "version", "line", "node", "index", "count", "function", "empty-function", "missing-function", "swapped-functions"} {
+	for _, name := range []string{"hash", "missing-hash", "version", "line", "node", "index", "count", "function", "empty-function", "missing-function", "swapped-functions", "file", "file-path", "duplicate-file", "tree-owner", "missing-file-entry"} {
 		t.Run(name, func(t *testing.T) {
 			var mapping generatedMapping
 			if err := json.Unmarshal(original, &mapping); err != nil {
 				t.Fatal(err)
 			}
 			switch name {
+			case "file":
+				mapping.Locations[0].File = "glue.gen.go"
+			case "file-path":
+				mapping.Files[1].Name = "../outside.go"
+			case "duplicate-file":
+				mapping.Files[1].Name = mapping.Files[0].Name
+			case "tree-owner":
+				mapping.Files[1].TreeID = "wrong"
+			case "missing-file-entry":
+				mapping.Files = mapping.Files[:1]
 			case "hash":
-				mapping.SourceHash = "wrong"
+				mapping.Files[0].SHA256 = "wrong"
 			case "missing-hash":
-				mapping.SourceHash = ""
+				mapping.Files[0].SHA256 = ""
 			case "version":
 				mapping.Version = "wrong"
 			case "line":
@@ -172,13 +183,13 @@ func TestGeneratedRejectsCorruptionAndPaths(t *testing.T) {
 	if err := os.WriteFile(mapPath, original, 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(generated.Path, []byte(generated.Source+"// 修改\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(generated.Directory, generated.Files[0].Name), []byte(generated.Files[0].Source+"// 修改\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	if response := callEditor(t, server, "POST", "/api/generated", project); response.Code != 409 {
 		t.Fatal("修改的源码被接受", response.Code)
 	}
-	file, err := os.OpenFile(generated.Path, os.O_WRONLY, 0644)
+	file, err := os.OpenFile(filepath.Join(generated.Directory, generated.Files[0].Name), os.O_WRONLY, 0644)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,4 +263,16 @@ func TestGeneratedRejectsEscapingSymlink(t *testing.T) {
 	if response := callEditor(t, server, "POST", "/api/generated", project); response.Code != 409 {
 		t.Fatal("越界符号链接被接受", response.Code, response.Body.String())
 	}
+}
+
+// previewFile 在测试快照中找出节点指向的实际文件。
+func previewFile(t *testing.T, result previewResponse, name string) generatedResponseFile {
+	t.Helper()
+	for _, file := range result.Files {
+		if file.Name == name {
+			return file
+		}
+	}
+	t.Fatalf("缺少文件 %s", name)
+	return generatedResponseFile{}
 }

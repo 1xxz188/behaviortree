@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -27,16 +28,16 @@ func TestStableNativeSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(a.Source) != string(b.Source) || a.Version != b.Version {
+	if !reflect.DeepEqual(a.Files, b.Files) || a.Version != b.Version {
 		t.Fatal("布局或节点集合排序改变了生成结果")
 	}
-	lines := strings.Split(string(a.Source), "\n")
 	for _, loc := range a.SourceMap {
+		lines := strings.Split(string(generatedSource(t, a, loc.File)), "\n")
 		if loc.FunctionName == "" || !strings.Contains(lines[loc.Line-1], "func "+loc.FunctionName+"(") {
 			t.Fatalf("错误源码映射: %+v", loc)
 		}
 	}
-	if !strings.Contains(string(a.Source), "switch s.Cursor") || strings.Contains(string(a.Source), "json.Unmarshal") {
+	if !strings.Contains(string(allGeneratedSource(a)), "switch s.Cursor") || strings.Contains(string(allGeneratedSource(a)), "json.Unmarshal") {
 		t.Fatal("未生成实际原生控制流")
 	}
 }
@@ -73,10 +74,10 @@ func TestWideParallelSource(t *testing.T) {
 		return result
 	}
 	small, large := build(100), build(200)
-	if len(large.Source) > len(small.Source)*23/10 {
+	if len(allGeneratedSource(large)) > len(allGeneratedSource(small))*23/10 {
 		t.Fatal("宽节点代码生成量不是线性的")
 	}
-	if !strings.Contains(string(large.Source), "PopDirtyChild") {
+	if !strings.Contains(string(allGeneratedSource(large)), "PopDirtyChild") {
 		t.Fatal("Parallel 未使用受影响分支队列")
 	}
 }
@@ -112,7 +113,7 @@ func TestGeneratedRuntime(t *testing.T) {
 	// 结构检查补足 Steps 计数：缓存探测不增加 Steps，快速路径也不能逐个调用 btNode。
 	for _, location := range result.SourceMap {
 		if location.TreeID == "priority1000" && location.NodeID == "root" {
-			source := string(result.Source)
+			source := string(generatedSource(t, result, location.File))
 			start := strings.Index(source, "func "+location.FunctionName+"(")
 			if start < 0 {
 				t.Fatal("找不到优先级节点函数")
@@ -133,7 +134,8 @@ func TestGeneratedRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 	gomod := "module bt.generated.test\n\ngo 1.26.7\n\nrequire github.com/1xxz188/behaviortree v0.0.0\nreplace github.com/1xxz188/behaviortree => " + strconv.Quote(filepath.ToSlash(moduleRoot)) + "\n"
-	for name, content := range map[string][]byte{"go.mod": []byte(gomod), "tree.gen.go": result.Source, "nodes_test.go": []byte(runtimeFixture)} {
+	writeGeneratedFiles(t, dir, result)
+	for name, content := range map[string][]byte{"go.mod": []byte(gomod), "nodes_test.go": []byte(runtimeFixture)} {
 		if err := os.WriteFile(filepath.Join(dir, name), content, 0600); err != nil {
 			t.Fatal(err)
 		}

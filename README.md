@@ -18,7 +18,7 @@ go run ./cmd/bttool serve --workspace ./.workspace
 
 点击节点库添加节点，从节点端点拖拽连线，在右侧配置属性和调整子节点顺序。节点移动和自动布局只改变画布坐标。支持复制、删除、撤销重做、多树与子树引用、工程 JSON 导入导出、业务节点目录导入、保存和重开。
 
-`--workspace` 是外部工程目录：工程保存为顶层 JSON，Web 生成结果写到 `generated/<包名>/tree_gen.go` 和 `tree_gen.map.json`。草稿允许存在未连完的节点；校验成功后才能生成。点击问题列表可以定位节点。工具只监听回环地址，文件读写限制在指定工作目录中。
+`--workspace` 是外部工程目录：工程保存为顶层 JSON，Web 生成结果写到 `generated/<包名>/`，每棵树对应 `tree_<TreeID>.gen.go`（例如 `tree_patrol.gen.go`），公共代码位于 `glue.gen.go`，`tree_gen.map.json` 保存文件清单和源码映射。草稿允许存在未连完的节点；校验成功后才能生成。点击问题列表可以定位节点。工具只监听回环地址，文件读写限制在指定工作目录中。
 
 ### 业务定义与动作绑定
 
@@ -38,13 +38,13 @@ go run ./cmd/bttool serve --workspace ./.workspace
 - **生成到目录**：重新校验当前工程并写入源码及映射，显示实际路径和版本；与预览使用相同生成逻辑。
 - **查看上次生成**：读取当前目标包的实际生成产物。重新打开已保存工程时也会自动读取，并核对是否对应当前工程；多个工程共用包名时，展示该目录最后一次生成的版本。
 - **生成代码面板**：选中节点定位并高亮对应函数；点击有链接的代码行号返回画布。同一子树节点的多个展开位置分页展示。长文件仅渲染可见行。
-- **业务骨架**：从目录和生成配置创建动作 Start/Resume/Abort、条件函数及 TODO。支持复制或下载 `actions.go`；参数结构体来自 `tree_gen.go`。骨架在未完成时返回 Failure/false，需要手写实现后共同编译。
+- **业务骨架**：从目录和生成配置创建动作 Start/Resume/Abort、条件函数及 TODO。支持复制或下载 `actions.go`；参数结构体来自 `glue.gen.go`。骨架在未完成时返回 Failure/false，需要手写实现后共同编译。
 
 修改行为、参数、行为树 ID 或生成配置后，已有源码会标记过期并停用旧映射定位；仅修改行为树展示名、移动节点、自动布局及其撤销不会使源码过期。树展示名不参与运行时版本摘要；其他名称字段保持原有版本规则。撤销到原有内容时恢复有效标记。编辑期间的旧请求结果不能覆盖新工程，没有定时轮询或逐次输入自动生成。
 
-源码映射格式统一包含 `sourceHash`（源码 SHA-256）、版本及节点位置，读取时核对源码与映射；不支持缺少摘要的旧产物。工程保存与代码生成是独立操作，生成源码不等于业务 Go 函数已实现或编译通过。
+源码面板通过文件选择器切换树文件和公共 glue，选中节点会切换到定义树文件并定位对应函数；复制和下载使用当前文件的实际名称。源码映射包含版本、文件清单、每文件 SHA-256 及节点位置，读取时校验整批产物；任一文件缺失、被修改或映射错误都会拒绝读取。生成产物只支持当前格式。工程保存与代码生成是独立操作，生成源码不等于业务 Go 函数已实现或编译通过。
 
-Go 代码不能在页面内任意编写或执行。业务动作留在 GoLand 中的手写文件，和生成文件使用同一个包；固定业务上下文可从另一个共享包导入。重复生成只覆盖标记为自动生成的文件，遇到手写 `tree_gen.go` 会拒绝覆盖。
+Go 代码不能在页面内任意编写或执行。业务动作留在 GoLand 中的手写文件，和生成文件使用同一个包；固定业务上下文可从另一个共享包导入。每次生成完整工程，内容未变的文件不会重复写盘；修改无关树不改变其他树文件的内容和修改时间。写盘前核验全部目标文件，拒绝覆盖手写文件，删除树后清理旧清单中的废弃生成文件。文件逐个发布，最后发布映射清单；若中途失败，请重新生成修复不完整产物。
 
 ## 独立发行与前端开发
 
@@ -88,11 +88,17 @@ go run ./cmd/bttool catalog --file ./examples/project.json
 go run ./examples/host
 ```
 
-可从 [Go 元数据声明](examples/definition/project.go)、[手写动作](examples/behavior/actions.go)、[生成代码](examples/behavior/tree_gen.go) 和 [宿主示例](examples/host/main.go) 开始接入。`scripts/generate` 重建默认示例，不能用于保存你对示例 JSON 的修改；编辑后的工程应交给 `bttool generate`。
+可从 [Go 元数据声明](examples/definition/project.go)、[手写动作](examples/behavior/actions.go)、[公共生成代码](examples/behavior/glue.gen.go)、[树生成文件目录](examples/behavior) 和 [宿主示例](examples/host/main.go) 开始接入。`scripts/generate` 重建默认示例，不能用于保存你对示例 JSON 的修改；编辑后的工程应交给 `bttool generate`。
 
 动作函数的形状为 `func(*bt.Frame[Context], node int, phase bt.Phase, params ActionParams) bt.Status`；条件为 `func(*bt.Frame[Context], node int, params ConditionParams) bool`。参数结构体由 Go 元数据生成。`Start` 启动操作并快速返回 `Running`；`Resume` 用 `Frame.Consume(node)` 读取完成结果；`Abort` 撤销仍在进行的操作。动作需要主动捕获 `Frame.Token(node)`，外部完成事件携带该令牌回到宿主队列。
 
-GoLand 直接打开本仓库根目录，使用 Go 1.26.7 工具链即可，无需额外构建标签。生成代码使用 TreeID + NodeID 派生的语义化槽位常量和节点函数名，重复展开或命名冲突通过 `_Slot<index>` 后缀区分；执行仍为整数 `switch` 与直接函数调用。`tree_gen.map.json` 保留源 TreeID、NodeID、展开后的整数索引、实际函数名 `functionName` 和 Go 行号；同一子树的多个调用位置有各自索引。源码映射必须提供实际函数名，缺失时需重新生成产物。当前没有 Web 断点、单步或 Delve 集成。
+GoLand 直接打开本仓库根目录，使用 Go 1.26.7 工具链即可，无需额外构建标签。节点的 `id` 用于稳定引用，`name` 用于显示，`codeName` 用于可读代码，例如 `nodePatrol_WaitMove`、`btNodePatrol_WaitMove`。代码名为 1–40 个 ASCII 字符，字母开头，后续允许字母、数字和下划线，不能使用 Go 关键字，且在树内唯一。右侧“代码名”可单独应用修改；改显示名称不会改写代码名或 ID。
+
+未指定代码名的节点使用统一的默认分配规则：短语义 ID 优先作为默认名，随机 UUID 使用 `Wait1`、`Action1` 等节点类型名称并分配数字后缀，保存时写入 JSON。创建和复制节点也立即分配名称；删除、重排或重新生成不对已保存名称重新编号。Go 调用者可用 `model.WithCodeNames(project)` 取得补全后的工程，原输入不会被修改。
+
+重复子树实例始终用入口树与引用点代码名消歧，例如 `btNodeCombat_Attack_ViaPatrol_Engage`，不会因增加引用而给旧实例重新编号。下划线在名称片段内转义，避免拼接歧义；超过 120 字符的调用链使用 12 位稳定摘要，碰撞明确报错。普通入口不附加哈希。树文件按定义归属：A 引用 B 时，B 的所有独立展开实例都位于 B 文件；A 增删对 B 的引用会改变 B 文件。公共 glue 保存全局槽位、参数类型、黑板访问器、程序元数据及分派；命名只在生成阶段处理，运行时仍为整数 `switch` 与直接函数调用。
+
+`tree_gen.map.json` 保留源 TreeID、NodeID、展开后的整数索引、实际函数名 `functionName`、文件名 `file` 和文件内 Go 行号。生成器 `Result.Files` 返回每个文件的 `Name`、`TreeID`、`Source`，glue 的 TreeID 为空；HTTP 生成接口返回 `files`（源码为字符串）、`sourceMap`、`version`，实际落盘时附带 `directory`。TreeID 保留原大小写，限制为 1–80 个英文字母、数字或下划线，工程内不允许仅大小写不同的 ID，超长或冲突会明确报错，不自动截断或修改已有文件名。不提供旧文件名或旧清单的兼容与迁移逻辑。当前没有 Web 断点、单步或 Delve 集成。
 
 ## 作为 Go 依赖使用
 

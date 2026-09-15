@@ -152,21 +152,28 @@ func normalizeDraft(p *model.Project) error {
 	for i := range p.Trees {
 		t := &p.Trees[i]
 		if !model.ValidTreeID(t.ID) {
-			return errors.New("行为树 ID 不能为空，且只能包含英文字母、数字和下划线")
+			return errors.New("行为树 ID 必须为 1–80 个英文字母、数字或下划线")
 		}
-		if seen[t.ID] {
-			return fmt.Errorf("行为树 ID 重复: %s", t.ID)
+		if seen[strings.ToLower(t.ID)] {
+			return fmt.Errorf("行为树 ID 重复（不区分大小写）: %s", t.ID)
 		}
-		seen[t.ID] = true
+		seen[strings.ToLower(t.ID)] = true
 		if t.Nodes == nil {
 			t.Nodes = []model.Node{}
 		}
 		nodes := make(map[string]bool, len(t.Nodes))
+		codeNames := make(map[string]bool, len(t.Nodes))
 		for _, n := range t.Nodes {
 			if n.ID == "" || nodes[n.ID] {
 				return fmt.Errorf("树 %s 的节点 ID 为空或重复", t.ID)
 			}
 			nodes[n.ID] = true
+			if n.CodeName != "" {
+				if !model.ValidCodeName(n.CodeName) || codeNames[n.CodeName] {
+					return fmt.Errorf("树 %s 的节点 %s 代码名非法或重复: %s", t.ID, n.ID, n.CodeName)
+				}
+				codeNames[n.CodeName] = true
+			}
 		}
 	}
 	return nil
@@ -350,10 +357,10 @@ func (s *Server) generate(w http.ResponseWriter, r *http.Request) {
 		reply(w, 409, map[string]string{"error": err.Error()})
 		return
 	}
-	reply(w, 200, map[string]any{"source": string(result.Source), "sourceMap": result.SourceMap, "version": result.Version, "path": filepath.Join(s.path, rel, "tree_gen.go")})
+	reply(w, 200, map[string]any{"files": responseFiles(result.Files), "sourceMap": result.SourceMap, "version": result.Version, "directory": filepath.Join(s.path, rel)})
 }
 
-// WriteGenerated 将结果写入 CLI 明确指定的目录，拒绝覆盖手写 tree_gen.go。
+// WriteGenerated 将完整工程写入 CLI 指定目录，保护手写文件并跳过未变化的产物。
 func WriteGenerated(dir string, result codegen.Result) error {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
@@ -364,36 +371,6 @@ func WriteGenerated(dir string, result codegen.Result) error {
 	}
 	defer root.Close()
 	return writeGenerated(root, ".", result)
-}
-
-// writeGenerated 发布可再生成文件；源映射以版本摘要关联代码。
-func writeGenerated(root *os.Root, dir string, result codegen.Result) error {
-	if err := root.MkdirAll(dir, 0755); err != nil {
-		return err
-	}
-	name := filepath.Join(dir, "tree_gen.go")
-	if f, err := root.Open(name); err == nil {
-		head, readErr := io.ReadAll(io.LimitReader(f, 512))
-		_ = f.Close()
-		if readErr != nil {
-			return readErr
-		}
-		if !bytes.Contains(head, []byte("Code generated")) || !bytes.Contains(head, []byte("DO NOT EDIT")) {
-			return fmt.Errorf("拒绝覆盖手写文件 %s", name)
-		}
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		return err
-	}
-	mapping, err := json.MarshalIndent(generatedMapping{
-		Version: result.Version, SourceHash: sourceHash(result.Source), Locations: result.SourceMap,
-	}, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err = atomicWrite(root, filepath.Join(dir, "tree_gen.map.json"), mapping); err != nil {
-		return err
-	}
-	return atomicWrite(root, name, result.Source)
 }
 
 // atomicWrite 使用同目录临时文件和重命名发布，失败时保留原文件。

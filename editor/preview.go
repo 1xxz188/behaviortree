@@ -11,21 +11,47 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/1xxz188/behaviortree/codegen"
 	"github.com/1xxz188/behaviortree/model"
 )
 
-// MaxGeneratedBytes 限制单个产物的读取大小，容纳展开后的代码并防止无界读取。
+// MaxGeneratedBytes 限制整批源码和映射的大小，防止无界读取。
 const MaxGeneratedBytes = 64 << 20
 
 // generatedMapping 将源码摘要和节点位置一起持久化，拒绝交错发布或损坏的映射。
 type generatedMapping struct {
-	Version    string                   `json:"version"`    // 工程语义版本摘要。
-	SourceHash string                   `json:"sourceHash"` // 完整源码 SHA-256 摘要。
-	Locations  []codegen.SourceLocation `json:"locations"`  // 每个展开节点的位置。
+	Generator string                   `json:"generator"` // 生成器所有权标记。
+	Version   string                   `json:"version"`   // 工程语义版本摘要。
+	Files     []generatedFileMapping   `json:"files"`     // 全部源码文件及摘要。
+	Locations []codegen.SourceLocation `json:"locations"` // 每个展开节点的位置。
+}
+
+// generatedFileMapping 记录单个文件的定义树归属和内容摘要。
+type generatedFileMapping struct {
+	Name   string `json:"name"`   // 安全的相对文件名。
+	TreeID string `json:"treeId"` // 定义树 ID，公共文件为空。
+	SHA256 string `json:"sha256"` // 文件源码摘要。
+}
+
+// generatedResponseFile 使用字符串传输源码，避免字节数组被编码成 base64。
+type generatedResponseFile struct {
+	Name   string `json:"name"`   // 生成文件名。
+	TreeID string `json:"treeId"` // 定义树 ID。
+	Source string `json:"source"` // 完整 Go 源码。
+}
+
+// responseFiles 一次转换快照中的文件列表。
+func responseFiles(files []codegen.GeneratedFile) []generatedResponseFile {
+	result := make([]generatedResponseFile, len(files))
+	for i, file := range files {
+		result[i] = generatedResponseFile{Name: file.Name, TreeID: file.TreeID, Source: string(file.Source)}
+	}
+	return result
 }
 
 // sourceHash 计算源码摘要，不依赖目录或文件时间。
@@ -49,7 +75,7 @@ func (s *Server) preview(w http.ResponseWriter, r *http.Request) {
 		generationError(w, err)
 		return
 	}
-	reply(w, 200, map[string]any{"source": string(result.Source), "sourceMap": result.SourceMap, "version": result.Version})
+	reply(w, 200, map[string]any{"files": responseFiles(result.Files), "sourceMap": result.SourceMap, "version": result.Version})
 }
 
 // scaffold 仅预览业务函数骨架，用户可以复制所需函数到自己的业务文件。
@@ -98,26 +124,14 @@ func (s *Server) readGenerated(w http.ResponseWriter, r *http.Request) {
 	}
 	dir := filepath.Join("generated", pkg)
 	s.mu.Lock()
-	source, err := s.readArtifact(filepath.Join(dir, "tree_gen.go"))
-	var raw []byte
-	if err == nil {
-		raw, err = s.readArtifact(filepath.Join(dir, "tree_gen.map.json"))
-	}
+	files, mapping, err := readGeneratedFiles(s.root, dir, pkg)
 	s.mu.Unlock()
 	if err != nil {
 		status := 409
 		if errors.Is(err, fs.ErrNotExist) {
 			status = 404
 		}
-		reply(w, status, map[string]string{"error": err.Error()})
-		return
-	}
-	var mapping generatedMapping
-	if err = json.Unmarshal(raw, &mapping); err == nil {
-		err = validateGenerated(source, pkg, mapping)
-	}
-	if err != nil {
-		reply(w, 409, map[string]string{"error": "生成产物不完整或已修改，请重新生成：" + err.Error()})
+		reply(w, status, map[string]string{"error": "生成产物不完整或已修改，请重新生成：" + err.Error()})
 		return
 	}
 	currentVersion, err := codegen.ProjectVersion(project)
@@ -125,12 +139,37 @@ func (s *Server) readGenerated(w http.ResponseWriter, r *http.Request) {
 		generationError(w, err)
 		return
 	}
-	reply(w, 200, map[string]any{"source": string(source), "sourceMap": mapping.Locations, "version": mapping.Version, "path": filepath.Join(s.path, dir, "tree_gen.go"), "matchesCurrent": currentVersion == mapping.Version})
+	reply(w, 200, map[string]any{"files": responseFiles(files), "sourceMap": mapping.Locations, "version": mapping.Version, "directory": filepath.Join(s.path, dir), "matchesCurrent": currentVersion == mapping.Version})
 }
 
-// readArtifact 通过受限根读取普通文件，不跟随越界符号链接或读取特殊设备。
-func (s *Server) readArtifact(name string) ([]byte, error) {
-	f, err := s.root.Open(name)
+// readGeneratedFiles 在同一批大小预算内读取清单和全部源码，并验证完整快照。
+func readGeneratedFiles(root *os.Root, dir, pkg string) ([]codegen.GeneratedFile, generatedMapping, error) {
+	var mapping generatedMapping
+	budget := int64(MaxGeneratedBytes)
+	raw, err := readArtifact(root, filepath.Join(dir, "tree_gen.map.json"), &budget)
+	if err != nil {
+		return nil, mapping, err
+	}
+	if err = json.Unmarshal(raw, &mapping); err != nil {
+		return nil, mapping, err
+	}
+	if err = validateManifest(mapping); err != nil {
+		return nil, mapping, err
+	}
+	files := make([]codegen.GeneratedFile, len(mapping.Files))
+	for i, entry := range mapping.Files {
+		source, err := readArtifact(root, filepath.Join(dir, entry.Name), &budget)
+		if err != nil {
+			return nil, mapping, errors.New("无法读取源码 " + entry.Name + ": " + err.Error())
+		}
+		files[i] = codegen.GeneratedFile{Name: entry.Name, TreeID: entry.TreeID, Source: source}
+	}
+	return files, mapping, validateGenerated(files, pkg, mapping)
+}
+
+// readArtifact 通过受限根读取普通文件，并消耗整批共享的读取预算。
+func readArtifact(root *os.Root, name string, budget *int64) ([]byte, error) {
+	f, err := root.Open(name)
 	if err != nil {
 		return nil, err
 	}
@@ -139,30 +178,86 @@ func (s *Server) readArtifact(name string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !info.Mode().IsRegular() || info.Size() > MaxGeneratedBytes {
-		return nil, errors.New("产物不是普通文件或超过大小限制")
+	if !info.Mode().IsRegular() || info.Size() > *budget {
+		return nil, errors.New("产物不是普通文件或整批超过大小限制")
 	}
-	data, err := io.ReadAll(io.LimitReader(f, MaxGeneratedBytes+1))
-	if len(data) > MaxGeneratedBytes {
-		return nil, errors.New("产物超过大小限制")
+	data, err := io.ReadAll(io.LimitReader(f, *budget+1))
+	*budget -= int64(len(data))
+	if *budget < 0 {
+		return nil, errors.New("整批产物超过大小限制")
 	}
 	return data, err
 }
 
-// validateGenerated 单次解析源码核对版本、节点身份和函数行号，防止损坏映射误联节点。
-func validateGenerated(source []byte, pkg string, mapping generatedMapping) error {
-	if mapping.SourceHash == "" || mapping.SourceHash != sourceHash(source) {
-		return errors.New("源码摘要不匹配")
+// validateManifest 在文件访问前校验清单所有权、路径、大小写碰撞及树归属。
+func validateManifest(mapping generatedMapping) error {
+	if mapping.Generator != "behaviortree/codegen" || mapping.Version == "" || len(mapping.Files) < 2 {
+		return errors.New("无效生成清单")
 	}
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "tree_gen.go", source, 0)
-	if err != nil {
+	names := make(map[string]bool, len(mapping.Files))
+	trees := make(map[string]bool, len(mapping.Files))
+	for i, file := range mapping.Files {
+		name := file.Name
+		if name == "" || strings.ContainsAny(name, "/\\:") || filepath.Base(name) != name || names[strings.ToLower(name)] {
+			return errors.New("文件名无效或冲突")
+		}
+		if i == 0 {
+			if name != "glue.gen.go" || file.TreeID != "" {
+				return errors.New("缺少公共 glue 文件")
+			}
+		} else {
+			validName := model.ValidTreeID(file.TreeID) && name == codegen.TreeFileName(file.TreeID)
+			if file.TreeID == "" || trees[file.TreeID] || !validName {
+				return errors.New("树文件归属无效")
+			}
+			trees[file.TreeID] = true
+		}
+		if hash, err := hex.DecodeString(file.SHA256); err != nil || len(hash) != sha256.Size {
+			return errors.New("无效源码摘要")
+		}
+		names[strings.ToLower(name)] = true
+	}
+	return nil
+}
+
+// validateGenerated 单次解析源码核对版本、节点身份和函数行号，防止损坏映射误联节点。
+func validateGenerated(files []codegen.GeneratedFile, pkg string, mapping generatedMapping) error {
+	if err := validateManifest(mapping); err != nil {
 		return err
 	}
-	if file.Name.Name != pkg {
-		return errors.New("源码包名不匹配")
+	if len(files) != len(mapping.Files) {
+		return errors.New("文件数量不匹配")
 	}
+	fset := token.NewFileSet()
 	lines := make(map[string]int)
+	owners := make(map[string]generatedFileMapping)
+	var file *ast.File
+	for i, source := range files {
+		entry := mapping.Files[i]
+		if source.Name != entry.Name || source.TreeID != entry.TreeID || sourceHash(source.Source) != entry.SHA256 || !generatedSource(source.Source) {
+			return errors.New("源码摘要或归属不匹配")
+		}
+		parsed, err := parser.ParseFile(fset, source.Name, source.Source, parser.SkipObjectResolution)
+		if err != nil {
+			return err
+		}
+		if parsed.Name.Name != pkg {
+			return errors.New("源码包名不匹配")
+		}
+		if i == 0 {
+			file = parsed
+		}
+		for _, decl := range parsed.Decls {
+			if function, ok := decl.(*ast.FuncDecl); ok && function.Recv == nil {
+				name := function.Name.Name
+				if lines[name] != 0 {
+					return errors.New("重复生成函数")
+				}
+				lines[name] = fset.Position(function.Pos()).Line
+				owners[name] = entry
+			}
+		}
+	}
 	slots := generatedSlots(file)
 	var step *ast.FuncDecl
 	var identities []codegen.SourceLocation
@@ -172,7 +267,6 @@ func validateGenerated(source []byte, pkg string, mapping generatedMapping) erro
 		if !ok {
 			continue
 		}
-		lines[function.Name.Name] = fset.Position(function.Pos()).Line
 		if function.Name.Name == "btStep" {
 			step = function
 		}
@@ -240,6 +334,11 @@ func validateGenerated(source []byte, pkg string, mapping generatedMapping) erro
 			return errors.New("节点函数与分派槽位不匹配")
 		}
 		identity.FunctionName = location.FunctionName
+		owner := owners[name]
+		identity.File = owner.Name
+		if owner.TreeID != identity.TreeID {
+			return errors.New("节点不属于定义树文件")
+		}
 		identity.Line = lines[name]
 		if identity.Line == 0 || identity.NodeID == "" || identity.TreeID == "" || identity != mapping.Locations[i] {
 			return errors.New("节点位置与源码不匹配")

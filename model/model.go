@@ -65,7 +65,7 @@ type Value struct {
 
 // Tree 以 ID 作为运行时主键，并使用显式 Children 顺序定义优先级。
 type Tree struct {
-	ID     string              `json:"id"`               // 工程内唯一且区分大小写的稳定 ID；显式修改时需同步全部引用。
+	ID     string              `json:"id"`               // 稳定 ID；引用区分大小写，工程内也禁止仅大小写不同的 ID，修改需同步引用。
 	Name   string              `json:"name"`             // 允许重复的显示名称，不参与运行时版本。
 	Root   string              `json:"root"`             // 根节点 ID。
 	Nodes  []Node              `json:"nodes"`            // 节点集合，数组顺序无语义。
@@ -81,6 +81,7 @@ type Position struct {
 // Node 是内建节点或 Go 业务节点的一次使用。
 type Node struct {
 	ID         string           `json:"id"`                   // 树内稳定节点 ID。
+	CodeName   string           `json:"codeName,omitempty"`   // 树内唯一的持久化代码名，与显示名称和运行身份独立。
 	Type       NodeType         `json:"type"`                 // 内建节点种类。
 	Name       string           `json:"name,omitempty"`       // 可选显示名。
 	Children   []string         `json:"children,omitempty"`   // 有序子节点 ID。
@@ -114,11 +115,11 @@ func Decode(data []byte) (Project, error) {
 	if err := validateDecodedTypes(p); err != nil {
 		return p, err
 	}
-	return p, nil
+	return WithCodeNames(p), nil
 }
 
 // Encode 保留稳定 ID、显式顺序以及编辑布局。
-func Encode(p Project) ([]byte, error) { return json.MarshalIndent(p, "", "  ") }
+func Encode(p Project) ([]byte, error) { return json.MarshalIndent(WithCodeNames(p), "", "  ") }
 
 // ExportCatalog 将手写 Go 声明导出为 Web 可读取的节点目录。
 func ExportCatalog(definitions []Definition) ([]byte, error) {

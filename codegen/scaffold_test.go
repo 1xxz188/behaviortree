@@ -46,7 +46,8 @@ func TestScaffoldCompilesWithGeneratedParameters(t *testing.T) {
 			if context == "*LocalContext" {
 				testSource += "// LocalContext 是同包上下文测试替身。\ntype LocalContext struct{}\n"
 			}
-			for name, source := range map[string][]byte{"go.mod": []byte(gomod), "tree_gen.go": generated.Source, "actions.go": scaffold, "actions_test.go": []byte(testSource)} {
+			writeGeneratedFiles(t, dir, generated)
+			for name, source := range map[string][]byte{"go.mod": []byte(gomod), "actions.go": scaffold, "actions_test.go": []byte(testSource)} {
 				if err := os.WriteFile(filepath.Join(dir, name), source, 0644); err != nil {
 					t.Fatal(err)
 				}

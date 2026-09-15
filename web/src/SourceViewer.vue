@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { createSourceIndex, sourceNodeKey } from "./generation";
-import type { SourceLocation } from "./generation";
+import type { SourceIndex, SourceLocation } from "./generation";
 
 // 源码查看器只渲染可见行；大树生成的长文件不会创建同等数量的 DOM。
 const props = defineProps<{
   source: string; // 完整只读源码。
-  sourceMap?: SourceLocation[]; // 节点展开位置，骨架没有映射。
+  sourceIndex?: SourceIndex; // 接收快照时建立的当前文件索引，骨架没有映射。
   treeId?: string; // 当前选中树。
   nodeId?: string; // 当前选中节点。
   stale?: boolean; // 过期源码禁止按旧映射跳转当前画布。
@@ -20,8 +20,8 @@ const pageSize = 6;
 const lineHeight = 22;
 const overscan = 8;
 let observer: ResizeObserver | undefined;
-const lines = computed(() => props.source.split("\n"));
-const index = computed(() => createSourceIndex(props.source, props.sourceMap ?? []));
+const index = computed(() => props.sourceIndex ?? createSourceIndex(props.source, []));
+const lines = computed(() => index.value.lines);
 const locations = computed(() => props.stale ? [] : index.value.byNode.get(sourceNodeKey(props.treeId ?? "", props.nodeId ?? "")) ?? []);
 const visibleLocations = computed(() => locations.value.slice(occurrencePage.value * pageSize, (occurrencePage.value + 1) * pageSize));
 const activeIndices = computed(() => new Set(locations.value.map((location) => location.index)));
@@ -32,11 +32,7 @@ const visible = computed(() => lines.value.slice(first.value, last.value).map((t
   const location = props.stale ? undefined : index.value.byLine.get(line);
   return { text, line, location, active: !!location && activeIndices.value.has(location.index) };
 }));
-const totalWidth = computed(() => {
-  let longest = 0;
-  for (const line of lines.value) longest = Math.max(longest, line.length);
-  return Math.min(longest, 10000) * 8 + 90;
-});
+const totalWidth = computed(() => Math.min(index.value.longestLineLength, 10000) * 8 + 90);
 
 // 只滚动代码区域，不改变画布、页面或用户的面板高度。
 function jump(line: number) {
