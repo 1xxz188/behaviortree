@@ -47,7 +47,7 @@ func TestSemanticNamesCompile(t *testing.T) {
 	// 同包合法业务名占用可读槽位常量及第一次消歧结果，生成器必须继续消歧。
 	p.Catalog = []model.Definition{
 		{ID: "reserved", Name: "冲突声明", Kind: model.DefinitionAction, GoName: reserved},
-		{ID: "reservedSuffix", Name: "冲突后缀", Kind: model.DefinitionAction, GoName: reserved + "_Generated"},
+		{ID: "reservedSuffix", Name: "冲突后缀", Kind: model.DefinitionAction, GoName: reserved + "Generated"},
 	}
 	a, err := Generate(p)
 	if err != nil {
@@ -63,10 +63,10 @@ func TestSemanticNamesCompile(t *testing.T) {
 		if loc.TreeID == "shared" {
 			shared++
 		}
-		if !strings.Contains(loc.FunctionName, "_") || strings.Contains(loc.FunctionName, "_Slot") {
-			t.Fatalf("函数名没有可读片段分隔符或仍依赖槽位: %+v", loc)
+		if strings.Contains(loc.FunctionName, "_") {
+			t.Fatalf("函数名仍包含下划线: %+v", loc)
 		}
-		if loc.TreeID == "main" && loc.NodeID == "root" && !strings.HasSuffix(loc.FunctionName, "_Generated_Generated") {
+		if loc.TreeID == "main" && loc.NodeID == "root" && !strings.HasSuffix(loc.FunctionName, "GeneratedGenerated") {
 			t.Fatalf("业务后缀冲突未继续消歧: %+v", loc)
 		}
 	}
@@ -95,7 +95,7 @@ func TestSemanticNamesCompile(t *testing.T) {
 
 // TestContextNameCollisions 验证上下文类型占用节点函数、边界或槽位名时仍可编译。
 func TestContextNameCollisions(t *testing.T) {
-	for _, name := range []string{"btNodeMain_Root", "nodeMain_Root", "btNodeCount", "btNodeNoParent"} {
+	for _, name := range []string{"btNodeMainWait1", "nodeMainWait1", "btNodeCount", "btNodeNoParent"} {
 		t.Run(name, func(t *testing.T) {
 			p := model.Project{SchemaVersion: 1, Name: "上下文冲突", Generation: model.Generation{Package: "generated", ContextType: "*" + name}, Trees: []model.Tree{{ID: "main", Name: "主树", Root: "root", Nodes: []model.Node{{ID: "root", Type: model.NodeWait}}}}}
 			r, err := Generate(p)

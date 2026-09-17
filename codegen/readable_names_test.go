@@ -20,10 +20,10 @@ func TestReadableCodeNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(r.Files) != 2 || r.Files[1].Name != "tree_patrol.gen.go" || r.SourceMap[0].FunctionName != "btNodePatrol_WaitMove" {
+	if len(r.Files) != 2 || r.Files[1].Name != "tree_patrol.gen.go" || r.SourceMap[0].FunctionName != "btNodePatrolWaitMove" {
 		t.Fatalf("普通入口仍有冗余命名: %+v", r.SourceMap)
 	}
-	if !strings.Contains(string(r.Files[0].Source), "nodePatrol_WaitMove = iota") {
+	if !strings.Contains(string(r.Files[0].Source), "nodePatrolWaitMove = iota") {
 		t.Fatal("槽位常量没有采用可读代码名")
 	}
 	compileNamedProject(t, p, r, "")
@@ -49,7 +49,7 @@ func TestReadableReferenceNames(t *testing.T) {
 			got[loc.FunctionName] = true
 		}
 	}
-	want := map[string]bool{"btNodeCombat_Attack": true, "btNodeCombat_Attack_ViaPatrol_Engage": true, "btNodeCombat_Attack_ViaPatrol_Retry": true}
+	want := map[string]bool{"btNodeCombatAttack": true, "btNodeCombatAttackViaPatrolEngage": true, "btNodeCombatAttackViaPatrolRetry": true}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("引用实例名 = %v，期望 %v", got, want)
 	}
@@ -70,10 +70,10 @@ func TestDeepReferenceNamesStayBounded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	short := regexp.MustCompile(`_Via_[0-9a-f]{12}$`)
+	short := regexp.MustCompile(`Via[0-9A-Fa-f]{12}$`)
 	seen, shortened := map[string]bool{}, false
 	for _, loc := range r.SourceMap {
-		if seen[loc.FunctionName] || len(loc.FunctionName) > 180 {
+		if seen[loc.FunctionName] || len(loc.FunctionName) > 180 || strings.Contains(loc.FunctionName, "_") {
 			t.Fatalf("深链名称不唯一或失去长度上界: %s", loc.FunctionName)
 		}
 		seen[loc.FunctionName] = true
@@ -98,7 +98,7 @@ func TestCodeNameVersionNormalization(t *testing.T) {
 	if err != nil || version != r.Version || p.Trees[0].Nodes[0].CodeName != "" {
 		t.Fatalf("补全版本不一致或修改了调用者: %s, %v", version, err)
 	}
-	if r.SourceMap[0].FunctionName != "btNodeMain_Wait1" {
+	if r.SourceMap[0].FunctionName != "btNodeMainWait1" {
 		t.Fatalf("UUID 被带入默认代码名: %s", r.SourceMap[0].FunctionName)
 	}
 }
@@ -113,7 +113,7 @@ func TestGeneratedNameConflictFails(t *testing.T) {
 		if reverse {
 			nodes[0], nodes[1] = nodes[1], nodes[0]
 		}
-		g := generator{p: model.Project{Catalog: []model.Definition{{GoName: "nodeShared_Root_ViaMain_Call"}}}, nodes: nodes}
+		g := generator{p: model.Project{Catalog: []model.Definition{{GoName: "nodeSharedRootViaMainCall"}}}, nodes: nodes}
 		if err := g.assignSymbols(); err == nil || !strings.Contains(err.Error(), "代码名冲突") {
 			t.Fatalf("实例名称冲突没有明确失败（逆序=%v）: %v", reverse, err)
 		}

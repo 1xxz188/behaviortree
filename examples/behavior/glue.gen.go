@@ -12,12 +12,12 @@ type btDuration = time.Duration
 
 // 编译槽位仅用于本版本运行时；稳定身份保留在节点元数据中。
 const (
-	// nodeMain_Root 对应树 "main" 的节点 "root"（显示名 ""）。
-	nodeMain_Root = iota
-	// nodeMain_Gate 对应树 "main" 的节点 "gate"（显示名 ""）。
-	nodeMain_Gate
-	// nodeMain_Record 对应树 "main" 的节点 "record"（显示名 ""）。
-	nodeMain_Record
+	// nodeMainRoot 对应树 "main" 的节点 "root"（显示名 ""）。
+	nodeMainRoot = iota
+	// nodeMainGate 对应树 "main" 的节点 "gate"（显示名 ""）。
+	nodeMainGate
+	// nodeMainRecord 对应树 "main" 的节点 "record"（显示名 ""）。
+	nodeMainRecord
 	// btNodeCount 是所有节点槽位的排他上界。
 	btNodeCount
 )
@@ -47,27 +47,27 @@ func NewProgram(version string) *bt.Program[*ctxpkg.Context] {
 		version = "cf5412f11962ea38244c17e05c3e9546"
 	}
 	return &bt.Program[*ctxpkg.Context]{Version: version, Roots: map[string]int{
-		"main": nodeMain_Root,
+		"main": nodeMainRoot,
 	}, Nodes: []bt.Node{
 		{ID: "root", TreeID: "main", Parent: btNodeNoParent, End: btNodeCount},
-		{ID: "gate", TreeID: "main", Parent: nodeMain_Root, End: nodeMain_Record},
-		{ID: "record", TreeID: "main", Parent: nodeMain_Root, End: btNodeCount},
+		{ID: "gate", TreeID: "main", Parent: nodeMainRoot, End: nodeMainRecord},
+		{ID: "record", TreeID: "main", Parent: nodeMainRoot, End: btNodeCount},
 	}, Fields: []bt.Field{
 		{ID: "message", Name: "Message", Type: bt.StringType, Default: bt.Value{String: "completed"}, Enum: []string{}},
 	}, Dependencies: map[string][]int{
-		"field:message": []int{nodeMain_Record},
+		"field:message": []int{nodeMainRecord},
 	}, Step: btStep, Abort: btAbort}
 }
 
 // btStep 通过整数槽位分派到编译后的节点函数。
 func btStep(f *bt.Frame[*ctxpkg.Context], node int) bt.Status {
 	switch node {
-	case nodeMain_Root:
-		return btNodeMain_Root(f)
-	case nodeMain_Gate:
-		return btNodeMain_Gate(f)
-	case nodeMain_Record:
-		return btNodeMain_Record(f)
+	case nodeMainRoot:
+		return btNodeMainRoot(f)
+	case nodeMainGate:
+		return btNodeMainGate(f)
+	case nodeMainRecord:
+		return btNodeMainRecord(f)
 	}
 	return bt.Failure
 }
@@ -75,9 +75,9 @@ func btStep(f *bt.Frame[*ctxpkg.Context], node int) bt.Status {
 // btAbort 仅清理当前动作；运行时负责活跃子树取消和状态失效。
 func btAbort(f *bt.Frame[*ctxpkg.Context], node int) {
 	switch node {
-	case nodeMain_Gate:
-		Gate(f, nodeMain_Gate, bt.Abort, GateParams{})
-	case nodeMain_Record:
-		Record(f, nodeMain_Record, bt.Abort, RecordParams{Message: f.Board.String(0)})
+	case nodeMainGate:
+		Gate(f, nodeMainGate, bt.Abort, GateParams{})
+	case nodeMainRecord:
+		Record(f, nodeMainRecord, bt.Abort, RecordParams{Message: f.Board.String(0)})
 	}
 }

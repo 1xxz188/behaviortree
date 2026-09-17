@@ -51,6 +51,7 @@ function session(options: ImportOptions = {}) {
     workspaceError: { value: "" }, failedOpen: { value: "" }, inspectorOpen: { value: true },
     askProject: async (kind: string) => { dialogs.push(kind); return options.choice; },
     saveCurrent: async () => true,
+    ensureIdentityDraftsApplied: () => true,
     showOutput: () => {}, resetResults: () => { resets++; },
     nextTick: async (fn?: () => void) => fn?.(), updateOutputBounds: () => {}, fitView: () => {},
     fetch: async (path: string, init: { body: string }) => {

@@ -38,6 +38,7 @@ function editor(options: { dirty?: boolean; name?: string; chosenName?: string; 
   const calls: { path: string; body: any }[] = [];
   const context = {
     Error, stringifyJSON, parseJSON, clone, project, saveState,
+    ensureIdentityDraftsApplied: () => true,
     projectReady: { value: true },
     fileName: { value: name }, suggestedName: { value: "project.json" },
     workspace: { value: "E:/workspace" }, files: { value: name ? [name] : [] },

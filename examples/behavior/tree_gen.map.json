@@ -5,12 +5,12 @@
     {
       "name": "glue.gen.go",
       "treeId": "",
-      "sha256": "946739fd9958e801fa52d578e0e0103542d8f8640d9bf0139df4078aad3c2404"
+      "sha256": "6b0ab14ec4ab0c637c3fdc91c4a3c779e9b77ce479d2a1cd6dce665cdd5c637f"
     },
     {
       "name": "tree_main.gen.go",
       "treeId": "main",
-      "sha256": "80a43a352c16d1d14589a39cbf8b5d6a9e2bd604d9f8ebf2738d43b8c80373b3"
+      "sha256": "d593c9cfd3ad667e4d8bf59abe5d8efc9b8381301a0938ce1d7a777978cdc1e6"
     }
   ],
   "locations": [
@@ -20,7 +20,7 @@
       "file": "tree_main.gen.go",
       "index": 0,
       "line": 11,
-      "functionName": "btNodeMain_Root"
+      "functionName": "btNodeMainRoot"
     },
     {
       "treeId": "main",
@@ -28,7 +28,7 @@
       "file": "tree_main.gen.go",
       "index": 1,
       "line": 64,
-      "functionName": "btNodeMain_Gate"
+      "functionName": "btNodeMainGate"
     },
     {
       "treeId": "main",
@@ -36,7 +36,7 @@
       "file": "tree_main.gen.go",
       "index": 2,
       "line": 48,
-      "functionName": "btNodeMain_Record"
+      "functionName": "btNodeMainRecord"
     }
   ]
 }

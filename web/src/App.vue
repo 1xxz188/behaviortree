@@ -4,6 +4,7 @@ import CatalogManager from "./CatalogManager.vue";
 import SourceViewer from "./SourceViewer.vue";
 import ProjectDialog from "./ProjectDialog.vue";
 import ImportErrorDialog from "./ImportErrorDialog.vue";
+import TreeContextMenu from "./TreeContextMenu.vue";
 import { startupProject, rememberProject, selectNativeDirectory } from "./workspace";
 import type { WorkspaceFiles, RecentStorage, ProjectDialogResult } from "./workspace";
 import { ProjectSaveState } from "./saveState";
@@ -121,6 +122,13 @@ function selectCanvasNode({ node: item }: NodeMouseEvent) {
   followSourceSelection();
 }
 const catalogDialog = ref<{ mode: "create" | "import" | "manage"; kind?: DefinitionKind }>();
+// 保存右击的实际树对象，不依赖当前画布选择，避免对另一棵树误操作。
+const treeMenu = shallowRef<{
+  tree: Tree; // 菜单与确认框操作的目标。
+  x: number; // 菜单在视口中的横坐标。
+  y: number; // 菜单在视口中的纵坐标。
+  initialMode?: "menu" | "delete"; // 右侧删除按钮可直接打开同一确认框。
+}>();
 // 加载工程时一次建立黑板字段占用集合；树和节点使用各自的递增索引。
 let occupiedIDs = new Set<string>();
 const treeIdentity = shallowRef(new TreeIdentityIndex(project.value)); // 索引持有响应式树和节点。
@@ -222,6 +230,9 @@ const nodeIDError = computed(() => node.value
   ? nodeIdentity.value.validateRename(selected.value, nodeIDDraft.value) ?? "" : "");
 // 树 ID 草稿同样实时检查工程内占用，不允许冲突提交。
 const treeIDError = computed(() => treeIdentity.value.validateRename(treeID.value, treeIDDraft.value) ?? "");
+// 身份草稿与工程保存状态分开维护；未提交的输入不能被保存或生成静默忽略。
+const identityDraftPending = computed(() => treeIDDraft.value !== treeID.value
+  || (!!node.value && (nodeIDDraft.value !== node.value.id || codeNameDraft.value !== (node.value.codeName ?? ""))));
 const definitionIndex = computed(() => new Map(project.value.catalog.map((d) => [d.id, d])));
 const definition = computed(() => definitionIndex.value.get(node.value?.binding ?? ""));
 const bindingOptions = computed(() => project.value.catalog.filter((d) => d.kind === node.value?.type));
@@ -294,6 +305,7 @@ function rebuildIDs() {
 }
 // 工程切换隔离源码、诊断和请求，避免显示另一工程的结果。
 function resetResults() {
+  treeMenu.value = undefined;
   editRevision++;
   invalidateCode();
   codeSnapshot.value = undefined;
@@ -305,6 +317,7 @@ function resetResults() {
 }
 // 恢复工程和选择快照；布局与展示名撤销不使源码过期。
 function restore(snapshot: EditorSnapshot) {
+  treeMenu.value = undefined;
   editRevision++;
   const { project: restored, index } = restoreSnapshot(snapshot, reactive);
   const signature = semanticSignature(restored);
@@ -341,7 +354,7 @@ function redo() {
 }
 // 文本框原生撤销不经过工程历史；仅在原生历史操作后核对保存基准。
 function nativeHistory(event: Event) {
-  if (!projectReady.value || catalogDialog.value || projectDialog.value || importFailure.value) return;
+  if (!projectReady.value || catalogDialog.value || projectDialog.value || importFailure.value || treeMenu.value) return;
   if (event instanceof InputEvent && (event.inputType === "historyUndo" || event.inputType === "historyRedo")) {
     saveState.restore(stringifyJSON(project.value));
   }
@@ -367,6 +380,12 @@ function changeTreeName(event: Event) {
 // 取消尚未提交的 ID 输入，不产生工程修改。
 function cancelTreeID() {
   treeIDDraft.value = treeID.value;
+}
+// 统一阻止对旧身份快照的保存、导出与生成，不隐式提交可能冲突的 ID。
+function ensureIdentityDraftsApplied(): boolean {
+  if (!identityDraftPending.value) return true;
+  notice("存在尚未应用的 ID 或代码名修改，请先点击属性面板的“应用”或“取消”，再保存或生成", true);
+  return false;
 }
 // 放弃尚未应用的节点身份草稿，不产生历史记录。
 function cancelNodeID() {
@@ -571,19 +590,51 @@ function addTree() {
     selected.value = "";
   });
 }
-// 删除前确认，悬挂子树引用由共同校验器报告。
+// 鼠标右击或键盘菜单键打开目标树菜单，不更换画布中正在编辑的树。
+function openTreeMenu(event: MouseEvent | KeyboardEvent, target: Tree) {
+  if (workspaceChanging.value) return;
+  const button = event.currentTarget as HTMLElement;
+  const bounds = button.getBoundingClientRect();
+  button.focus();
+  treeMenu.value = {
+    tree: target,
+    x: "clientX" in event && event.clientX ? event.clientX : bounds.left,
+    y: "clientY" in event && event.clientY ? event.clientY : bounds.bottom,
+  };
+}
+// 菜单重命名只修改展示名，保留树 ID、全部引用及有效源码；一次操作可以撤销。
+function renameTree(name: string) {
+  const target = treeMenu.value?.tree;
+  treeMenu.value = undefined;
+  if (!target || treeIdentity.value.byID.get(target.id) !== target) return;
+  const next = name.trim();
+  if (!next || next === target.name) return;
+  mutate(() => { target.name = next; }, false);
+  notice("行为树名称已更新");
+}
+// 属性面板删除与右键菜单共用确认框，打开确认框本身不修改工程。
 function deleteTree() {
   if (project.value.trees.length === 1) return notice("至少保留一棵树", true);
-  if (!confirm(`删除“${tree.value.name}”？引用它的子树节点需要重新选择。`))
-    return;
+  treeMenu.value = { tree: tree.value, x: 0, y: 0, initialMode: "delete" };
+}
+// 二次确认后只删除原目标；非当前树被删除时保留当前树和节点选择。
+function confirmDeleteTree() {
+  const target = treeMenu.value?.tree;
+  treeMenu.value = undefined;
+  if (!target || treeIdentity.value.byID.get(target.id) !== target) return;
+  if (project.value.trees.length === 1) return notice("至少保留一棵树", true);
+  const position = project.value.trees.indexOf(target);
+  if (position < 0) return;
+  const current = treeID.value === target.id;
   mutate(() => {
-    treeIdentity.value.removeTree(tree.value);
-    project.value.trees = project.value.trees.filter(
-      (t) => t.id !== treeID.value,
-    );
-    treeID.value = project.value.trees[0]!.id;
-    selected.value = "";
+    treeIdentity.value.removeTree(target);
+    project.value.trees.splice(position, 1);
+    if (current) {
+      treeID.value = project.value.trees[0]!.id;
+      selected.value = "";
+    }
   });
+  notice("行为树已删除，可撤销恢复；引用它的子树节点需要重新选择");
 }
 // 新建和示例各自开启独立编辑会话，避免撤销恢复另一文件的内容。
 function resetProject(example = false) {
@@ -672,6 +723,7 @@ async function closeProjectDialog(value?: ProjectDialogResult) {
 // 写入成功才绑定文件身份；修订号使保存期间的新编辑保持未保存状态。
 async function saveCurrent(saveAs = false): Promise<boolean> {
   if (!projectReady.value) return false;
+  if (!ensureIdentityDraftsApplied()) return false;
   const target = saveAs || !fileName.value ? await askProject("save") : { name: fileName.value };
   if (!target || typeof target === "string") return false;
   const name = target.name;
@@ -699,6 +751,7 @@ function save(saveAs = false) {
 }
 // 未保存时必须完成保存或明确放弃；保存失败、取消或新编辑都会停止替换。
 async function allowReplacement(reload = false): Promise<boolean> {
+  if (projectReady.value && !ensureIdentityDraftsApplied()) return false;
   if (!projectReady.value || !dirty.value) return true;
   const choice = await askProject("switch", reload);
   return choice === "discard" || (choice === "save" && await saveCurrent());
@@ -846,6 +899,7 @@ function validate() {
 }
 // 在请求边界获取快照，语义修改后以 O(1) 修订检查丢弃旧响应和旧诊断。
 async function currentProjectRequest<T>(path: string) {
+  if (!ensureIdentityDraftsApplied()) return;
   const snapshot = clone(project.value);
   const token = generationRequests.begin(snapshot);
   const revision = semanticRevision.value;
@@ -863,6 +917,7 @@ async function currentProjectRequest<T>(path: string) {
 // 写盘前保存当前工程，确保源码对应已落盘内容；预览仍只读取当前草稿。
 function generate(write = true) {
   return action(async () => {
+    if (!ensureIdentityDraftsApplied()) return;
     // 复用首次命名和保存快照校验，取消、失败或保存期间的新编辑都会停止生成。
     if (write && (dirty.value || !fileName.value) && !await saveCurrent()) {
       notice("工程尚未完成保存，已停止生成，请保存后重试");
@@ -1038,7 +1093,7 @@ function focusDiagnostic(d: Diagnostic) {
 // 处理保存、撤销和删除快捷键，不干扰文本原生撤销。
 function keydown(e: KeyboardEvent) {
   if (workspaceChanging.value) return;
-  if (catalogDialog.value || projectDialog.value || importFailure.value || !projectReady.value) return;
+  if (catalogDialog.value || projectDialog.value || importFailure.value || treeMenu.value || !projectReady.value) return;
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
     e.preventDefault();
     (e.target as HTMLElement)?.blur();
@@ -1061,7 +1116,7 @@ function keydown(e: KeyboardEvent) {
 }
 // 离开页面前提示尚未保存的修改。
 function beforeUnload(e: BeforeUnloadEvent) {
-  if (projectReady.value && dirty.value) e.preventDefault();
+  if (projectReady.value && (dirty.value || identityDraftPending.value)) e.preventDefault();
 }
 // 仅在实际树对象替换时重建；普通输入、改号和连线通过增量索引处理。
 watch(tree, (current) => {
@@ -1177,14 +1232,14 @@ onUnmounted(() => toolLifecycle.abort());
           </select>
           <button class="refresh-projects" title="只更新可打开的文件列表，保留当前编辑内容" :disabled="busy || !workspace" @click="refreshProjectList">刷新列表</button>
           <button class="refresh-projects" title="从磁盘重新加载当前文件" :disabled="busy || !fileName" @click="open(fileName, true)">重载文件</button>
-          <span v-if="projectReady" class="save-state" :class="{ unsaved: dirty }">{{ dirty ? '● 未保存' : '已保存' }}</span>
+          <span v-if="projectReady" class="save-state" :class="{ unsaved: dirty || identityDraftPending }">{{ identityDraftPending ? '● 有未应用修改' : dirty ? '● 未保存' : '已保存' }}</span>
           <span v-if="projectReady" class="project-caption" :title="project.name">{{ project.name }}</span>
         </div>
       </div>
       <div class="toolbar">
         <button :disabled="busy || !workspace" @click="resetProject()">新建</button
         ><button title="将 JSON 内容读入未保存草稿，不会直接修改源文件；保存时选择目录和文件名，确认覆盖同名文件后才会覆盖。" :disabled="busy || !workspace" @click="importInput?.click()">导入</button>
-        <button :disabled="!projectReady" @click="download(fileName || suggestedName, stringifyJSON(project, 2))">
+        <button :disabled="!projectReady" @click="ensureIdentityDraftsApplied() && download(fileName || suggestedName, stringifyJSON(project, 2))">
           导出 JSON
         </button>
         <button :disabled="busy || !projectReady" @click="save()">保存 <kbd>Ctrl S</kbd></button>
@@ -1226,9 +1281,14 @@ onUnmounted(() => toolLifecycle.abort());
           v-for="item in project.trees"
           :key="item.id"
           :class="{ active: item.id === treeID }"
+          aria-haspopup="menu"
+          :aria-label="`${item.name}，行为树 ID：${item.id}，${item.nodes.length} 个节点`"
+          @contextmenu.prevent.stop="openTreeMenu($event, item)"
+          @keydown.shift.f10.prevent.stop="openTreeMenu($event, item)"
+          @keydown.prevent.stop.context-menu="openTreeMenu($event, item)"
           @click="treeID = item.id"
         >
-          <span>⑂</span><span class="tree-caption">{{ item.name }}<code>{{ item.id }}</code></span><small>{{ item.nodes.length }}</small>
+          <span>⑂</span><span class="tree-caption">{{ item.name }}<code :title="`当前生效的行为树 ID：${item.id}`">ID: {{ item.id }}</code></span><small :title="`${item.nodes.length} 个节点`">{{ item.nodes.length }}</small>
         </button>
       </nav>
       <div class="sidebar-tabs">
@@ -1480,23 +1540,23 @@ onUnmounted(() => toolLifecycle.abort());
             :aria-invalid="!!codeNameError" aria-describedby="code-name-help code-name-error"
             @input="codeNameError = ''" @keydown.enter.prevent="applyCodeName" @keydown.esc.prevent="cancelCodeName"
         /></label>
-        <p id="code-name-help" class="muted identity-help">树内唯一，1–40 位，英文开头，可含数字和下划线，不能是 Go 关键字。用于生成节点常量和节点函数；从业务目录创建时默认采用业务函数名，之后独立保存，修改绑定不会自动改名。</p>
-        <p v-if="codeNameError" id="code-name-error" class="identity-error" role="alert">{{ codeNameError }}</p>
         <div class="identity-actions">
           <button @click="applyCodeName" :disabled="codeNameDraft === node.codeName">应用代码名</button>
           <button @click="cancelCodeName" :disabled="codeNameDraft === node.codeName && !codeNameError">取消</button>
         </div>
+        <p id="code-name-help" class="muted identity-help">树内唯一，1–40 位，英文开头，可含数字和下划线，不能是 Go 关键字。用于生成节点常量和节点函数；从业务目录创建时默认采用业务函数名，之后独立保存，修改绑定不会自动改名。</p>
+        <p v-if="codeNameError" id="code-name-error" class="identity-error" role="alert">{{ codeNameError }}</p>
         <label class="field-label"
           >Node ID<input v-model="nodeIDDraft" class="mono"
             :aria-invalid="!!nodeIDError" aria-describedby="node-id-help node-id-error"
             @keydown.enter.prevent="applyNodeID" @keydown.esc.prevent="cancelNodeID"
         /></label>
-        <p id="node-id-help" class="muted identity-help">仅当前树内唯一，不同树可重复；新增和复制自动分配递增数字 ID。不能为空或与本树其他节点重复，冲突时不生效。应用时同步根、连线和布局；显式改号后需更新外部旧 ID 关联。</p>
-        <p v-if="nodeIDError" id="node-id-error" class="identity-error" role="alert">{{ nodeIDError }}</p>
         <div class="identity-actions">
-          <button @click="applyNodeID" :disabled="nodeIDDraft === node.id || !!nodeIDError">应用</button>
+          <button @click="applyNodeID" :disabled="nodeIDDraft === node.id || !!nodeIDError">应用 ID</button>
           <button @click="cancelNodeID" :disabled="nodeIDDraft === node.id && !nodeIDError">取消</button>
         </div>
+        <p id="node-id-help" class="muted identity-help">仅当前树内唯一，不同树可重复；新增和复制自动分配递增数字 ID。不能为空或与本树其他节点重复，冲突时不生效。应用时同步根、连线和布局；显式改号后需更新外部旧 ID 关联。</p>
+        <p v-if="nodeIDError" id="node-id-error" class="identity-error" role="alert">{{ nodeIDError }}</p>
         <label
           v-if="['repeat', 'retry'].includes(node.type)"
           class="field-label"
@@ -1655,12 +1715,13 @@ onUnmounted(() => toolLifecycle.abort());
             :aria-invalid="!!treeIDError" aria-describedby="tree-id-help tree-id-error"
             @keydown.enter.prevent="applyTreeID" @keydown.esc.prevent="cancelTreeID"
         /></label>
-        <p id="tree-id-help" class="muted identity-help">工程内唯一，新建树自动分配递增数字 ID；手动改为更大数字后继续递增。允许 1–80 位英文、数字或下划线，不能仅大小写不同；冲突时不生效。应用时同步全部子树引用，外部入口调用需同步调整。</p>
-        <p v-if="treeIDError" id="tree-id-error" class="identity-error" role="alert">{{ treeIDError }}</p>
         <div class="identity-actions">
-          <button @click="applyTreeID" :disabled="treeIDDraft === tree.id || !!treeIDError">应用</button>
+          <button @click="applyTreeID" :disabled="treeIDDraft === tree.id || !!treeIDError">应用 ID</button>
           <button @click="cancelTreeID" :disabled="treeIDDraft === tree.id && !treeIDError">取消</button>
         </div>
+        <p v-if="treeIDDraft !== tree.id" class="identity-help" role="status">ID 修改尚未应用。当前生效 ID：<code>{{ tree.id }}</code>。点击“应用 ID”或按 Enter 后同步左侧列表。</p>
+        <p v-if="treeIDError" id="tree-id-error" class="identity-error" role="alert">{{ treeIDError }}</p>
+        <p id="tree-id-help" class="muted identity-help">工程内唯一，新建树自动分配递增数字 ID；手动改为更大数字后继续递增。允许 1–80 位英文、数字或下划线，不能仅大小写不同；冲突时不生效。应用时同步全部子树引用，外部入口调用需同步调整。</p>
         <div class="panel-heading small-heading">Go 生成设置</div>
         <label class="field-label"
           >包名<input
@@ -1794,5 +1855,9 @@ onUnmounted(() => toolLifecycle.abort());
       @apply="applyCatalog" @close="catalogDialog = undefined" />
     <ProjectDialog v-if="projectDialog" :kind="projectDialog.kind" :reload="projectDialog.reload" :workspace="workspace" :suggestion="fileName || suggestedName" :files="allFiles" @close="closeProjectDialog" />
     <ImportErrorDialog v-if="importFailure" :name="importFailure.name" :message="importFailure.message" @close="importFailure = undefined" />
+    <TreeContextMenu v-if="treeMenu" :key="`${treeMenu.tree.id}:${treeMenu.x}:${treeMenu.y}:${treeMenu.initialMode ?? 'menu'}`"
+      :tree="treeMenu.tree" :x="treeMenu.x" :y="treeMenu.y"
+      :initial-mode="treeMenu.initialMode" :can-delete="project.trees.length > 1"
+      @close="treeMenu = undefined" @rename="renameTree" @delete="confirmDeleteTree" />
   </div>
 </template>

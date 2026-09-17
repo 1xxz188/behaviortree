@@ -360,21 +360,22 @@ func symbolPart(id string) string {
 	return strings.ReplaceAll(id, "_", "__")
 }
 
-// readableSymbol 单遍合并连续下划线并去掉首尾分隔符，保留可读名称的大小写。
+// readableSymbol 单遍将分隔符转换为 MixedCaps，保留已有缩写的大小写。
 func readableSymbol(name string) string {
 	var result strings.Builder
 	result.Grow(len(name))
-	separator := false
+	upperNext := true
 	for i := 0; i < len(name); i++ {
 		if name[i] == '_' {
-			separator = result.Len() > 0
+			upperNext = true
 			continue
 		}
-		if separator {
-			result.WriteByte('_')
-			separator = false
+		c := name[i]
+		if upperNext && c >= 'a' && c <= 'z' {
+			c -= 'a' - 'A'
 		}
-		result.WriteByte(name[i])
+		result.WriteByte(c)
+		upperNext = false
 	}
 	return result.String()
 }
@@ -402,7 +403,7 @@ func (g *generator) assignSymbols() error {
 	// 边界符号也避开现有上下文类型与业务声明，保证生成包的标识符唯一。
 	claim := func(name string) string {
 		for used[name] {
-			name += "_Generated"
+			name += "Generated"
 		}
 		used[name] = true
 		return name
@@ -433,12 +434,12 @@ func (g *generator) assignSymbols() error {
 	for i, n := range g.nodes {
 		base := bases[i]
 		if baseCounts[base] > 1 {
-			base += "_ID" + identityHash(n.identity)[:12]
+			base += "ID" + identityHash(n.identity)[:12]
 		}
 		suffix := ""
 		// 业务声明碰撞只增加固定后缀，不依赖全局槽位或展开次数。
 		for used["node"+base+suffix] || used["btNode"+base+suffix] {
-			suffix += "_Generated"
+			suffix += "Generated"
 		}
 		g.nodes[i].symbol, g.nodes[i].function = "node"+base+suffix, "btNode"+base+suffix
 		if allocated[g.nodes[i].symbol] || allocated[g.nodes[i].function] {

@@ -52,7 +52,7 @@ func TestCodeNamesPersistAcrossProjectBoundaries(t *testing.T) {
 		t.Fatalf("代码名未落盘: %s %v", saved, err)
 	}
 	preview := decodePreview(t, callEditor(t, server, "POST", "/api/preview", loaded))
-	if preview.Files[1].Name != "tree_main.gen.go" || !strings.Contains(preview.Files[1].Source, "func btNodeMain_WaitMove(") {
+	if preview.Files[1].Name != "tree_main.gen.go" || !strings.Contains(preview.Files[1].Source, "func btNodeMainWaitMove(") {
 		t.Fatalf("生成名称仍不直观: %+v", preview.Files)
 	}
 	node.Name = "新的显示名称"

@@ -8,7 +8,7 @@ import (
 	"github.com/1xxz188/behaviortree/model"
 )
 
-// TestReadableUnderscores 验证树名和代码名中的下划线不会在生成名称中连续出现。
+// TestReadableUnderscores 验证生成名称采用 MixedCaps，且保留显式大写缩写和持久身份。
 func TestReadableUnderscores(t *testing.T) {
 	p := model.Example()
 	p.Trees[0].ID = "npc_troop"
@@ -17,10 +17,18 @@ func TestReadableUnderscores(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.SourceMap[0].FunctionName != "btNodeNpc_troop_NPC_Root" {
-		t.Fatalf("生成名称仍包含转义下划线: %s", r.SourceMap[0].FunctionName)
+	if r.SourceMap[0].FunctionName != "btNodeNpcTroopNPCRoot" {
+		t.Fatalf("生成名称未采用 MixedCaps: %s", r.SourceMap[0].FunctionName)
+	}
+	if r.SourceMap[0].TreeID != "npc_troop" || r.Files[1].Name != "tree_npc_troop.gen.go" || p.Trees[0].Nodes[0].CodeName != "NPC_Root" {
+		t.Fatal("生成命名不应修改持久化身份、代码名或文件名")
 	}
 	compileNamedProject(t, p, r, "")
+	p.Trees[0].ID = "NPCTroop"
+	r, err = Generate(p)
+	if err != nil || r.SourceMap[0].FunctionName != "btNodeNPCTroopNPCRoot" {
+		t.Fatalf("显式大写缩写未保留: %+v, %v", r.SourceMap, err)
+	}
 }
 
 // TestNormalizedNameCollisions 验证组件边界、连续下划线及引用链整理后的重名能稳定消歧。
@@ -46,8 +54,8 @@ func TestNormalizedNameCollisions(t *testing.T) {
 	}
 	names := make(map[string]bool)
 	for _, loc := range r.SourceMap {
-		if strings.Contains(loc.FunctionName, "__") || names[loc.FunctionName] {
-			t.Fatalf("生成名称仍有连续下划线或重名: %s", loc.FunctionName)
+		if strings.Contains(loc.FunctionName, "_") || names[loc.FunctionName] {
+			t.Fatalf("生成名称仍有下划线或重名: %s", loc.FunctionName)
 		}
 		names[loc.FunctionName] = true
 	}

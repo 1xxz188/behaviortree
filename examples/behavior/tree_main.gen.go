@@ -7,9 +7,9 @@ import (
 	ctxpkg "github.com/1xxz188/behaviortree/examples/shared"
 )
 
-// btNodeMain_Root 执行树 "main" 中的节点 "root"（显示名 ""）。
-func btNodeMain_Root(f *bt.Frame[*ctxpkg.Context]) bt.Status {
-	const node = nodeMain_Root
+// btNodeMainRoot 执行树 "main" 中的节点 "root"（显示名 ""）。
+func btNodeMainRoot(f *bt.Frame[*ctxpkg.Context]) bt.Status {
+	const node = nodeMainRoot
 	if cached, run := f.Enter(node); !run {
 		return cached
 	}
@@ -18,7 +18,7 @@ func btNodeMain_Root(f *bt.Frame[*ctxpkg.Context]) bt.Status {
 	for {
 		switch s.Cursor {
 		case 0:
-			status := btNodeMain_Gate(f)
+			status := btNodeMainGate(f)
 			if status == bt.Running {
 				return f.Exit(node, status)
 			}
@@ -28,7 +28,7 @@ func btNodeMain_Root(f *bt.Frame[*ctxpkg.Context]) bt.Status {
 			}
 			s.Cursor++
 		case 1:
-			status := btNodeMain_Record(f)
+			status := btNodeMainRecord(f)
 			if status == bt.Running {
 				return f.Exit(node, status)
 			}
@@ -44,9 +44,9 @@ func btNodeMain_Root(f *bt.Frame[*ctxpkg.Context]) bt.Status {
 	}
 }
 
-// btNodeMain_Record 执行树 "main" 中的节点 "record"（显示名 ""）。
-func btNodeMain_Record(f *bt.Frame[*ctxpkg.Context]) bt.Status {
-	const node = nodeMain_Record
+// btNodeMainRecord 执行树 "main" 中的节点 "record"（显示名 ""）。
+func btNodeMainRecord(f *bt.Frame[*ctxpkg.Context]) bt.Status {
+	const node = nodeMainRecord
 	if cached, run := f.Enter(node); !run {
 		return cached
 	}
@@ -60,9 +60,9 @@ func btNodeMain_Record(f *bt.Frame[*ctxpkg.Context]) bt.Status {
 	return f.Exit(node, Record(f, node, phase, RecordParams{Message: f.Board.String(0)}))
 }
 
-// btNodeMain_Gate 执行树 "main" 中的节点 "gate"（显示名 ""）。
-func btNodeMain_Gate(f *bt.Frame[*ctxpkg.Context]) bt.Status {
-	const node = nodeMain_Gate
+// btNodeMainGate 执行树 "main" 中的节点 "gate"（显示名 ""）。
+func btNodeMainGate(f *bt.Frame[*ctxpkg.Context]) bt.Status {
+	const node = nodeMainGate
 	if cached, run := f.Enter(node); !run {
 		return cached
 	}

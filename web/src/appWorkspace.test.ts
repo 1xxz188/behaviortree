@@ -63,6 +63,7 @@ function session(options: SessionOptions = {}) {
   targetProject.name = "目标目录工程";
   let serverWorkspace = "E:/original";
   const context = {
+    ensureIdentityDraftsApplied: () => true,
     Error, stringifyJSON, parseJSON, project, saveState, TreeIdentityIndex, normalizeCodeNames, validateProjectTypes,
     startupProject, rememberProject,
     projectReady: { value: true }, fileName: { value: name }, suggestedName: { value: "original.json" },
@@ -78,7 +79,7 @@ function session(options: SessionOptions = {}) {
     undoStack: { value: ["原撤销记录"] }, redoStack: { value: ["原重做记录"] },
     workspaceError: { value: "" }, failedOpen: { value: "" }, openingName: { value: "" }, inspectorOpen: { value: true },
     catalogDialog: { value: undefined }, projectDialog: { value: undefined },
-    importFailure: { value: undefined },
+    importFailure: { value: undefined }, treeMenu: { value: undefined },
     window: { localStorage: { getItem: (key: string) => records.get(key) ?? null, setItem: (key: string, value: string) => records.set(key, value) } },
     askProject: async (kind: string) => { dialogs.push(kind); return choices.shift(); },
     showOutput: () => {}, cancelTreeID: () => {}, cancelNodeID: () => {},
