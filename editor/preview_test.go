@@ -62,7 +62,7 @@ func TestPreviewGenerateAndReopen(t *testing.T) {
 	if !reflect.DeepEqual(preview.Files, generated.Files) || preview.Version != generated.Version || !reflect.DeepEqual(preview.SourceMap, generated.SourceMap) {
 		t.Fatal("预览与正式生成不一致")
 	}
-	if generated.Directory != filepath.Join(dir, "generated", project.Generation.Package) {
+	if generated.Directory != filepath.Join(dir, project.Generation.PackagePath) {
 		t.Fatal("生成路径不正确")
 	}
 	if err := server.Close(); err != nil {
@@ -103,9 +103,9 @@ func TestGeneratedRejectsCorruptionAndPaths(t *testing.T) {
 	if response := callEditor(t, server, "POST", "/api/generated", project); response.Code != 404 {
 		t.Fatal("无产物应返回404", response.Code)
 	}
-	for _, pkg := range []string{"../outside", `a\b`, "C:outside", "_", "for"} {
+	for _, pkg := range []string{"../outside", `a\..\b`, "C:outside", "_", "for"} {
 		invalid := project
-		invalid.Generation.Package = pkg
+		invalid.Generation.PackagePath = pkg
 		if response := callEditor(t, server, "POST", "/api/generated", invalid); response.Code != 400 {
 			t.Fatal(pkg, response.Code)
 		}
@@ -211,7 +211,7 @@ func TestScaffoldPreservesHandwritten(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.Close()
-	handwritten := []byte("package generated\n// 已实现的业务逻辑。\n")
+	handwritten := []byte("package behavior\n// 已实现的业务逻辑。\n")
 	path := filepath.Join(dir, "actions.go")
 	if err := os.WriteFile(path, handwritten, 0644); err != nil {
 		t.Fatal(err)
@@ -240,7 +240,7 @@ func TestScaffoldPreservesHandwritten(t *testing.T) {
 // TestGeneratedRejectsEscapingSymlink 验证即使产物内容有效，越出工作目录的符号链接也不可读取。
 func TestGeneratedRejectsEscapingSymlink(t *testing.T) {
 	dir := t.TempDir()
-	outside := t.TempDir()
+	outside := artifactTestDir(t)
 	server, err := New(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -257,7 +257,7 @@ func TestGeneratedRejectsEscapingSymlink(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(dir, "generated"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(outside, filepath.Join(dir, "generated", project.Generation.Package)); err != nil {
+	if err := os.Symlink(outside, filepath.Join(dir, project.Generation.PackagePath)); err != nil {
 		t.Skipf("当前系统不允许创建符号链接：%v", err)
 	}
 	if response := callEditor(t, server, "POST", "/api/generated", project); response.Code != 409 {

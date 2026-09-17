@@ -57,7 +57,11 @@ export interface Project {
   blackboard: Field[];
   catalog: Definition[];
   trees: Tree[];
-  generation: { package: string; contextImport: string; contextType: string };
+  generation: {
+    packagePath: string; // 相对工程根目录的生成路径，使用 / 分隔，末级决定 Go 包名。
+    contextImport: string; // 业务上下文的 Go 导入路径。
+    contextType: string; // 生成接口使用的业务上下文类型。
+  };
 }
 export interface Diagnostic {
   treeId?: string;
@@ -263,7 +267,7 @@ export function blankProject(): Project {
     trees: [{ id: "1", name: "主行为树", root: "1", nodes: [
       { id: "1", codeName: "Root", type: "sequence", name: "根节点", children: [] },
     ], layout: { "1": { x: 80, y: 80 } } }],
-    generation: { package: "behavior", contextImport: "", contextType: "any" },
+    generation: { packagePath: "behavior", contextImport: "", contextType: "any" },
   };
 }
 
@@ -300,6 +304,6 @@ export function emptyProject(): Project {
     blackboard: [],
     catalog: [],
     trees: [tree],
-    generation: { package: "patrol", contextImport: "", contextType: "any" },
+    generation: { packagePath: "patrol", contextImport: "", contextType: "any" },
   };
 }

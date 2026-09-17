@@ -81,7 +81,7 @@
     }
   ],
   "generation": {
-    "package": "behavior",
+    "packagePath": "behavior",
     "contextImport": "github.com/1xxz188/behaviortree/examples/shared",
     "contextType": "*Context"
   }

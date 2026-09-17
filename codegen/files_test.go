@@ -139,7 +139,7 @@ func TestUnrelatedTreeChangesKeepSourcesStable(t *testing.T) {
 
 // TestCallerStructureDoesNotRenameSharedInstances 验证调用方普通结构调整保留引用链身份，增加引用只增加新实例。
 func TestCallerStructureDoesNotRenameSharedInstances(t *testing.T) {
-	p := model.Project{SchemaVersion: 1, Name: "引用链", Generation: model.Generation{Package: "generated", ContextType: "any"}, Trees: []model.Tree{
+	p := model.Project{SchemaVersion: 1, Name: "引用链", Generation: model.Generation{PackagePath: "generated", ContextType: "any"}, Trees: []model.Tree{
 		{ID: "caller", Root: "root", Nodes: []model.Node{{ID: "root", Type: model.NodeSequence, Children: []string{"call", "wait"}}, {ID: "call", Type: model.NodeSubtree, Tree: "shared"}, {ID: "wait", Type: model.NodeWait}}},
 		{ID: "shared", Root: "root", Nodes: []model.Node{{ID: "root", Type: model.NodeWait}}},
 	}}
@@ -177,18 +177,42 @@ func TestCallerStructureDoesNotRenameSharedInstances(t *testing.T) {
 	}
 }
 
-// TestTreeFileNamesArePortable 验证合法树 ID 原样进入文件名，不添加摘要或截断。
+// TestTreeFileNamesArePortable 验证驼峰、缩写、数字及已有下划线转为可移植的小写文件名。
 func TestTreeFileNamesArePortable(t *testing.T) {
-	seen := make(map[string]bool)
-	for _, id := range []string{"patrol", "xxz1", "CON", "9_Main", "_", strings.Repeat("X", 80)} {
+	for id, want := range map[string]string{
+		"patrol": "patrol", "xxz1": "xxz1", "CON": "con", "9_Main": "9_main",
+		"_": "_", "__": "__", "TreeNPC": "tree_npc", "NPCTroop": "npc_troop",
+		"treeNPCAction": "tree_npc_action", "NPC2Action": "npc2_action",
+		"Tree_NPC": "tree_npc", "tree__Name_": "tree__name_",
+		strings.Repeat("X", 80): strings.Repeat("x", 80),
+	} {
 		name := TreeFileName(id)
-		if filepath.Base(name) != name || name != "tree_"+id+".gen.go" {
+		if filepath.Base(name) != name || name != "tree_"+want+".gen.go" {
 			t.Fatalf("不安全或错误文件名: %q", name)
 		}
-		if seen[strings.ToLower(name)] {
-			t.Fatalf("树文件名冲突: %s", name)
+	}
+}
+
+// TestSnakeCaseTreeFiles 验证实际产物及源码映射使用新文件名，同时保留运行时树 ID。
+func TestSnakeCaseTreeFiles(t *testing.T) {
+	p := model.Example()
+	p.Trees[0].ID = "TreeNPC"
+	r, err := Generate(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Files[1].Name != "tree_tree_npc.gen.go" || r.Files[1].TreeID != "TreeNPC" {
+		t.Fatalf("文件名或树身份错误: %+v", r.Files[1])
+	}
+	for _, loc := range r.SourceMap {
+		if loc.TreeID != "TreeNPC" || loc.File != "tree_tree_npc.gen.go" {
+			t.Fatalf("源码映射未同步文件名: %+v", loc)
 		}
-		seen[strings.ToLower(name)] = true
+	}
+	// 不同合法 ID 转换后重名时必须拒绝，避免覆盖另一棵树的文件。
+	p.Trees = append(p.Trees, model.Tree{ID: "tree_npc", Root: "root", Nodes: []model.Node{{ID: "root", Type: model.NodeWait}}})
+	if _, err := Generate(p); err == nil || !strings.Contains(err.Error(), "生成文件名冲突") {
+		t.Fatalf("未拒绝转换后的文件名冲突: %v", err)
 	}
 }
 

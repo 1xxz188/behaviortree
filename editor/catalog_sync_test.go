@@ -73,7 +73,7 @@ func TestCatalogParameterSyncRoundTrip(t *testing.T) {
 		t.Fatal(w.Code, w.Body.String())
 	}
 	for _, name := range []string{"glue.gen.go", "tree_main.gen.go"} {
-		source, err := os.ReadFile(filepath.Join(dir, "generated", p.Generation.Package, name))
+		source, err := os.ReadFile(filepath.Join(dir, p.Generation.PackagePath, name))
 		if err != nil {
 			t.Fatal(err)
 		}

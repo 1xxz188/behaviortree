@@ -66,7 +66,7 @@ func TestEditorRoundTrip(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatal(w.Code, w.Body.String())
 	}
-	generated, err := os.ReadFile(filepath.Join(dir, "generated", p.Generation.Package, "glue.gen.go"))
+	generated, err := os.ReadFile(filepath.Join(dir, p.Generation.PackagePath, "glue.gen.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,11 +104,11 @@ func TestEditorDraftAndProtection(t *testing.T) {
 		t.Fatal(w.Code, w.Body.String())
 	}
 	p = model.Example()
-	generatedDir := filepath.Join(dir, "generated", p.Generation.Package)
+	generatedDir := filepath.Join(dir, p.Generation.PackagePath)
 	if err = os.MkdirAll(generatedDir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	handwritten := []byte("package generated\n// 手写逻辑不能被自动生成覆盖。\n")
+	handwritten := []byte("package behavior\n// 手写逻辑不能被自动生成覆盖。\n")
 	file := filepath.Join(generatedDir, "glue.gen.go")
 	if err = os.WriteFile(file, handwritten, 0644); err != nil {
 		t.Fatal(err)

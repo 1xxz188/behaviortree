@@ -22,7 +22,7 @@ go run ./cmd/bttool serve --workspace ./.workspace
 
 点击节点库添加节点，从节点端点拖拽连线，在右侧配置属性和调整子节点顺序。节点移动和自动布局只改变画布坐标。支持复制、删除、撤销重做、多树与子树引用、工程 JSON 导入导出、业务节点目录导入、保存和重开。
 
-`--workspace` 是外部工程目录：工程保存为顶层 JSON，Web 生成结果写到 `generated/<包名>/`，每棵树对应 `tree_<TreeID>.gen.go`（例如 `tree_patrol.gen.go`），公共代码位于 `glue.gen.go`，`tree_gen.map.json` 保存文件清单和源码映射。草稿允许存在未连完的节点；校验成功后才能生成。点击问题列表可以定位节点。工具只监听回环地址，文件读写限制在指定工作目录中。
+`--workspace` 是外部工程目录：工程保存为顶层 JSON，Web 生成结果直接写到 `generation.packagePath` 指定的相对目录（如 `ai/brawl/`，Go 包名为 `brawl`），每棵树对应 `tree_<snake_case_tree_id>.gen.go`（例如 `TreeNPC` 对应 `tree_tree_npc.gen.go`），公共代码位于 `glue.gen.go`，`tree_gen.map.json` 保存文件清单和源码映射。草稿允许存在未连完的节点；校验成功后才能生成。点击问题列表可以定位节点。工具只监听回环地址，文件读写限制在指定工作目录中。
 
 ### 业务定义与动作绑定
 
@@ -48,7 +48,7 @@ go run ./cmd/bttool serve --workspace ./.workspace
 - **生成到目录**：先保存当前工程，再校验并写入源码及映射，显示实际路径和版本；首次保存会要求选择文件名。取消保存、保存失败或保存期间继续编辑都会停止生成；已保存且没有修改时跳过重复保存。与预览使用相同生成逻辑。
 - **查看上次生成**：读取当前目标包的实际生成产物。重新打开已保存工程时也会自动读取，并核对是否对应当前工程；多个工程共用包名时，展示该目录最后一次生成的版本。
 - **生成代码面板**：选中节点定位并高亮对应函数；点击有链接的代码行号返回画布。同一子树节点的多个展开位置分页展示。长文件仅渲染可见行。
-- **业务骨架**：从目录和生成配置创建动作 Start/Resume/Abort、条件函数及 TODO。支持复制或下载 `actions.go`；参数结构体来自 `glue.gen.go`。骨架在未完成时返回 Failure/false，需要手写实现后共同编译。
+- **业务骨架**：从目录和生成配置创建动作 Start/Resume/Abort、条件函数及 TODO。支持复制；“下载 actions.go”默认保存到当前工作目录的 `generation.packagePath` 下，同名文件需二次确认才会覆盖，取消则保留原文件。参数结构体来自 `glue.gen.go`。骨架在未完成时返回 Failure/false，需要手写实现后共同编译。
 
 修改行为、参数、行为树 ID 或生成配置后，已有源码会标记过期并停用旧映射定位；仅修改行为树展示名、移动节点、自动布局及其撤销不会使源码过期。树展示名不参与运行时版本摘要；其他名称字段保持原有版本规则。撤销到原有内容时恢复有效标记。编辑期间的旧请求结果不能覆盖新工程，没有定时轮询或逐次输入自动生成。
 
@@ -91,7 +91,7 @@ go run ./cmd/bttool init --file ./.workspace/new.json
 
 # 校验和生成使用与 Web 相同的实现，失败返回非零退出码。
 go run ./cmd/bttool validate --file ./.workspace/new.json
-go run ./cmd/bttool generate --file ./.workspace/new.json --out ./.workspace/generated/example
+go run ./cmd/bttool generate --file ./.workspace/new.json --out ai/brawl
 
 # 查看项目内的 Go 节点目录；另可在 Go 中调用 model.ExportCatalog。
 go run ./cmd/bttool catalog --file ./examples/project.json
@@ -99,6 +99,10 @@ go run ./cmd/bttool catalog --file ./examples/project.json
 # 运行不依赖数据库和外部服务的真实生成示例。
 go run ./examples/host
 ```
+
+生成配置只使用 `generation.packagePath`，例如 `ai/brawl`。路径相对于 Web 的工作目录（`--workspace`），CLI 则相对于命令执行的当前工作目录；最后一级目录名自动作为 Go 包名。CLI 不传 `--out` 时使用工程配置，传入时只覆盖本次生成，不改写原 JSON。不再支持旧 `generation.package` 字段，也不自动追加 `generated` 或包名目录。路径以 `/` 保存，接受 Windows 反斜杠输入；空路径、绝对路径、`.`、`..`、重复分隔符、非法目录名均被拒绝，末级目录还须为非关键字的有效 Go 包名。
+
+生成前检查目标目录已有 Go 源码的包名；包名冲突时拒绝写入。重复生成只更新变化的产物，并仅清理当前目标目录旧清单中的废弃生成文件。修改生成包路径后在新目录生成，旧目录保留；请自行确认业务导入与手写文件后再清理旧产物。
 
 可从 [Go 元数据声明](examples/definition/project.go)、[手写动作](examples/behavior/actions.go)、[公共生成代码](examples/behavior/glue.gen.go)、[树生成文件目录](examples/behavior) 和 [宿主示例](examples/host/main.go) 开始接入。`scripts/generate` 重建默认示例，不能用于保存你对示例 JSON 的修改；编辑后的工程应交给 `bttool generate`。
 
@@ -129,6 +133,8 @@ import bt "github.com/1xxz188/behaviortree"
 ```
 
 元数据、生成器和插件加载器分别位于 `github.com/1xxz188/behaviortree/model`、`github.com/1xxz188/behaviortree/codegen`、`github.com/1xxz188/behaviortree/hotload`。生成的代码直接引用该运行时模块；工程的 `generation.contextImport` 应填写业务项目自身的固定上下文包路径。生成文件与手写动作放在业务项目的同一个包内。宿主和插件必须使用相同版本的运行库及公共业务依赖。
+
+编辑器和 `bttool generate` 支持填写工程内短路径（例如 `bt_context`）：工作目录的 `go.mod` 为 `module bt_test` 时，生成代码自动使用 `bt_test/bt_context`。生成或保存业务骨架时，本模块目录中缺失的上下文类型会首次创建为 `context.go`，后续生成保留已有类型和手写字段；已有 `context.go` 未声明目标类型时会提示错误，不会覆盖。导入路径留空且类型为 `*Context` 时在生成包内创建；`any` 等预声明类型、标准库和外部包不创建骨架。预览只解析路径、不创建文件，Context 不参与生成产物清理。短路径以工作目录为模块根，需要该目录存在 `go.mod`；直接调用纯内存 `codegen.Generate` 时仍须传入完整 Go 导入路径。
 
 从原服务器内的行为树包迁移时，需要更新业务 Go 导入路径和工程中的 `generation.contextImport`，再重新生成代码。本次模块身份改变，宿主与插件都必须重新构建，并重启宿主；旧模块生成的 `.so` 不能直接用于新的独立模块宿主。
 

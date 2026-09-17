@@ -18,6 +18,10 @@ func Scaffold(project model.Project) ([]byte, error) {
 	if diagnostics := model.Validate(validated); len(diagnostics) != 0 {
 		return nil, &ValidationError{Diagnostics: diagnostics}
 	}
+	resolved, err := model.ResolveGoPackage("", project.Generation.PackagePath)
+	if err != nil {
+		return nil, err
+	}
 	context := project.Generation.ContextType
 	if project.Generation.ContextImport != "" {
 		context = "ctxpkg." + strings.TrimPrefix(context, "*")
@@ -26,7 +30,7 @@ func Scaffold(project model.Project) ([]byte, error) {
 		}
 	}
 	var out bytes.Buffer
-	fmt.Fprintf(&out, "// 业务函数骨架：复制所需函数到同包独立文件并完成 TODO。\n// 参数结构体由 glue.gen.go 提供；本预览不会覆盖任何手写文件。\npackage %s\n", project.Generation.Package)
+	fmt.Fprintf(&out, "// 业务函数骨架：复制所需函数到同包独立文件并完成 TODO。\n// 参数结构体由 glue.gen.go 提供；本预览不会覆盖任何手写文件。\npackage %s\n", resolved.PackageName)
 	if len(project.Catalog) != 0 {
 		fmt.Fprintln(&out, "import (bt \"github.com/1xxz188/behaviortree\"")
 		if project.Generation.ContextImport != "" {

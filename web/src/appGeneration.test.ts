@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
+import { computed, ref } from "vue";
 import { clone, blankProject } from "./project.ts";
 import { parseJSON, stringifyJSON } from "./json.ts";
 import { GenerationRequests } from "./generation.ts";
@@ -11,7 +12,7 @@ import { ProjectSaveState } from "./saveState.ts";
 // 直接执行 App 的真实保存与生成调用链，只替换网络、对话框和视图边界。
 const appSource = readFileSync(new URL("./App.vue", import.meta.url), "utf8").split('<script setup lang="ts">')[1]!.split("</script>")[0]!;
 const appScript = ts.createSourceFile("App.ts", appSource, ts.ScriptTarget.Latest, true);
-const functions = new Set(["request", "action", "notice", "recentStorage", "saveCurrent", "currentProjectRequest", "generate"]);
+const functions = new Set(["request", "action", "notice", "recentStorage", "saveCurrent", "currentProjectRequest", "generate", "changeText", "changeGenerationPackagePath"]);
 const workflowSource = appScript.statements.filter(statement =>
   (ts.isFunctionDeclaration(statement) && functions.has(statement.name?.text ?? ""))
   || (ts.isClassDeclaration(statement) && statement.name?.text === "RequestError"),
@@ -46,6 +47,7 @@ function editor(options: { dirty?: boolean; name?: string; chosenName?: string; 
     dirty: { get value() { return saveState.dirty; } },
     busy: { value: false }, message: { value: "" }, error: { value: false },
     diagnostics: { value: [] }, semanticRevision: { value: 0 }, editRevision: 0,
+    mutate: (fn: () => void) => { fn(); saveState.changed(); },
     generationRequests: new GenerationRequests(),
     window: { localStorage: undefined }, rememberProject: () => {},
     askProject: async (_kind: string) => options.chosenName
@@ -60,8 +62,11 @@ function editor(options: { dirty?: boolean; name?: string; chosenName?: string; 
           : path === "/api/project" ? { workspace: "E:/workspace" } : { version: "123456789012abcdef" }) };
     },
   };
-  const generate = runInNewContext(`${workflowJS}\ngenerate;`, context) as (write?: boolean) => Promise<void>;
-  return { context, calls, generate };
+  const workflow = runInNewContext(`${workflowJS}\n({ generate, changeGenerationPackagePath });`, context) as {
+    generate: (write?: boolean) => Promise<void>; // 执行真实保存与生成请求链。
+    changeGenerationPackagePath: (event: unknown) => void; // 执行生成路径输入处理。
+  };
+  return { context, calls, ...workflow };
 }
 
 // 未保存工程必须先写入 JSON，写入成功后才能发送生成请求。
@@ -134,4 +139,42 @@ test("生成前保存期间继续编辑时停止生成并保留新修改", async
   assert.equal(context.dirty.value, true);
   assert.equal(context.project.value.name, "保存请求发出后的修改");
   assert.match(context.message.value, /停止生成/);
+});
+
+// 输入 Windows 路径后，保存、预览和生成均提交同一个规范化 packagePath。
+test("生成包路径统一正斜杠且保存预览生成请求仅包含 packagePath", async () => {
+  const s = editor();
+  s.changeGenerationPackagePath({ target: { value: " game\\ai\\npc " } });
+  assert.equal(s.context.project.value.generation.packagePath, "game/ai/npc");
+  assert.equal(s.context.dirty.value, true);
+  await s.generate(false);
+  await s.generate();
+  assert.deepEqual(s.calls.map(call => call.path), ["/api/preview", "/api/project", "/api/generate"]);
+  for (const call of s.calls) {
+    const generation = (call.body.project ?? call.body).generation;
+    assert.equal(generation.packagePath, "game/ai/npc");
+    assert.equal(Object.hasOwn(generation, "package"), false);
+  }
+});
+
+// 前端不能通过清理路径把非法 .、.. 或空分段变成可接受的生成目标。
+test("生成路径输入保留危险分段供统一后端校验", () => {
+  const s = editor();
+  for (const path of ["../brawl", "ai/../brawl", "ai/./brawl", "ai//brawl", "/tmp/brawl", "C:/temp/brawl", ""]) {
+    s.changeGenerationPackagePath({ target: { value: path } });
+    assert.equal(s.context.project.value.generation.packagePath, path);
+  }
+});
+
+// 使用真实响应式计算确认末级目录提示随输入变化，且不保存独立包名。
+test("生成包路径提示实时显示末级包名", () => {
+  const declaration = appScript.statements.find(statement => ts.isVariableStatement(statement)
+    && statement.declarationList.declarations.some(item => item.name.getText(appScript) === "generationPackageName"))!;
+  const source = ts.transpileModule(declaration.getText(appScript), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  const project = ref(blankProject());
+  const packageName = runInNewContext(`${source}\ngenerationPackageName;`, { computed, project }) as { readonly value: string };
+  for (const [path, name] of [["bt_brawl", "bt_brawl"], ["ai/brawl", "brawl"], ["game/ai/npc", "npc"], ["", ""]]) {
+    project.value.generation.packagePath = path!;
+    assert.equal(packageName.value, name);
+  }
 });

@@ -25,7 +25,7 @@ type Project struct {
 
 // Generation 指定手写节点与生成代码所在的同一个 Go 包。
 type Generation struct {
-	Package       string `json:"package"`                 // 目标包名。
+	PackagePath   string `json:"packagePath"`             // 相对工程目录的生成路径，末级目录决定 Go 包名。
 	ContextImport string `json:"contextImport,omitempty"` // 稳定业务上下文的导入路径。
 	ContextType   string `json:"contextType"`             // any、类型名或 *类型名；导入别名由生成器管理。
 }
@@ -116,11 +116,15 @@ func Decode(data []byte) (Project, error) {
 	if err := validateDecodedTypes(p); err != nil {
 		return p, err
 	}
+	p.Generation.PackagePath = NormalizePackagePath(p.Generation.PackagePath)
 	return WithCodeNames(p), nil
 }
 
 // Encode 保留稳定 ID、显式顺序以及编辑布局。
-func Encode(p Project) ([]byte, error) { return json.MarshalIndent(WithCodeNames(p), "", "  ") }
+func Encode(p Project) ([]byte, error) {
+	p.Generation.PackagePath = NormalizePackagePath(p.Generation.PackagePath)
+	return json.MarshalIndent(WithCodeNames(p), "", "  ")
+}
 
 // ExportCatalog 将手写 Go 声明导出为 Web 可读取的节点目录。
 func ExportCatalog(definitions []Definition) ([]byte, error) {
@@ -137,5 +141,5 @@ func ExportCatalog(definitions []Definition) ([]byte, error) {
 
 // Example 创建不依赖业务动作的最小可运行工程。
 func Example() Project {
-	return Project{SchemaVersion: SchemaVersion, Name: "行为树示例", Blackboard: []Field{}, Catalog: []Definition{}, Generation: Generation{Package: "generated", ContextType: "any"}, Trees: []Tree{{ID: "main", Name: "主行为树", Root: "root", Nodes: []Node{{ID: "root", Type: NodeSequence, Children: []string{"wait", "done"}}, {ID: "wait", Type: NodeWait, DurationMS: 100}, {ID: "done", Type: NodeWait}}, Layout: map[string]Position{"root": {X: 240, Y: 40}, "wait": {X: 120, Y: 180}, "done": {X: 360, Y: 180}}}}}
+	return Project{SchemaVersion: SchemaVersion, Name: "行为树示例", Blackboard: []Field{}, Catalog: []Definition{}, Generation: Generation{PackagePath: "behavior", ContextType: "any"}, Trees: []Tree{{ID: "main", Name: "主行为树", Root: "root", Nodes: []Node{{ID: "root", Type: NodeSequence, Children: []string{"wait", "done"}}, {ID: "wait", Type: NodeWait, DurationMS: 100}, {ID: "done", Type: NodeWait}}, Layout: map[string]Position{"root": {X: 240, Y: 40}, "wait": {X: 120, Y: 180}, "done": {X: 360, Y: 180}}}}}
 }

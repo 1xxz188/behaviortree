@@ -29,7 +29,7 @@ func run(args []string) error {
 	}
 	flags := flag.NewFlagSet(args[0], flag.ContinueOnError)
 	file := flags.String("file", "project.json", "工程 JSON 文件")
-	out := flags.String("out", "generated", "生成 Go 目录，catalog 命令使用标准输出")
+	out := flags.String("out", "", "相对于当前工作目录的生成包路径，默认使用工程 packagePath")
 	workspace := flags.String("workspace", ".", "Web 编辑器工作目录")
 	addr := flags.String("addr", "127.0.0.1:8791", "本地监听地址")
 	if err := flags.Parse(args[1:]); err != nil {
@@ -84,6 +84,21 @@ func run(args []string) error {
 			}
 			return err
 		}
+		var target model.ResolvedGoPackage
+		if args[0] == "generate" {
+			// 显式空路径也交给统一解析器拒绝；未传 --out 才沿用工程配置。
+			packagePath := p.Generation.PackagePath
+			flags.Visit(func(f *flag.Flag) {
+				if f.Name == "out" {
+					packagePath = *out
+				}
+			})
+			target, err = model.ResolveGoPackage(".", packagePath)
+			if err != nil {
+				return err
+			}
+			p.Generation.PackagePath = target.PackagePath
+		}
 		if diagnostics := model.Validate(p); len(diagnostics) != 0 {
 			_ = json.NewEncoder(os.Stdout).Encode(diagnostics)
 			return fmt.Errorf("校验失败，共 %d 个问题", len(diagnostics))
@@ -92,14 +107,26 @@ func run(args []string) error {
 			fmt.Println("校验通过")
 			return nil
 		}
+		root, err := os.OpenRoot(".")
+		if err != nil {
+			return err
+		}
+		defer root.Close()
+		p, context, err := editor.PrepareProjectContext(root, p)
+		if err != nil {
+			return err
+		}
 		result, err := codegen.Generate(p)
 		if err != nil {
 			return err
 		}
-		if err = editor.WriteGenerated(*out, result); err != nil {
+		if err = context.Ensure(root); err != nil {
 			return err
 		}
-		fmt.Printf("已生成到 %s，共 %d 个 Go 文件，版本 %s\n", *out, len(result.Files), result.Version)
+		if err = editor.WriteProjectGenerated(".", target.PackagePath, result); err != nil {
+			return err
+		}
+		fmt.Printf("已生成到 %s，共 %d 个 Go 文件，版本 %s\n", target.OutputDir, len(result.Files), result.Version)
 		return nil
 	default:
 		return fmt.Errorf("未知命令 %q", args[0])

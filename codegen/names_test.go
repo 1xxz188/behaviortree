@@ -18,14 +18,15 @@ import (
 
 // TestSemanticNamesCompile 验证特殊身份、转换冲突和重复子树的名字稳定且真实可编译。
 func TestSemanticNamesCompile(t *testing.T) {
-	p := model.Project{SchemaVersion: 1, Name: "命名测试", Generation: model.Generation{Package: "generated", ContextType: "any"}}
+	p := model.Project{SchemaVersion: 1, Name: "命名测试", Generation: model.Generation{PackagePath: "generated", ContextType: "any"}}
 	leaf := func(tree, id string) model.Tree {
 		return model.Tree{ID: tree, Name: "显示树", Root: id, Nodes: []model.Node{{ID: id, Name: "攻击目标\nfunc injected() {}\r\u2028", Type: model.NodeWait}}}
 	}
 	p.Trees = []model.Tree{
 		leaf("patrol", "walk"), leaf("Patrol2", "walk"),
 		leaf("foo", "bar_baz"), leaf("foo_bar", "baz"),
-		leaf("fooBar", "baz"),
+		// 连续下划线保留符号转换冲突覆盖，同时避免文件名规范化后重名。
+		leaf("foo__bar", "baz"),
 		leaf("12", "攻击/目标"), leaf("0", "--"),
 		leaf("shared", "root"),
 		{ID: "main", Name: "主树", Root: "root", Nodes: []model.Node{
@@ -97,7 +98,7 @@ func TestSemanticNamesCompile(t *testing.T) {
 func TestContextNameCollisions(t *testing.T) {
 	for _, name := range []string{"btNodeMainWait1", "nodeMainWait1", "btNodeCount", "btNodeNoParent"} {
 		t.Run(name, func(t *testing.T) {
-			p := model.Project{SchemaVersion: 1, Name: "上下文冲突", Generation: model.Generation{Package: "generated", ContextType: "*" + name}, Trees: []model.Tree{{ID: "main", Name: "主树", Root: "root", Nodes: []model.Node{{ID: "root", Type: model.NodeWait}}}}}
+			p := model.Project{SchemaVersion: 1, Name: "上下文冲突", Generation: model.Generation{PackagePath: "generated", ContextType: "*" + name}, Trees: []model.Tree{{ID: "main", Name: "主树", Root: "root", Nodes: []model.Node{{ID: "root", Type: model.NodeWait}}}}}
 			r, err := Generate(p)
 			if err != nil {
 				t.Fatal(err)
@@ -121,7 +122,11 @@ func compileNamedProject(t *testing.T, p model.Project, r Result, extra string) 
 	}
 	mod := "module bt.names.test\n\ngo 1.26.7\n\nrequire github.com/1xxz188/behaviortree v0.0.0\nreplace github.com/1xxz188/behaviortree => " + strconv.Quote(filepath.ToSlash(root)) + "\n"
 	writeGeneratedFiles(t, dir, r)
-	for name, data := range map[string][]byte{"go.mod": []byte(mod), "actions.go": scaffold, "context.go": []byte("package generated\n" + extra)} {
+	resolved, err := model.ResolveGoPackage("", p.Generation.PackagePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, data := range map[string][]byte{"go.mod": []byte(mod), "actions.go": scaffold, "context.go": []byte("package " + resolved.PackageName + "\n" + extra)} {
 		if err := os.WriteFile(filepath.Join(dir, name), data, 0600); err != nil {
 			t.Fatal(err)
 		}

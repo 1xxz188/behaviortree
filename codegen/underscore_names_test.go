@@ -33,7 +33,7 @@ func TestReadableUnderscores(t *testing.T) {
 
 // TestNormalizedNameCollisions 验证组件边界、连续下划线及引用链整理后的重名能稳定消歧。
 func TestNormalizedNameCollisions(t *testing.T) {
-	p := model.Project{SchemaVersion: 1, Generation: model.Generation{Package: "generated", ContextType: "any"}, Trees: []model.Tree{
+	p := model.Project{SchemaVersion: 1, Generation: model.Generation{PackagePath: "generated", ContextType: "any"}, Trees: []model.Tree{
 		{ID: "foo", Root: "root", Nodes: []model.Node{{ID: "root", CodeName: "Bar_Baz", Type: model.NodeWait}}},
 		{ID: "foo_Bar", Root: "root", Nodes: []model.Node{{ID: "root", CodeName: "Baz", Type: model.NodeWait}}},
 		{ID: "_", Root: "root", Nodes: []model.Node{

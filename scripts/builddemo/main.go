@@ -134,7 +134,7 @@ func (b *builder) prepare(stamp string) ([]buildTarget, error) {
 		if err != nil {
 			return nil, err
 		}
-		if err = editor.WriteGenerated(filepath.Join(dir, "behavior"), result); err != nil {
+		if err = editor.WriteProjectGenerated(dir, project.Generation.PackagePath, result); err != nil {
 			return nil, err
 		}
 		data, err := model.Encode(project)

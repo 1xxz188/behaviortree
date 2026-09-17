@@ -11,9 +11,19 @@ import (
 	"github.com/1xxz188/behaviortree/model"
 )
 
+// artifactTestDir 创建末级与测试工程包名一致的目标目录。
+func artifactTestDir(t *testing.T) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "behavior")
+	if err := os.Mkdir(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
 // TestGeneratedCaseOnlyTreeRename 验证只修改树 ID 大小写后，新文件在 Windows 上不会被旧文件清理误删。
 func TestGeneratedCaseOnlyTreeRename(t *testing.T) {
-	dir := t.TempDir()
+	dir := artifactTestDir(t)
 	project := model.Example()
 	if err := WriteGenerated(dir, generatedForTest(t, project)); err != nil {
 		t.Fatal(err)
@@ -28,10 +38,10 @@ func TestGeneratedCaseOnlyTreeRename(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer root.Close()
-	if _, _, err := readGeneratedFiles(root, ".", "generated"); err != nil {
+	if _, _, err := readGeneratedFiles(root, ".", "behavior"); err != nil {
 		t.Fatal(err)
 	}
-	data, err := os.ReadFile(filepath.Join(dir, "tree_MAIN.gen.go"))
+	data, err := os.ReadFile(filepath.Join(dir, "tree_main.gen.go"))
 	if err != nil || !bytes.Equal(data, result.Files[1].Source) {
 		t.Fatalf("改号丢失新文件: %v", err)
 	}
@@ -49,7 +59,7 @@ func generatedForTest(t *testing.T, project model.Project) codegen.Result {
 
 // TestWriteGeneratedStableFiles 验证重复生成和新增无关树均保留原树内容与修改时间。
 func TestWriteGeneratedStableFiles(t *testing.T) {
-	dir := t.TempDir()
+	dir := artifactTestDir(t)
 	project := model.Example()
 	result := generatedForTest(t, project)
 	if err := WriteGenerated(dir, result); err != nil {
@@ -89,7 +99,7 @@ func TestWriteGeneratedStableFiles(t *testing.T) {
 
 // TestWriteGeneratedPreflightAndCleanup 验证后置目标冲突不会提前覆盖 glue，且只清理清单中的生成文件。
 func TestWriteGeneratedPreflightAndCleanup(t *testing.T) {
-	dir := t.TempDir()
+	dir := artifactTestDir(t)
 	project := model.Example()
 	original := generatedForTest(t, project)
 	if err := WriteGenerated(dir, original); err != nil {
@@ -103,7 +113,7 @@ func TestWriteGeneratedPreflightAndCleanup(t *testing.T) {
 			extra = file
 		}
 	}
-	handwritten := []byte("package generated\n// 手写业务。\n")
+	handwritten := []byte("package behavior\n// 手写业务。\n")
 	if err := os.WriteFile(filepath.Join(dir, extra.Name), handwritten, 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +147,7 @@ func TestWriteGeneratedPreflightAndCleanup(t *testing.T) {
 
 // TestGeneratedInterruptedPublishRecovery 模拟源码发布后清单尚未提交的中断，并验证重新生成可修复缺失或损坏源码。
 func TestGeneratedInterruptedPublishRecovery(t *testing.T) {
-	dir := t.TempDir()
+	dir := artifactTestDir(t)
 	server, err := New(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -167,7 +177,7 @@ func TestGeneratedInterruptedPublishRecovery(t *testing.T) {
 func TestWriteGeneratedRejectsPathsAndBatchSize(t *testing.T) {
 	for _, name := range []string{"../outside.go", `a\b.gen.go`, "C:escape.gen.go", "glue.gen.go"} {
 		t.Run(name, func(t *testing.T) {
-			dir := t.TempDir()
+			dir := artifactTestDir(t)
 			result := generatedForTest(t, model.Example())
 			result.Files[1].Name = name
 			if err := WriteGenerated(dir, result); err == nil {
@@ -179,7 +189,7 @@ func TestWriteGeneratedRejectsPathsAndBatchSize(t *testing.T) {
 			}
 		})
 	}
-	dir := t.TempDir()
+	dir := artifactTestDir(t)
 	result := generatedForTest(t, model.Example())
 	// 两个文件各自未达上限，但合计超过上限，必须按整批拒绝。
 	large := make([]byte, MaxGeneratedBytes/2+1)
@@ -197,7 +207,7 @@ func TestWriteGeneratedRejectsPathsAndBatchSize(t *testing.T) {
 
 // TestGeneratedProtectsStaleHandwritten 验证待删除文件变为手写内容时整批发布停止且旧 glue 不变。
 func TestGeneratedProtectsStaleHandwritten(t *testing.T) {
-	dir := t.TempDir()
+	dir := artifactTestDir(t)
 	project := model.Example()
 	original := generatedForTest(t, project)
 	if err := WriteGenerated(dir, original); err != nil {
@@ -206,7 +216,7 @@ func TestGeneratedProtectsStaleHandwritten(t *testing.T) {
 	project.Trees[0].ID = "renamed"
 	changed := generatedForTest(t, project)
 	path := filepath.Join(dir, original.Files[1].Name)
-	handwritten := []byte("package generated\n// 手写实现。\n")
+	handwritten := []byte("package behavior\n// 手写实现。\n")
 	if err := os.WriteFile(path, handwritten, 0644); err != nil {
 		t.Fatal(err)
 	}

@@ -13,7 +13,7 @@ import (
 // TestReadableCodeNames 验证节点 UUID 只保留为身份，普通生成名称仅由树 ID 和代码名组成。
 func TestReadableCodeNames(t *testing.T) {
 	const uuid = "node_c76e896d9203449fbedff207f183462b"
-	p := model.Project{SchemaVersion: 1, Name: "可读命名", Generation: model.Generation{Package: "generated", ContextType: "any"}, Trees: []model.Tree{
+	p := model.Project{SchemaVersion: 1, Name: "可读命名", Generation: model.Generation{PackagePath: "generated", ContextType: "any"}, Trees: []model.Tree{
 		{ID: "patrol", Root: uuid, Nodes: []model.Node{{ID: uuid, CodeName: "WaitMove", Type: model.NodeWait}}},
 	}}
 	r, err := Generate(p)
@@ -31,7 +31,7 @@ func TestReadableCodeNames(t *testing.T) {
 
 // TestReadableReferenceNames 验证重复子树入口与每个调用位置具有可读、独立且稳定的名称。
 func TestReadableReferenceNames(t *testing.T) {
-	p := model.Project{SchemaVersion: 1, Name: "可读调用", Generation: model.Generation{Package: "generated", ContextType: "any"}, Trees: []model.Tree{
+	p := model.Project{SchemaVersion: 1, Name: "可读调用", Generation: model.Generation{PackagePath: "generated", ContextType: "any"}, Trees: []model.Tree{
 		{ID: "combat", Root: "root", Nodes: []model.Node{{ID: "root", CodeName: "Attack", Type: model.NodeWait}}},
 		{ID: "patrol", Root: "root", Nodes: []model.Node{
 			{ID: "root", CodeName: "Root", Type: model.NodeSequence, Children: []string{"one", "two"}},
@@ -58,7 +58,7 @@ func TestReadableReferenceNames(t *testing.T) {
 
 // TestDeepReferenceNamesStayBounded 验证深层引用只在超长路径使用短摘要，且生成包仍可编译。
 func TestDeepReferenceNamesStayBounded(t *testing.T) {
-	p := model.Project{SchemaVersion: 1, Name: "深调用", Generation: model.Generation{Package: "generated", ContextType: "any"}}
+	p := model.Project{SchemaVersion: 1, Name: "深调用", Generation: model.Generation{PackagePath: "generated", ContextType: "any"}}
 	for i := 0; i < 8; i++ {
 		n := model.Node{ID: "root", CodeName: "CallWithLongButReadableStableCodeName", Type: model.NodeSubtree, Tree: fmt.Sprintf("tree%d", i+1)}
 		if i == 7 {
@@ -87,7 +87,7 @@ func TestDeepReferenceNamesStayBounded(t *testing.T) {
 
 // TestCodeNameVersionNormalization 验证缺失代码名的补全与持久化版本一致，且不会修改输入。
 func TestCodeNameVersionNormalization(t *testing.T) {
-	p := model.Project{SchemaVersion: 1, Name: "版本补全", Generation: model.Generation{Package: "generated", ContextType: "any"}, Trees: []model.Tree{
+	p := model.Project{SchemaVersion: 1, Name: "版本补全", Generation: model.Generation{PackagePath: "generated", ContextType: "any"}, Trees: []model.Tree{
 		{ID: "main", Root: "node_c76e896d9203449fbedff207f183462b", Nodes: []model.Node{{ID: "node_c76e896d9203449fbedff207f183462b", Type: model.NodeWait}}},
 	}}
 	r, err := Generate(p)

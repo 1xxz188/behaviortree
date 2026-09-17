@@ -5,6 +5,8 @@ import { synchronizeCatalog } from "./catalogSync";
 import SourceViewer from "./SourceViewer.vue";
 import ProjectDialog from "./ProjectDialog.vue";
 import ImportErrorDialog from "./ImportErrorDialog.vue";
+import ScaffoldOverwriteDialog from "./ScaffoldOverwriteDialog.vue";
+import OperationNotice from "./OperationNotice.vue";
 import TreeContextMenu from "./TreeContextMenu.vue";
 import CatalogContextMenu from "./CatalogContextMenu.vue";
 import { startupProject, rememberProject, selectNativeDirectory } from "./workspace";
@@ -63,12 +65,15 @@ interface CodeSnapshot extends GeneratedCode {
 }
 // 请求错误保留节点诊断，由仍有效的调用展示。
 class RequestError extends Error {
-  constructor(message: string, readonly status: number, readonly diagnostics?: Diagnostic[]) {
+  // 冲突响应保留实际路径与文件摘要，二次确认只授权覆盖用户看到的版本。
+  constructor(message: string, readonly status: number, readonly diagnostics?: Diagnostic[], readonly path?: string, readonly existingHash?: string) {
     super(message);
   }
 }
 
 const project = ref<Project>(blankProject());
+// 路径末级仅供即时说明，合法性统一交由 Go 解析器校验。
+const generationPackageName = computed(() => project.value.generation.packagePath.split("/").at(-1) ?? "");
 const treeID = ref(project.value.trees[0]!.id);
 const treeIDDraft = ref(treeID.value); // ID 输入草稿，应用前不影响工程。
 let renamingTree = false; // 同一棵树改号时保留选择与视口。
@@ -101,8 +106,16 @@ const workspaceChanging = ref(false); // 切换请求期间冻结编辑，避免
 const saveState = reactive(new ProjectSaveState()); // 保存基准与编辑修订各自维护。
 const dirty = computed(() => saveState.dirty);
 const diagnostics = ref<Diagnostic[]>([]);
+const validationResult = shallowRef<{
+  revision: number; // 校验对应的语义修订，工程修改后不再显示旧的通过结论。
+  count: number; // 本次完成的校验问题数，零表示明确通过。
+}>();
 const codeSnapshot = shallowRef<CodeSnapshot>();
 const scaffoldSnapshot = shallowRef<{ source: string; revision: number; signature: string }>();
+const scaffoldOverwrite = shallowRef<{
+  path: string; // 后端确认的实际目标文件路径。
+  resolve: (confirmed: boolean) => void; // 关闭对话框后恢复保存流程。
+}>();
 const semanticRevision = ref(0);
 let editRevision = 0; // 包含布局编辑，防止加载请求覆盖期间的新草稿。
 const generationRequests = new GenerationRequests();
@@ -378,6 +391,10 @@ function nativeHistory(event: Event) {
 // 提交文本属性变更，保留可撤销历史。
 function changeText(event: Event, fn: (text: string) => void) {
   mutate(() => fn((event.target as HTMLInputElement).value));
+}
+// 配置层统一使用正斜杠；保留重复分隔符和 .、..，让后端严格拒绝非法路径。
+function changeGenerationPackagePath(event: Event) {
+  changeText(event, value => { project.value.generation.packagePath = value.trim().replace(/\\/g, "/"); });
 }
 // 清空可选节点名恢复缺省字段，使原生撤销不会凭空留下 name: ""。
 function changeNodeName(event: Event) {
@@ -673,11 +690,11 @@ async function request<T>(path: string, body?: unknown): Promise<T> {
           body: stringifyJSON(body),
         },
   );
-  const data = parseJSON<{ error?: string; diagnostics?: Diagnostic[] }>(
+  const data = parseJSON<{ error?: string; diagnostics?: Diagnostic[]; path?: string; existingHash?: string }>(
     await res.text(),
   );
   if (!res.ok) {
-    throw new RequestError(data.error ?? `请求失败 (${res.status})`, res.status, data.diagnostics);
+    throw new RequestError(data.error ?? `请求失败 (${res.status})`, res.status, data.diagnostics, data.path, data.existingHash);
   }
   return data as T;
 }
@@ -901,10 +918,14 @@ function selectProject(event: Event) {
 // 调用 Go 共用校验器，并展示可定位到节点的诊断。
 function validate() {
   return action(async () => {
+    validationResult.value = undefined;
+    diagnostics.value = [];
+    showOutput("diagnostics");
+    notice("正在校验…");
     const result = await currentProjectRequest<{ diagnostics: Diagnostic[] }>("/api/validate");
     if (!result) return;
     diagnostics.value = result.data.diagnostics;
-    showOutput("diagnostics");
+    validationResult.value = { revision: result.revision, count: diagnostics.value.length };
     notice(
       diagnostics.value.length
         ? `发现 ${diagnostics.value.length} 个问题`
@@ -968,7 +989,7 @@ function acceptCodeSnapshot(data: GeneratedCode, signature: string, revision: nu
   codeSnapshot.value = { ...data, index, signature, revision, origin };
   sourceFileName.value = file?.name ?? "";
 }
-// 骨架只供预览、复制或下载，实际业务仍由独立手写文件实现。
+// 预览业务骨架，实际业务由生成包中的 actions.go 实现。
 function previewScaffold() {
   return action(async () => {
     const result = await currentProjectRequest<{ source: string }>("/api/scaffold");
@@ -976,6 +997,51 @@ function previewScaffold() {
     scaffoldSnapshot.value = { source: result.data.source, revision: result.revision, signature: result.signature };
     showOutput("scaffold");
     notice("业务骨架已生成，请实现 TODO 后与生成文件一起编译");
+  });
+}
+// 关闭覆盖确认并恢复等待中的下载操作，取消和 Escape 均不写入文件。
+function closeScaffoldOverwrite(confirmed = false) {
+  const pending = scaffoldOverwrite.value;
+  scaffoldOverwrite.value = undefined;
+  pending?.resolve(confirmed);
+}
+// 默认写入生成包路径；仅在同名文件存在且用户明确确认后提交覆盖请求。
+function downloadScaffold() {
+  return action(async () => {
+    if (!ensureIdentityDraftsApplied()) return;
+    if (!scaffoldSnapshot.value || scaffoldStale.value) {
+      notice("工程已变化，请先更新业务骨架再下载", true);
+      return;
+    }
+    const snapshot = clone(project.value);
+    const revision = semanticRevision.value;
+    const directory = workspace.value;
+    let result: { path: string };
+    try {
+      result = await request<{ path: string }>("/api/scaffold/save", { project: snapshot });
+    } catch (e) {
+      if (!(e instanceof RequestError) || e.status !== 409 || !e.path || !e.existingHash) throw e;
+      // 异步检查期间编辑工程后，不再使用旧路径或旧骨架请求覆盖授权。
+      if (revision !== semanticRevision.value || directory !== workspace.value) {
+        notice("工程已变化，请更新业务骨架后重新下载", true);
+        return;
+      }
+      const confirmed = await new Promise<boolean>(resolve => {
+        scaffoldOverwrite.value = { path: e.path!, resolve };
+      });
+      if (!confirmed) {
+        notice("已取消下载，原 actions.go 已保留");
+        return;
+      }
+      if (revision !== semanticRevision.value || directory !== workspace.value) {
+        notice("工程已变化，请更新业务骨架后重新下载", true);
+        return;
+      }
+      result = await request<{ path: string }>("/api/scaffold/save", {
+        project: snapshot, overwrite: true, expectedHash: e.existingHash,
+      });
+    }
+    notice(`下载成功，业务骨架已保存到 ${result.path}`);
   });
 }
 // 使用系统剪贴板复制可见文件，不把源码写入工程目录。
@@ -1790,16 +1856,22 @@ onUnmounted(() => toolLifecycle.abort());
         <p id="tree-id-help" class="muted identity-help">工程内唯一，新建树自动分配递增数字 ID；手动改为更大数字后继续递增。允许 1–80 位英文、数字或下划线，不能仅大小写不同；冲突时不生效。应用时同步全部子树引用，外部入口调用需同步调整。</p>
         <div class="panel-heading small-heading">Go 生成设置</div>
         <label class="field-label"
-          >包名<input
-            :value="project.generation.package"
-            @input="
-              changeText($event, (v) => (project.generation.package = v))
-            "
+          >生成包路径<input
+            :value="project.generation.packagePath"
+            placeholder="例如：ai/brawl"
+            aria-describedby="generation-package-help generation-package-preview"
+            @input="changeGenerationPackagePath"
         /></label>
+        <p id="generation-package-preview" class="identity-help" role="status">
+          生成目录：<code>{{ project.generation.packagePath || "（未填写）" }}</code><br>
+          Go package：<code>{{ generationPackageName || "（未填写）" }}</code>
+        </p>
+        <p id="generation-package-help" class="muted identity-help">生成目录相对于当前工程目录，路径最后一级目录名将作为 Go package 名。例如 ai/brawl 会生成到 ai/brawl/，package 为 brawl。</p>
+        <p class="muted identity-help">更改路径后会在新目录生成，旧目录保留；手写代码请自行迁移。</p>
         <label class="field-label"
           >业务上下文导入路径<input
             :value="project.generation.contextImport"
-            placeholder="留空使用本地类型"
+            placeholder="例如 bt_context 或 bt_test/bt_context；留空使用同包类型"
             @input="
               changeText($event, (v) => (project.generation.contextImport = v))
             "
@@ -1812,6 +1884,7 @@ onUnmounted(() => toolLifecycle.abort());
               changeText($event, (v) => (project.generation.contextType = v))
             "
         /></label>
+        <p class="muted identity-help">例如填写 bt_context 和 *Context：生成或下载业务骨架时首次创建 bt_context/context.go，已有类型不覆盖。短路径按当前目录 go.mod 补全；留空则在生成包创建，any 不创建。预览不写盘。</p>
         <button class="danger tree-delete" @click="deleteTree">
           删除当前行为树
         </button>
@@ -1865,7 +1938,7 @@ onUnmounted(() => toolLifecycle.abort());
             <option v-for="file in codeSnapshot!.files" :key="file.name" :value="file.name">{{ file.name }}</option>
           </select>
           <button @click="copySource">复制</button>
-          <button @click="bottomTab === 'scaffold' ? download('actions.go', scaffoldSnapshot!.source, 'text/plain') : download(sourceFile!.name, sourceFile!.source, 'text/plain')">下载 {{ bottomTab === 'scaffold' ? 'actions.go' : '当前文件' }}</button>
+          <button :disabled="bottomTab === 'scaffold' && (busy || scaffoldStale)" @click="bottomTab === 'scaffold' ? downloadScaffold() : download(sourceFile!.name, sourceFile!.source, 'text/plain')">下载 {{ bottomTab === 'scaffold' ? 'actions.go' : '当前文件' }}</button>
           <span class="code-state" :class="{ stale: bottomTab === 'source' ? sourceStale : scaffoldStale }">
             {{ (bottomTab === 'source' ? sourceStale : scaffoldStale) ? '已过期 · 请更新' : bottomTab === 'scaffold' ? '待实现 TODO' : codeSnapshot?.origin === 'preview' ? '当前预览' : '已生成文件' }}
           </span>
@@ -1876,8 +1949,11 @@ onUnmounted(() => toolLifecycle.abort());
         <span class="output-path" :title="outputPath">{{ outputPath }}</span>
       </div>
       <p v-if="bottomTab === 'source' && sourceStale" class="code-warning">当前工程已变化，以下保留旧源码；更新预览后恢复节点联动。</p>
-      <p v-if="bottomTab === 'scaffold' && scaffoldSnapshot" class="code-warning">{{ scaffoldStale ? '工程已变化，请更新骨架。' : '' }}骨架中的 TODO 需要手动实现；下载文件不会覆盖已有业务实现。</p>
+      <p v-if="bottomTab === 'scaffold' && scaffoldSnapshot" class="code-warning">{{ scaffoldStale ? '工程已变化，请更新骨架。' : '' }}骨架中的 TODO 需要手动实现；默认保存到 {{ project.generation.packagePath }}/actions.go，同名文件需再次确认才会覆盖。</p>
       <div v-if="bottomTab === 'diagnostics'" class="output-content">
+        <p v-if="validationResult && validationResult.revision === semanticRevision" class="validation-result" :class="{ 'identity-error': validationResult.count > 0 }" role="status">
+          {{ validationResult.count ? `校验完成，发现 ${validationResult.count} 个问题，请点击下方条目定位。` : '校验通过，未发现结构与类型问题，可以生成 Go 代码。' }}
+        </p>
         <template v-if="bottomTab === 'diagnostics'"
           ><button
             v-for="(d, i) in diagnostics"
@@ -1888,7 +1964,7 @@ onUnmounted(() => toolLifecycle.abort());
             <span>!</span><code>{{ d.nodeId ?? d.field ?? d.treeId }}</code
             >{{ d.message }}
           </button>
-          <p v-if="!diagnostics.length" class="muted">
+          <p v-if="!diagnostics.length && (!validationResult || validationResult.revision !== semanticRevision)" class="muted">
             点击「校验」检查结构与类型。「预览 Go」查看源码，「生成到目录」先保存工程再写入生成文件。
           </p></template
         >
@@ -1910,6 +1986,7 @@ onUnmounted(() => toolLifecycle.abort());
         >{{ project.blackboard.length }} 个字段</span
       >
     </footer>
+    <OperationNotice :message="message" :failed="error" :busy="busy" />
     <input
       ref="importInput"
       type="file"
@@ -1925,6 +2002,7 @@ onUnmounted(() => toolLifecycle.abort());
       @close="catalogMenu = undefined" @edit="editCatalogDefinition(catalogMenu.definition)" @delete="confirmDeleteDefinition" />
     <ProjectDialog v-if="projectDialog" :kind="projectDialog.kind" :reload="projectDialog.reload" :workspace="workspace" :suggestion="fileName || suggestedName" :files="allFiles" @close="closeProjectDialog" />
     <ImportErrorDialog v-if="importFailure" :name="importFailure.name" :message="importFailure.message" @close="importFailure = undefined" />
+    <ScaffoldOverwriteDialog v-if="scaffoldOverwrite" :path="scaffoldOverwrite.path" @close="closeScaffoldOverwrite" />
     <TreeContextMenu v-if="treeMenu" :key="`${treeMenu.tree.id}:${treeMenu.x}:${treeMenu.y}:${treeMenu.initialMode ?? 'menu'}`"
       :tree="treeMenu.tree" :x="treeMenu.x" :y="treeMenu.y"
       :initial-mode="treeMenu.initialMode" :can-delete="project.trees.length > 1"

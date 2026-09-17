@@ -11,7 +11,7 @@ import (
 func TestGeneratedCursorPositions(t *testing.T) {
 	for _, kind := range []model.NodeType{model.NodeSequence, model.NodeSelector, model.NodeParallel} {
 		t.Run(kind.String(), func(t *testing.T) {
-			p := model.Project{SchemaVersion: 1, Name: "游标常量", Generation: model.Generation{Package: "generated", ContextType: "any"}, Trees: []model.Tree{
+			p := model.Project{SchemaVersion: 1, Name: "游标常量", Generation: model.Generation{PackagePath: "generated", ContextType: "any"}, Trees: []model.Tree{
 				{ID: "main", Root: "root", Nodes: []model.Node{
 					{ID: "root", CodeName: "Root", Type: kind, Children: []string{"first", "second"}},
 					{ID: "first", CodeName: "First", Type: model.NodeSequence, Children: []string{"nested"}},

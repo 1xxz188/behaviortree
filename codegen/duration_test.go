@@ -38,7 +38,7 @@ func TestReadableDurationGeneratedRuntime(t *testing.T) {
 	}
 	writeGeneratedFiles(t, dir, result)
 	gomod := "module duration.test\n\ngo 1.26.7\n\nrequire github.com/1xxz188/behaviortree v0.0.0\nreplace github.com/1xxz188/behaviortree => " + strconv.Quote(filepath.ToSlash(moduleRoot)) + "\n"
-	const source = `package generated
+	const source = `package behavior
 import ("testing"; "time"; bt "github.com/1xxz188/behaviortree")
 // CheckDuration 验证实际业务函数收到精确的 time.Duration 参数。
 func CheckDuration(f *bt.Frame[any], node int, phase bt.Phase, p CheckDurationParams) bt.Status {

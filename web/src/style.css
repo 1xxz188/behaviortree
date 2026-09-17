@@ -703,6 +703,18 @@ pre {
   color: #a7c7c0;
   font-size: 11px;
 }
+.validation-result {
+  margin: 8px 12px;
+  padding: 12px;
+  border-left: 3px solid #8edfba;
+  background: #1e3437;
+  color: #b9f0d8;
+}
+.validation-result.identity-error {
+  border-color: #eb8c96;
+  background: #442a31;
+  color: #f0b2b8;
+}
 .statusbar.error {
   background: #442a31;
   color: #f0b2b8;

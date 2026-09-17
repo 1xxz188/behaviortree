@@ -65,6 +65,7 @@ func New(workspace string) (*Server, error) {
 	s.mux.HandleFunc("POST /api/preview", s.preview)
 	s.mux.HandleFunc("POST /api/generated", s.readGenerated)
 	s.mux.HandleFunc("POST /api/scaffold", s.scaffold)
+	s.mux.HandleFunc("POST /api/scaffold/save", s.saveScaffold)
 	s.mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		reply(w, 404, map[string]string{"error": "未知接口"})
 	})
@@ -395,13 +396,17 @@ func (s *Server) validate(w http.ResponseWriter, r *http.Request) {
 	reply(w, 200, map[string]any{"diagnostics": d})
 }
 
-// generate 只写受控 generated 目录下的生成产物，不编译或执行浏览器提供的代码。
+// generate 只向工程内的生成包路径发布产物，不编译或执行浏览器提供的代码。
 func (s *Server) generate(w http.ResponseWriter, r *http.Request) {
 	data, err := readBody(w, r)
 	var p model.Project
 	var result codegen.Result
+	var context *ContextScaffold
 	if err == nil {
 		p, err = model.Decode(data)
+	}
+	if err == nil {
+		p, context, err = PrepareProjectContext(s.root, p)
 	}
 	if err == nil {
 		result, err = codegen.Generate(p)
@@ -415,15 +420,37 @@ func (s *Server) generate(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	rel := filepath.Join("generated", p.Generation.Package)
+	resolved, err := model.ResolveGoPackage(s.path, p.Generation.PackagePath)
+	if err != nil {
+		reply(w, 400, map[string]string{"error": err.Error()})
+		return
+	}
+	rel := filepath.FromSlash(resolved.PackagePath)
 	s.mu.Lock()
-	err = writeGenerated(s.root, rel, result)
+	err = context.Ensure(s.root)
+	if err == nil {
+		err = writeGenerated(s.root, rel, result)
+	}
 	s.mu.Unlock()
 	if err != nil {
 		reply(w, 409, map[string]string{"error": err.Error()})
 		return
 	}
 	reply(w, 200, map[string]any{"files": responseFiles(result.Files), "sourceMap": result.SourceMap, "version": result.Version, "directory": filepath.Join(s.path, rel)})
+}
+
+// WriteProjectGenerated 通过工程根目录发布产物，阻止路径中的符号链接逃出工程。
+func WriteProjectGenerated(projectDir, packagePath string, result codegen.Result) error {
+	resolved, err := model.ResolveGoPackage(projectDir, packagePath)
+	if err != nil {
+		return err
+	}
+	root, err := os.OpenRoot(projectDir)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	return writeGenerated(root, filepath.FromSlash(resolved.PackagePath), result)
 }
 
 // WriteGenerated 将完整工程写入 CLI 指定目录，保护手写文件并跳过未变化的产物。

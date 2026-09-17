@@ -24,5 +24,5 @@ func Project(release int) model.Project {
 		tree.Nodes[0].Children = append(tree.Nodes[0].Children, "extra_"+id)
 		tree.Nodes = append(tree.Nodes, model.Node{ID: "extra_" + id, Type: model.NodeAction, Binding: "record", Params: map[string]model.Value{"Message": {Value: json.RawMessage(`"extra_` + id + `"`)}}})
 	}
-	return model.Project{SchemaVersion: model.SchemaVersion, Name: "Go 原生插件示例", Catalog: Catalog(), Blackboard: []model.Field{{ID: "message", Name: "Message", Type: bt.StringType, Default: json.RawMessage(`"completed"`)}}, Trees: []model.Tree{tree}, Generation: model.Generation{Package: "behavior", ContextImport: "github.com/1xxz188/behaviortree/examples/shared", ContextType: "*Context"}}
+	return model.Project{SchemaVersion: model.SchemaVersion, Name: "Go 原生插件示例", Catalog: Catalog(), Blackboard: []model.Field{{ID: "message", Name: "Message", Type: bt.StringType, Default: json.RawMessage(`"completed"`)}}, Trees: []model.Tree{tree}, Generation: model.Generation{PackagePath: "behavior", ContextImport: "github.com/1xxz188/behaviortree/examples/shared", ContextType: "*Context"}}
 }

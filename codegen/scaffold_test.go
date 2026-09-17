@@ -42,7 +42,7 @@ func TestScaffoldCompilesWithGeneratedParameters(t *testing.T) {
 			dir := t.TempDir()
 			gomod := "module scaffold.test\n\ngo 1.26.7\n\nrequire github.com/1xxz188/behaviortree v0.0.0\nreplace github.com/1xxz188/behaviortree => " + strconv.Quote(filepath.ToSlash(moduleRoot)) + "\n"
 			// 编译之外直接执行所有生命周期分支，保证未完成骨架不会误报业务成功。
-			testSource := "package generated\nimport (\"testing\"; bt \"github.com/1xxz188/behaviortree\")\n// TestDefaults 验证骨架未实现时保守失败。\nfunc TestDefaults(t *testing.T) {for _, phase := range []bt.Phase{bt.Start,bt.Resume,bt.Abort}{if Move(nil,0,phase,MoveParams{})!=bt.Failure{t.Fatal(\"动作误报成功\")}};if Ready(nil,0,ReadyParams{}){t.Fatal(\"条件误报成立\")}}\n"
+			testSource := "package behavior\nimport (\"testing\"; bt \"github.com/1xxz188/behaviortree\")\n// TestDefaults 验证骨架未实现时保守失败。\nfunc TestDefaults(t *testing.T) {for _, phase := range []bt.Phase{bt.Start,bt.Resume,bt.Abort}{if Move(nil,0,phase,MoveParams{})!=bt.Failure{t.Fatal(\"动作误报成功\")}};if Ready(nil,0,ReadyParams{}){t.Fatal(\"条件误报成立\")}}\n"
 			if context == "*LocalContext" {
 				testSource += "// LocalContext 是同包上下文测试替身。\ntype LocalContext struct{}\n"
 			}

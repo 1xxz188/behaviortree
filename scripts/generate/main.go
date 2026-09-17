@@ -26,8 +26,9 @@ func main() {
 	catalog, err := model.ExportCatalog(definition.Catalog())
 	check(err)
 	write(filepath.Join(*root, "examples", "catalog.json"), catalog)
-	check(editor.WriteGenerated(filepath.Join(*root, "examples", "behavior"), result))
-	fmt.Printf("generated examples/project.json, catalog.json and %d Go files in examples/behavior\n", len(result.Files))
+	projectDir := filepath.Join(*root, "examples")
+	check(editor.WriteProjectGenerated(projectDir, project.Generation.PackagePath, result))
+	fmt.Printf("generated examples/project.json, catalog.json and %d Go files in examples/%s\n", len(result.Files), project.Generation.PackagePath)
 }
 
 // write 保存生成输出并保留手写文件。

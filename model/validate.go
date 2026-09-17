@@ -142,8 +142,8 @@ func Validate(p Project) []Diagnostic {
 	if p.SchemaVersion != SchemaVersion {
 		add("", "", "schemaVersion", "不支持的工程格式版本")
 	}
-	if !Identifier(p.Generation.Package) {
-		add("", "", "generation.package", "目标包名必须为 Go 标识符")
+	if _, err := ResolveGoPackage("", p.Generation.PackagePath); err != nil {
+		add("", "", "generation.packagePath", err.Error())
 	}
 	contextType := strings.TrimPrefix(p.Generation.ContextType, "*")
 	if !Identifier(contextType) {

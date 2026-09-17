@@ -1,16 +1,16 @@
 {
   "generator": "behaviortree/codegen",
-  "version": "cf5412f11962ea38244c17e05c3e9546",
+  "version": "c39a37237cb84ac5d461c3bd97423b06",
   "files": [
     {
       "name": "glue.gen.go",
       "treeId": "",
-      "sha256": "6b0ab14ec4ab0c637c3fdc91c4a3c779e9b77ce479d2a1cd6dce665cdd5c637f"
+      "sha256": "d41826c1a0792ae81538c6d1b3afb2a828cc06b276d66552b47c4a5b7bba931f"
     },
     {
       "name": "tree_main.gen.go",
       "treeId": "main",
-      "sha256": "d593c9cfd3ad667e4d8bf59abe5d8efc9b8381301a0938ce1d7a777978cdc1e6"
+      "sha256": "9c0c875e9d81fc6dc578ef0e5f3c47cec286c0c4ccc9d2794a5a426e8ab7e4bc"
     }
   ],
   "locations": [
@@ -27,7 +27,7 @@
       "nodeId": "gate",
       "file": "tree_main.gen.go",
       "index": 1,
-      "line": 64,
+      "line": 66,
       "functionName": "btNodeMainGate"
     },
     {
@@ -35,7 +35,7 @@
       "nodeId": "record",
       "file": "tree_main.gen.go",
       "index": 2,
-      "line": 48,
+      "line": 49,
       "functionName": "btNodeMainRecord"
     }
   ]

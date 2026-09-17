@@ -123,7 +123,7 @@ func TestWorkspaceSwitchMovesReadWriteAndGeneration(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatal("新目录生成失败", w.Code, w.Body.String())
 	}
-	for _, relative := range []string{"saved.json", filepath.Join("generated", p.Generation.Package, "glue.gen.go")} {
+	for _, relative := range []string{"saved.json", filepath.Join(p.Generation.PackagePath, "glue.gen.go")} {
 		if _, err = os.Stat(filepath.Join(target, relative)); err != nil {
 			t.Fatal("目标文件未写入新目录", relative, err)
 		}
@@ -138,7 +138,7 @@ func TestWorkspaceSwitchMovesReadWriteAndGeneration(t *testing.T) {
 	var generated struct {
 		Directory string `json:"directory"` // 生成产物实际目录。
 	}
-	if err = json.Unmarshal(w.Body.Bytes(), &generated); err != nil || generated.Directory != filepath.Join(target, "generated", p.Generation.Package) {
+	if err = json.Unmarshal(w.Body.Bytes(), &generated); err != nil || generated.Directory != filepath.Join(target, p.Generation.PackagePath) {
 		t.Fatal("生成产物目录错误", generated.Directory, err)
 	}
 }

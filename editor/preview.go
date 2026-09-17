@@ -69,6 +69,9 @@ func (s *Server) preview(w http.ResponseWriter, r *http.Request) {
 		project, err = model.Decode(data)
 	}
 	if err == nil {
+		project, _, err = PrepareProjectContext(s.root, project)
+	}
+	if err == nil {
 		result, err = codegen.Generate(project)
 	}
 	if err != nil {
@@ -85,6 +88,9 @@ func (s *Server) scaffold(w http.ResponseWriter, r *http.Request) {
 	var source []byte
 	if err == nil {
 		project, err = model.Decode(data)
+	}
+	if err == nil {
+		project, _, err = PrepareProjectContext(s.root, project)
 	}
 	if err == nil {
 		source, err = codegen.Scaffold(project)
@@ -113,18 +119,21 @@ func (s *Server) readGenerated(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		project, err = model.Decode(data)
 	}
+	if err == nil {
+		project, _, err = PrepareProjectContext(s.root, project)
+	}
 	if err != nil {
 		generationError(w, err)
 		return
 	}
-	pkg := project.Generation.Package
-	if !model.Identifier(pkg) {
-		reply(w, 400, map[string]string{"error": "目标包名必须为 Go 标识符"})
+	resolved, err := model.ResolveGoPackage(s.path, project.Generation.PackagePath)
+	if err != nil {
+		reply(w, 400, map[string]string{"error": err.Error()})
 		return
 	}
-	dir := filepath.Join("generated", pkg)
+	dir := filepath.FromSlash(resolved.PackagePath)
 	s.mu.Lock()
-	files, mapping, err := readGeneratedFiles(s.root, dir, pkg)
+	files, mapping, err := readGeneratedFiles(s.root, dir, resolved.PackageName)
 	s.mu.Unlock()
 	if err != nil {
 		status := 409
@@ -169,12 +178,20 @@ func readGeneratedFiles(root *os.Root, dir, pkg string) ([]codegen.GeneratedFile
 
 // readArtifact 通过受限根读取普通文件，并消耗整批共享的读取预算。
 func readArtifact(root *os.Root, name string, budget *int64) ([]byte, error) {
+	// 在打开前拒绝非普通文件，防止命名管道阻塞；打开后仍复核实际文件。
+	info, err := root.Stat(name)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || info.Size() > *budget {
+		return nil, errors.New("产物不是普通文件或整批超过大小限制")
+	}
 	f, err := root.Open(name)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	info, err := f.Stat()
+	info, err = f.Stat()
 	if err != nil {
 		return nil, err
 	}
