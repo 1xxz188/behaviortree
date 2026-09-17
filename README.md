@@ -154,7 +154,7 @@ import bt "github.com/1xxz188/behaviortree"
 
 ## 黑板和运行语义
 
-黑板使用编译后的槽位和强类型 getter/setter，支持 bool、int64、uint64、float64、string、enum、entity、duration。枚举在 JSON 中使用字符串，并由生成的 setter 静态检查允许值；实体 ID 使用 uint64，duration 默认值与参数常量使用纳秒整数，Wait/Timeout 的 `durationMs` 使用毫秒。Web 对超出 JavaScript 安全整数范围的值使用无损 JSON 往返。
+黑板使用编译后的槽位和强类型 getter/setter，支持 bool、int64、uint64、float64、string、enum、entity、duration。枚举在 JSON 中使用字符串，并由生成的 setter 静态检查允许值；实体 ID 使用 uint64。duration 默认值与参数常量推荐使用带单位的 JSON 字符串（如 `"1s"`、`"500ms"`、`"2.5s"`、`"1m30s"`），由 Go `time.ParseDuration` 校验并在生成时解析为纳秒；仍兼容已有的纳秒整数，加载保存不强制转换旧数据。参数声明的默认值填写 JSON，节点常量与黑板默认值输入框直接填写 `1s` 等文本。Wait/Timeout 的 `durationMs` 仍使用毫秒。Web 对超出 JavaScript 安全整数范围的值使用无损 JSON 往返。
 
 字段绑定由参数的 `field` 指定稳定字段 ID，常量由 `value` 指定，二者不能同时出现。绑定字段变化会通知依赖该字段的节点；条件依赖外部业务状态时，应在 Go 节点目录中声明 `Events`，由宿主显式 `Notify`，避免隐藏的轮询检查。
 

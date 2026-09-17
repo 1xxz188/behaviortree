@@ -50,7 +50,7 @@ func TestValidation(t *testing.T) {
 		{"参数缺失", func(p *Project) {
 			p.Catalog = []Definition{{ID: "a", Name: "a", Kind: DefinitionAction, GoName: "Move", Params: []Parameter{{Name: "Speed", Type: bt.IntType}}}}
 			p.Trees[0].Nodes[1] = Node{ID: "wait", Type: NodeAction, Binding: "a"}
-		}, "缺少必填"},
+		}, "未绑定参数"},
 		{"递归引用", func(p *Project) { p.Trees[0].Nodes[1] = Node{ID: "wait", Type: NodeSubtree, Tree: "main"} }, "不能递归"},
 		{"错误优先级守卫", func(p *Project) { p.Trees[0].Nodes[0].Type = NodePriority }, "以 condition 开头"},
 		{"无限重试", func(p *Project) { p.Trees[0].Nodes[0].Type = NodeRetry }, "循环次数"},

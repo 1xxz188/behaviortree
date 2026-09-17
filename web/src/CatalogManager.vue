@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref } from "vue";
 import type { Definition, Parameter } from "./project";
 import type { DefinitionKind, ValueType } from "./enums";
 import { valueTypes } from "./enums";
+import { PARAM_TYPE_META, parameterTypeTooltip } from "./parameterTypeMeta";
 import { parseJSON, stringifyJSON } from "./json";
 import { catalogConflicts, mergeCatalog, parseCatalog } from "./catalog";
 import type { CatalogChoice } from "./catalog";
@@ -22,6 +23,7 @@ interface ParameterDraft {
   key: number; // 仅用于稳定定位表单行。
   name: string; // Go 参数成员名。
   type: ValueType; // 参数值类型。
+  comment: string; // 参数字段注释，支持多行用途说明。
   defaultText: string; // 空白表示无默认值。
   enumText: string; // 每行一个枚举值。
 }
@@ -55,13 +57,13 @@ function changeMode(next: "create" | "import" | "manage") {
   fileLabel.value = "";
 }
 
-// 稳定 ID 不允许在编辑表单中改名，既有节点绑定与参数保持原样。
+// 稳定 ID 不允许在编辑表单中改名；参数草稿在提交时由工程入口统一同步。
 function editDefinition(item: Definition) {
   changeMode("create");
   editingID.value = item.id;
   draft.value = { id: item.id, name: item.name, kind: item.kind, goName: item.goName, events: (item.events ?? []).join("\n") };
   parameters.value = (item.params ?? []).map((parameter) => ({
-    key: parameterKey++, name: parameter.name, type: parameter.type,
+    key: parameterKey++, name: parameter.name, type: parameter.type, comment: parameter.comment ?? "",
     defaultText: parameter.default === undefined ? "" : stringifyJSON(parameter.default),
     enumText: (parameter.enum ?? []).join("\n"),
   }));
@@ -70,7 +72,7 @@ function editDefinition(item: Definition) {
 
 // 添加独立参数行，不触碰工程中的已绑定参数。
 function addParameter() {
-  parameters.value.push({ key: parameterKey++, name: "", type: "string", defaultText: "", enumText: "" });
+  parameters.value.push({ key: parameterKey++, name: "", type: "string", comment: "", defaultText: "", enumText: "" });
 }
 
 // 逐行处理枚举和事件列表，空行用于表单排版而不生成空值。
@@ -85,6 +87,7 @@ function draftDefinition(): Definition {
     goName: draft.value.goName.trim(), events: lines(draft.value.events),
     params: parameters.value.map((parameter): Parameter => ({
       name: parameter.name.trim(), type: parameter.type,
+      ...(parameter.comment.trim() ? { comment: parameter.comment.trim() } : {}),
       ...(parameter.defaultText.trim() ? { default: parseJSON(parameter.defaultText) } : {}),
       ...(parameter.type === "enum" ? { enum: lines(parameter.enumText) } : {}),
     })),
@@ -202,16 +205,18 @@ onUnmounted(() => previousFocus?.focus());
               <label>业务实现函数<input v-model="draft.goName" :disabled="busy" placeholder="MoveTo" required /><small>同包中的手写 Go 函数，目录内名称必须唯一，可被多个节点复用。节点代码名独立保存。</small></label>
             </div>
             <div class="catalog-section-title"><h3>参数声明</h3><button type="button" :disabled="busy" @click="addParameter">添加参数</button></div>
-            <p class="catalog-hint">参数名称使用 Go 导出成员名，例如 Target。默认值填写 JSON；字符串写为 "文本"，留空表示未设置。duration 单位为纳秒。</p>
+            <p class="catalog-hint">参数名称使用 Go 导出成员名，例如 Target。默认值填写 JSON；字符串写为 "文本"，留空表示未设置。悬浮类型或 ⓘ 查看用途和示例。</p>
             <div v-for="(parameter, index) in parameters" :key="parameter.key" class="catalog-parameter">
               <label>参数名<input v-model="parameter.name" :disabled="busy" placeholder="Target" required /></label>
-              <label>类型<select v-model="parameter.type" :disabled="busy"><option v-for="type in valueTypes" :key="type" :value="type">{{ type }}</option></select></label>
-              <label>默认值（JSON）<input v-model="parameter.defaultText" :disabled="busy" placeholder="留空表示未设置" /></label>
+              <label><span>类型 <span class="catalog-type-info" :title="parameterTypeTooltip(parameter.type)" :aria-label="parameterTypeTooltip(parameter.type)">ⓘ</span></span><select v-model="parameter.type" :disabled="busy" :title="parameterTypeTooltip(parameter.type)" :aria-describedby="`parameter-type-hint-${parameter.key}`"><option v-for="type in valueTypes" :key="type" :value="type" :title="`${type} — ${PARAM_TYPE_META[type].short}`">{{ type }}</option></select></label>
+              <label>默认值（JSON）<input v-model="parameter.defaultText" :disabled="busy" :placeholder="PARAM_TYPE_META[parameter.type].placeholder" :title="PARAM_TYPE_META[parameter.type].detail || undefined" /></label>
               <button type="button" :disabled="busy" :aria-label="`移除参数 ${parameter.name || index + 1}`" @click="parameters.splice(index, 1)">移除</button>
+              <small :id="`parameter-type-hint-${parameter.key}`" class="catalog-wide catalog-type-hint">{{ PARAM_TYPE_META[parameter.type].short }}：{{ PARAM_TYPE_META[parameter.type].description }} {{ PARAM_TYPE_META[parameter.type].note }}</small>
+              <label class="catalog-wide">注释（可留空）<textarea v-model="parameter.comment" :disabled="busy" placeholder="说明参数用途，将生成到 Go 字段注释中" rows="2" /></label>
               <label v-if="parameter.type === 'enum'" class="catalog-wide">允许的枚举值（每行一个）<textarea v-model="parameter.enumText" :disabled="busy" rows="3" /></label>
             </div>
             <label class="catalog-events">宿主事件（每行一个，可留空）<textarea v-model="draft.events" :disabled="busy" placeholder="movement_completed" rows="2" /></label>
-            <div v-if="editingID" class="catalog-warning"><strong>更新已有定义会影响所有引用它的节点。</strong><p>修改种类、业务实现函数或参数声明后，需要同步手写 Go 实现。已有节点的代码名、种类和参数会保留，请在应用后校验工程并修正不匹配项。</p><label class="catalog-check"><input v-model="acknowledged" :disabled="busy" type="checkbox" />我已了解影响，确认更新此定义</label></div>
+            <div v-if="editingID" class="catalog-warning"><strong>更新已有定义会影响所有引用它的节点。</strong><p>节点参数会按新定义同步：保留兼容绑定，删除已移除参数，重置不兼容绑定；新增参数采用默认值或保持未绑定。应用后自动校验工程，请按提示配置参数，并同步手写 Go 实现。</p><label class="catalog-check"><input v-model="acknowledged" :disabled="busy" type="checkbox" />我已了解影响，确认更新此定义</label></div>
             <label v-if="initialKind && !editingID && draft.kind === initialKind" class="catalog-check"><input v-model="bindNew" :disabled="busy" type="checkbox" />保存并绑定当前节点</label>
           </form>
           <div v-else class="catalog-import">
@@ -224,7 +229,7 @@ onUnmounted(() => previousFocus?.focus());
               <label>处理方式<select v-model="choices[row.id]" :disabled="busy" @change="acknowledged = false"><option :value="undefined" disabled>请选择处理方式</option><option value="keep">保留现有定义</option><option value="replace">使用导入定义</option></select></label>
             </article>
             <p v-if="fileLabel && !conflictRows.length" class="catalog-hint">没有同 ID 变更；应用时将验证合并后的整个目录。</p>
-            <div v-if="updatesExisting" class="catalog-warning"><p>更新的定义可能改变种类、业务实现函数或参数。已有节点的代码名、种类和参数会保留；请同步手写 Go 实现，并校验工程、修正不匹配项。</p><label class="catalog-check"><input v-model="acknowledged" :disabled="busy" type="checkbox" />确认使用所选导入定义更新已有绑定</label></div>
+            <div v-if="updatesExisting" class="catalog-warning"><p>更新后节点参数会按新定义同步：保留兼容绑定，删除已移除参数，重置不兼容绑定；新增参数采用默认值或保持未绑定。应用后自动校验工程，请按提示配置参数，并同步手写 Go 实现。</p><label class="catalog-check"><input v-model="acknowledged" :disabled="busy" type="checkbox" />确认使用所选导入定义更新已有绑定</label></div>
           </div>
           <p v-if="error" class="catalog-error" role="alert">{{ error }}</p>
         </div>
@@ -235,6 +240,7 @@ onUnmounted(() => previousFocus?.focus());
 </template>
 
 <style scoped>
+.catalog-type-info{color:#94aebb;cursor:help;font-size:12px}.catalog-type-hint{line-height:1.5;overflow-wrap:anywhere}
 .catalog-overlay{position:fixed;inset:0;z-index:1000;display:grid;place-items:center;padding:24px;background:#071017b8;backdrop-filter:blur(4px);color:#d8e6ed;font:14px/1.5 system-ui,sans-serif}
 .catalog-dialog{width:min(940px,100%);max-height:calc(100dvh - 48px);display:flex;flex-direction:column;border:1px solid #365260;border-radius:14px;background:#14232d;box-shadow:0 24px 90px #0008;outline:none}
 header,footer,nav{display:flex;align-items:center;gap:12px;padding:18px 24px;flex-shrink:0}header{justify-content:space-between}h2,h3,p{margin:0}h2{font-size:20px}h3{font-size:15px}header p,.catalog-hint,small,footer span{color:#94aebb;font-size:12px}nav{padding-top:0;border-bottom:1px solid #2d414d;flex-wrap:wrap}.catalog-content{padding:22px 24px;overflow:auto;min-height:160px}button,input,select,textarea{box-sizing:border-box;font:inherit;color:inherit;border:1px solid #385361;border-radius:6px;background:#10202a}button{padding:8px 12px;cursor:pointer;white-space:nowrap}button:hover{border-color:#86dec1;background:#1b3540}button:disabled{opacity:.5;cursor:wait}button.active,.catalog-primary{color:#a3f1d9;border-color:#64cfae;background:#1c3b3d}input,select,textarea{padding:9px 10px;width:100%;min-width:0}input:read-only{color:#8297a4}input:focus,select:focus,textarea:focus,button:focus-visible{outline:2px solid #86dec1;outline-offset:2px}label{display:flex;flex-direction:column;gap:6px;min-width:0}.catalog-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.catalog-section-title{display:flex;align-items:center;justify-content:space-between;margin:24px 0 8px}.catalog-parameter{display:grid;grid-template-columns:1fr 130px 1.4fr auto;align-items:end;gap:10px;margin-top:12px;padding:12px;border:1px solid #2e4754;border-radius:8px}.catalog-wide{grid-column:1/-1}.catalog-events{margin-top:20px}.catalog-check{display:flex;flex-direction:row;align-items:flex-start;gap:9px;margin-top:14px}.catalog-check input{width:auto;margin:4px 0 0}.catalog-warning{margin-top:18px;border:1px solid #947039;background:#3c3222;border-radius:8px;padding:14px;color:#f0d7a5}.catalog-warning p{margin-top:5px}.catalog-existing article{display:flex;gap:12px;align-items:center;justify-content:space-between;padding:15px 0;border-bottom:1px solid #2d414d}.catalog-existing small{display:block;margin-top:4px}.catalog-empty{padding:24px;color:#a5becb;border:1px dashed #456170;border-radius:8px}.catalog-import>label,.catalog-import>p{margin-bottom:16px}.catalog-conflict{margin-top:18px;border:1px solid #725c3a;border-radius:8px;padding:16px}.catalog-compare{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:12px 0}.catalog-compare>div{min-width:0}pre{padding:10px;margin:5px 0 0;max-height:240px;overflow:auto;border-radius:5px;background:#0c1821;font-size:12px}.catalog-error{margin-top:18px;padding:12px;border:1px solid #ad6262;background:#46282d;border-radius:6px;color:#ffc2c2;overflow-wrap:anywhere}footer{border-top:1px solid #2d414d}footer span{margin-right:auto}

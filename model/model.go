@@ -35,7 +35,7 @@ type Field struct {
 	ID      string          `json:"id"`                // 跨版本稳定的字段 ID。
 	Name    string          `json:"name"`              // Go 导出访问器名称。
 	Type    bt.ValueType    `json:"type"`              // bool/int64/uint64/float64/string/enum/entity/duration。
-	Default json.RawMessage `json:"default,omitempty"` // JSON 默认值；duration 使用纳秒整数。
+	Default json.RawMessage `json:"default,omitempty"` // JSON 默认值；duration 支持 Go 时长字符串及旧纳秒整数。
 	Enum    []string        `json:"enum,omitempty"`    // 枚举字段必须提供非空允许值。
 }
 
@@ -52,8 +52,9 @@ type Definition struct {
 // Parameter 定义生成的 <GoName>Params 结构体成员。
 type Parameter struct {
 	Name    string          `json:"name"`              // Go 导出成员名称。
+	Comment string          `json:"comment,omitempty"` // 生成到参数结构体成员上的业务注释，可留空。
 	Type    bt.ValueType    `json:"type"`              // 与黑板字段相同的值类型。
-	Default json.RawMessage `json:"default,omitempty"` // 未填写时使用的默认常量。
+	Default json.RawMessage `json:"default,omitempty"` // 未填写时使用的默认常量；duration 支持 Go 时长字符串及纳秒整数。
 	Enum    []string        `json:"enum,omitempty"`    // 枚举的允许值。
 }
 

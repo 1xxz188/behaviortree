@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, shallowRef, watch } from "vue";
 import CatalogManager from "./CatalogManager.vue";
+import { synchronizeCatalog } from "./catalogSync";
 import SourceViewer from "./SourceViewer.vue";
 import ProjectDialog from "./ProjectDialog.vue";
 import ImportErrorDialog from "./ImportErrorDialog.vue";
@@ -38,6 +39,7 @@ import type {
   Value,
 } from "./project";
 import { parseInput, parseJSON, stringifyJSON } from "./json";
+import { PARAM_TYPE_META, parameterTypeTooltip } from "./parameterTypeMeta";
 import {
   nodeTypes, valueTypes, parseValueType, validateProjectTypes,
 } from "./enums";
@@ -1012,17 +1014,31 @@ function manageCatalog(mode: "create" | "import" | "manage", forNode = false) {
   const kind = forNode && (node.value?.type === "action" || node.value?.type === "condition") ? node.value.type : undefined;
   catalogDialog.value = { mode, kind };
 }
-// 目录验证成功后一次更新并建立撤销记录，可将新定义绑定当前节点。
-function applyCatalog(catalog: Definition[], bindID?: string) {
+// 目录与所有节点参数在同一撤销边界内同步，随后立即用同一快照校验整个工程。
+async function applyCatalog(catalog: Definition[], bindID?: string) {
+  let resets: Diagnostic[] = [];
   mutate(() => {
-    project.value.catalog = catalog;
     if (bindID && node.value) {
       node.value.binding = bindID;
       node.value.params = {};
     }
+    resets = synchronizeCatalog(project.value, catalog);
   });
   catalogDialog.value = undefined;
-  notice(`业务目录已更新，共 ${catalog.length} 个定义；请校验现有绑定`);
+  const revision = semanticRevision.value;
+  diagnostics.value = resets;
+  showOutput("diagnostics");
+  notice(`业务目录已更新，共 ${catalog.length} 个定义；正在校验`);
+  // 不经过文件操作的 busy 锁，避免在保存或旧校验期间更新目录时跳过本次校验。
+  try {
+    const result = await request<{ diagnostics: Diagnostic[] }>("/api/validate", clone(project.value));
+    if (revision !== semanticRevision.value) return;
+    diagnostics.value = [...resets, ...(result.diagnostics ?? [])];
+    notice(diagnostics.value.length ? `业务目录已同步，发现 ${diagnostics.value.length} 条校验提示` : "业务目录已同步，校验通过", diagnostics.value.length > 0);
+  } catch (cause) {
+    if (revision !== semanticRevision.value) return;
+    notice(`业务目录已同步，但校验失败：${cause instanceof Error ? cause.message : String(cause)}`, true);
+  }
 }
 // 添加带稳定 ID 的强类型黑板字段。
 function addField() {
@@ -1408,6 +1424,8 @@ onUnmounted(() => toolLifecycle.abort());
           <label
             >默认值<input
               :value="String(field.default ?? '')"
+              :placeholder="PARAM_TYPE_META[field.type].inputPlaceholder"
+              :title="parameterTypeTooltip(field.type)"
               @input="setDefault(field, $event)"
           /></label>
           <small class="mono">{{ field.id }}</small
@@ -1659,6 +1677,8 @@ onUnmounted(() => toolLifecycle.abort());
             ><input
               v-else
               :value="String(paramValue(p.name).value ?? p.default ?? '')"
+              :placeholder="PARAM_TYPE_META[p.type].inputPlaceholder"
+              :title="parameterTypeTooltip(p.type)"
               @input="setParam(p.name, p.type, $event)"
             />
           </div>

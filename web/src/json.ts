@@ -21,6 +21,11 @@ export function stringifyJSON(value: unknown, space?: number): string {
 export function parseInput(text: string, type: ValueType): unknown {
   parseValueType(type);
   if (type === "string" || type === "enum") return text;
+  // 可读时长原样保存为字符串，由 Go time.ParseDuration 统一校验单位与范围；旧纳秒整数仍走无损整数分支。
+  if (type === "duration" && !/^-?\d+$/.test(text)) {
+    if (!text.trim()) throw new Error("请输入带单位的时间长度");
+    return text;
+  }
   if (type === "bool") {
     if (!["true", "false"].includes(text))
       throw new Error("布尔值应为 true 或 false");

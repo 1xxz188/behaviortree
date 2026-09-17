@@ -9,6 +9,7 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -63,7 +64,22 @@ func Literal(t bt.ValueType, raw json.RawMessage, enum []string) (any, error) {
 			return nil, err
 		}
 		target = v
-	case bt.IntType, bt.DurationType:
+	case bt.DurationType:
+		// 可读时长仅在输入边界解析；保留 int64 返回值，使生成器继续输出纳秒常量。
+		if raw[0] == '"' {
+			var text string
+			if err := json.Unmarshal(raw, &text); err != nil {
+				return nil, err
+			}
+			value, err := time.ParseDuration(text)
+			if err != nil {
+				return nil, fmt.Errorf("时长应为 Go 时长字符串（如 1s、500ms）或纳秒整数: %w", err)
+			}
+			return int64(value), nil
+		}
+		// 旧工程的纳秒整数仍采用原有的精确 int64 校验，不进行浮点转换。
+		fallthrough
+	case bt.IntType:
 		var v int64
 		if err := json.Unmarshal(raw, &v); err != nil {
 			return nil, err
@@ -326,12 +342,17 @@ func Validate(p Project) []Diagnostic {
 					v, exists := n.Params[param.Name]
 					if !exists {
 						if len(param.Default) == 0 {
-							add(tree.ID, n.ID, "params."+param.Name, "缺少必填参数")
+							add(tree.ID, n.ID, "params."+param.Name, "未绑定参数：请选择黑板字段或常量")
 						}
 						continue
 					}
-					if (v.Field != "") == (len(v.Value) > 0) {
-						add(tree.ID, n.ID, "params."+param.Name, "参数必须选择字段绑定或常量中的一个")
+					// 显式空绑定不同于缺失键，不能悄悄采用默认值；双来源则单独报告冲突。
+					if v.Field == "" && len(v.Value) == 0 {
+						add(tree.ID, n.ID, "params."+param.Name, "未绑定参数：请选择黑板字段或常量")
+						continue
+					}
+					if v.Field != "" && len(v.Value) > 0 {
+						add(tree.ID, n.ID, "params."+param.Name, "参数不能同时配置黑板字段和常量")
 						continue
 					}
 					if v.Field != "" {
