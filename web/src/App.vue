@@ -6,6 +6,7 @@ import SourceViewer from "./SourceViewer.vue";
 import ProjectDialog from "./ProjectDialog.vue";
 import ImportErrorDialog from "./ImportErrorDialog.vue";
 import TreeContextMenu from "./TreeContextMenu.vue";
+import CatalogContextMenu from "./CatalogContextMenu.vue";
 import { startupProject, rememberProject, selectNativeDirectory } from "./workspace";
 import type { WorkspaceFiles, RecentStorage, ProjectDialogResult } from "./workspace";
 import { ProjectSaveState } from "./saveState";
@@ -123,7 +124,16 @@ function selectCanvasNode({ node: item }: NodeMouseEvent) {
   selected.value = item.id;
   followSourceSelection();
 }
-const catalogDialog = ref<{ mode: "create" | "import" | "manage"; kind?: DefinitionKind }>();
+const catalogDialog = ref<{
+  mode: "create" | "edit" | "import" | "manage"; // 区分新建、编辑和目录操作。
+  kind?: DefinitionKind; // 新建时可绑定当前节点的种类。
+  definition?: Definition; // 编辑入口捕获的业务定义。
+}>();
+const catalogMenu = shallowRef<{
+  definition: Definition; // 捕获右击对象，确认时校验身份以排除过期菜单。
+  x: number; // 菜单视口横坐标。
+  y: number; // 菜单视口纵坐标。
+}>();
 // 保存右击的实际树对象，不依赖当前画布选择，避免对另一棵树误操作。
 const treeMenu = shallowRef<{
   tree: Tree; // 菜单与确认框操作的目标。
@@ -307,6 +317,8 @@ function rebuildIDs() {
 }
 // 工程切换隔离源码、诊断和请求，避免显示另一工程的结果。
 function resetResults() {
+  catalogMenu.value = undefined;
+  catalogDialog.value = undefined;
   treeMenu.value = undefined;
   editRevision++;
   invalidateCode();
@@ -319,6 +331,8 @@ function resetResults() {
 }
 // 恢复工程和选择快照；布局与展示名撤销不使源码过期。
 function restore(snapshot: EditorSnapshot) {
+  catalogMenu.value = undefined;
+  catalogDialog.value = undefined;
   treeMenu.value = undefined;
   editRevision++;
   const { project: restored, index } = restoreSnapshot(snapshot, reactive);
@@ -356,7 +370,7 @@ function redo() {
 }
 // 文本框原生撤销不经过工程历史；仅在原生历史操作后核对保存基准。
 function nativeHistory(event: Event) {
-  if (!projectReady.value || catalogDialog.value || projectDialog.value || importFailure.value || treeMenu.value) return;
+  if (!projectReady.value || catalogDialog.value || projectDialog.value || importFailure.value || treeMenu.value || catalogMenu.value) return;
   if (event instanceof InputEvent && (event.inputType === "historyUndo" || event.inputType === "historyRedo")) {
     saveState.restore(stringifyJSON(project.value));
   }
@@ -1014,6 +1028,32 @@ function manageCatalog(mode: "create" | "import" | "manage", forNode = false) {
   const kind = forNode && (node.value?.type === "action" || node.value?.type === "condition") ? node.value.type : undefined;
   catalogDialog.value = { mode, kind };
 }
+// 鼠标和键盘菜单入口只捕获定义，不添加节点或改变画布选择。
+function openCatalogMenu(event: MouseEvent | KeyboardEvent, target: Definition) {
+  if (workspaceChanging.value) return;
+  const button = event.currentTarget as HTMLElement;
+  const bounds = button.getBoundingClientRect();
+  button.focus();
+  treeMenu.value = undefined;
+  catalogMenu.value = {
+    definition: target,
+    x: "clientX" in event ? event.clientX : bounds.left,
+    y: "clientY" in event ? event.clientY : bounds.bottom,
+  };
+}
+// 按对象身份验证编辑目标，直接进入已有定义表单并保持节点绑定不变。
+function editCatalogDefinition(target: Definition) {
+  catalogMenu.value = undefined;
+  if (workspaceChanging.value || definitionIndex.value.get(target.id) !== target) return;
+  catalogDialog.value = { mode: "edit", definition: target };
+}
+// 二次确认后复用目录同步的撤销和校验边界；保留失效引用，供用户重新绑定。
+async function confirmDeleteDefinition() {
+  const target = catalogMenu.value?.definition;
+  catalogMenu.value = undefined;
+  if (!target || workspaceChanging.value || definitionIndex.value.get(target.id) !== target) return;
+  await applyCatalog(project.value.catalog.filter(item => item !== target));
+}
 // 目录与所有节点参数在同一撤销边界内同步，随后立即用同一快照校验整个工程。
 async function applyCatalog(catalog: Definition[], bindID?: string) {
   let resets: Diagnostic[] = [];
@@ -1109,7 +1149,7 @@ function focusDiagnostic(d: Diagnostic) {
 // 处理保存、撤销和删除快捷键，不干扰文本原生撤销。
 function keydown(e: KeyboardEvent) {
   if (workspaceChanging.value) return;
-  if (catalogDialog.value || projectDialog.value || importFailure.value || treeMenu.value || !projectReady.value) return;
+  if (catalogDialog.value || projectDialog.value || importFailure.value || treeMenu.value || catalogMenu.value || !projectReady.value) return;
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
     e.preventDefault();
     (e.target as HTMLElement)?.blur();
@@ -1327,7 +1367,7 @@ onUnmounted(() => toolLifecycle.abort());
             :key="type"
             class="palette-node"
             draggable="true"
-            :title="`${info.help} · 按住拖入画布，或点击添加`"
+            :title="info.help"
             @dragstart="startPaletteDrag($event, type)"
             @dragend="endPaletteDrag"
             @click="addNode(type)"
@@ -1355,7 +1395,10 @@ onUnmounted(() => toolLifecycle.abort());
           :key="d.id"
           class="palette-node"
           draggable="true"
-          title="按住拖入画布，或点击添加"
+          aria-haspopup="menu"
+          @contextmenu.prevent.stop="openCatalogMenu($event, d)"
+          @keydown.shift.f10.prevent.stop="openCatalogMenu($event, d)"
+          @keydown.prevent.stop.context-menu="openCatalogMenu($event, d)"
           @dragstart="startPaletteDrag($event, d.kind, d.id)"
           @dragend="endPaletteDrag"
           @click="addNode(d.kind, d.id)"
@@ -1641,6 +1684,7 @@ onUnmounted(() => toolLifecycle.abort());
             <button @click="manageCatalog('create', true)">新建业务定义</button>
             <button @click="manageCatalog('import', true)">导入目录</button>
             <button @click="manageCatalog('manage', true)">管理定义</button>
+            <button v-if="definition" @click="editCatalogDefinition(definition)">编辑定义</button>
             <button :disabled="busy || !project.catalog.length" @click="previewScaffold">预览业务骨架</button>
           </div>
           <p class="muted empty-note">可供多个节点复用的手写 Go 函数，请写入同包的独立 Go 文件。切换绑定不会修改节点代码名。</p>
@@ -1874,7 +1918,11 @@ onUnmounted(() => toolLifecycle.abort());
       @change="importProject"
     />
     <CatalogManager v-if="catalogDialog" :catalog="project.catalog" :initial-mode="catalogDialog.mode" :initial-kind="catalogDialog.kind"
+      :initial-definition="catalogDialog.definition"
       @apply="applyCatalog" @close="catalogDialog = undefined" />
+    <CatalogContextMenu v-if="catalogMenu" :key="`${catalogMenu.definition.id}:${catalogMenu.x}:${catalogMenu.y}`"
+      :definition="catalogMenu.definition" :x="catalogMenu.x" :y="catalogMenu.y"
+      @close="catalogMenu = undefined" @edit="editCatalogDefinition(catalogMenu.definition)" @delete="confirmDeleteDefinition" />
     <ProjectDialog v-if="projectDialog" :kind="projectDialog.kind" :reload="projectDialog.reload" :workspace="workspace" :suggestion="fileName || suggestedName" :files="allFiles" @close="closeProjectDialog" />
     <ImportErrorDialog v-if="importFailure" :name="importFailure.name" :message="importFailure.message" @close="importFailure = undefined" />
     <TreeContextMenu v-if="treeMenu" :key="`${treeMenu.tree.id}:${treeMenu.x}:${treeMenu.y}:${treeMenu.initialMode ?? 'menu'}`"

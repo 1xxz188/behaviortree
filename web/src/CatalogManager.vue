@@ -11,7 +11,8 @@ import type { CatalogChoice } from "./catalog";
 const props = withDefaults(defineProps<{
   catalog: Definition[]; // 当前工程目录；提交成功前不修改。
   initialKind?: DefinitionKind; // 从节点属性打开时，预选种类并允许绑定。
-  initialMode?: "create" | "import" | "manage"; // 每次打开使用的工作页。
+  initialMode?: "create" | "edit" | "import" | "manage"; // 新建与编辑使用独立工作页。
+  initialDefinition?: Definition; // 右键入口指定的已有定义，表单只编辑其副本。
 }>(), { initialMode: "manage" });
 const emit = defineEmits<{
   apply: [catalog: Definition[], bindID?: string];
@@ -42,9 +43,11 @@ const fileLabel = ref("");
 const dialog = ref<HTMLElement>();
 const conflictRows = computed(() => catalogConflicts(props.catalog, incoming.value));
 const updatesExisting = computed(() => conflictRows.value.some((row) => choices.value[row.id] === "replace"));
+const dialogTitle = computed(() => mode.value === "edit" ? `编辑业务定义：${draft.value.name || editingID.value}`
+  : mode.value === "create" ? "新建业务定义" : "Go 业务节点目录"); // 标题明确区分修改已有定义和新增定义。
 
 // 切换页面时清空上次待提交内容，防止误应用其他工作页的导入。
-function changeMode(next: "create" | "import" | "manage") {
+function changeMode(next: "create" | "edit" | "import" | "manage") {
   if (busy.value) return;
   mode.value = next;
   incoming.value = [];
@@ -55,11 +58,12 @@ function changeMode(next: "create" | "import" | "manage") {
   draft.value = { id: "", name: "", kind: props.initialKind ?? "action", goName: "", events: "" };
   parameters.value = [];
   fileLabel.value = "";
+  bindNew.value = Boolean(props.initialKind);
 }
 
 // 稳定 ID 不允许在编辑表单中改名；参数草稿在提交时由工程入口统一同步。
 function editDefinition(item: Definition) {
-  changeMode("create");
+  changeMode("edit");
   editingID.value = item.id;
   draft.value = { id: item.id, name: item.name, kind: item.kind, goName: item.goName, events: (item.events ?? []).join("\n") };
   parameters.value = (item.params ?? []).map((parameter) => ({
@@ -68,6 +72,12 @@ function editDefinition(item: Definition) {
     enumText: (parameter.enum ?? []).join("\n"),
   }));
   bindNew.value = false;
+}
+
+// 直接编辑入口在首次渲染前填充草稿，避免短暂显示空白的新建表单。
+if (props.initialMode === "edit") {
+  if (props.initialDefinition) editDefinition(props.initialDefinition);
+  else changeMode("manage");
 }
 
 // 添加独立参数行，不触碰工程中的已绑定参数。
@@ -127,7 +137,7 @@ async function applyCatalog() {
     let candidate = incoming.value;
     const decisions = new Map<string, CatalogChoice>();
     for (const [id, choice] of Object.entries(choices.value)) if (choice) decisions.set(id, choice);
-    if (mode.value === "create") {
+    if (mode.value === "create" || mode.value === "edit") {
       const definition = draftDefinition();
       if (!editingID.value && props.catalog.some((item) => item.id === definition.id)) {
         throw new Error(`ID ${definition.id} 已存在，请在“已有定义”中编辑或使用新的 ID`);
@@ -186,8 +196,12 @@ onUnmounted(() => previousFocus?.focus());
   <Teleport to="body">
     <div class="catalog-overlay" @click.self="close">
       <section ref="dialog" class="catalog-dialog" role="dialog" aria-modal="true" aria-labelledby="catalog-title" tabindex="-1" @keydown="dialogKeydown">
-        <header><div><h2 id="catalog-title">Go 业务节点目录</h2><p>声明可绑定的动作与条件，业务函数由 Go 实现。</p></div><button type="button" :disabled="busy" aria-label="关闭目录管理" @click="close">关闭</button></header>
-        <nav aria-label="目录操作">
+        <header><div><h2 id="catalog-title">{{ dialogTitle }}</h2><p>{{ mode === 'edit' ? `正在修改已有${draft.kind === 'action' ? '动作' : '条件'}定义 · ID：${editingID}` : '声明可绑定的动作与条件，业务函数由 Go 实现。' }}</p></div><button type="button" :disabled="busy" aria-label="关闭目录管理" @click="close">关闭</button></header>
+        <nav v-if="mode === 'edit'" aria-label="编辑定义导航">
+          <button type="button" :disabled="busy" @click="changeMode('manage')">返回已有定义</button>
+          <span>编辑定义</span>
+        </nav>
+        <nav v-else aria-label="目录操作">
           <button type="button" :class="{ active: mode === 'manage' }" :disabled="busy" @click="changeMode('manage')">已有定义（{{ catalog.length }}）</button>
           <button type="button" :class="{ active: mode === 'create' }" :disabled="busy" @click="changeMode('create')">新建业务定义</button>
           <button type="button" :class="{ active: mode === 'import' }" :disabled="busy" @click="changeMode('import')">导入目录</button>
@@ -197,7 +211,7 @@ onUnmounted(() => previousFocus?.focus());
             <p v-if="!catalog.length" class="catalog-empty">目录为空。新建业务定义，或导入由 model.ExportCatalog 导出的 JSON 数组，即可在节点属性中选择绑定。</p>
             <article v-for="item in catalog" :key="item.id"><div><strong>{{ item.name }}</strong><small>{{ item.kind === 'action' ? '动作' : '条件' }} · {{ item.id }} · {{ item.goName }} · {{ item.params?.length ?? 0 }} 个参数</small></div><button type="button" @click="editDefinition(item)">编辑定义</button></article>
           </div>
-          <form v-else-if="mode === 'create'" id="catalog-form" @submit.prevent="applyCatalog">
+          <form v-else-if="mode === 'create' || mode === 'edit'" id="catalog-form" @submit.prevent="applyCatalog">
             <div class="catalog-grid">
               <label>定义 ID<input v-model="draft.id" :readonly="Boolean(editingID)" :disabled="busy" placeholder="move_to" required /><small>绑定使用的稳定 ID{{ editingID ? '，编辑时保持固定' : '，请使用未占用的标识' }}。</small></label>
               <label>显示名称<input v-model="draft.name" :disabled="busy" placeholder="移动到目标" required /></label>
@@ -233,7 +247,7 @@ onUnmounted(() => previousFocus?.focus());
           </div>
           <p v-if="error" class="catalog-error" role="alert">{{ error }}</p>
         </div>
-        <footer><span>定义保存后，可在代码面板预览业务函数骨架。</span><button type="button" :disabled="busy" @click="close">取消</button><button v-if="mode !== 'manage'" class="catalog-primary" type="button" :disabled="busy || (mode === 'import' && !fileLabel)" @click="applyCatalog">{{ busy ? '校验中…' : mode === 'import' ? '验证并合并目录' : '验证并保存定义' }}</button></footer>
+        <footer><span>定义保存后，可在代码面板预览业务函数骨架。</span><button type="button" :disabled="busy" @click="close">取消</button><button v-if="mode !== 'manage'" class="catalog-primary" type="button" :disabled="busy || (mode === 'import' && !fileLabel)" @click="applyCatalog">{{ busy ? '校验中…' : mode === 'import' ? '验证并合并目录' : mode === 'edit' ? '验证并保存修改' : '验证并保存定义' }}</button></footer>
       </section>
     </div>
   </Teleport>

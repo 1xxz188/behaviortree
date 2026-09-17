@@ -62,6 +62,7 @@ test("参数表单支持填写、回显和清空注释，并兼容旧参数", ()
   const saved = editor.draftDefinition();
   assert.equal(saved.params![0]!.comment, "目标实体\n用于移动");
   editor.editDefinition(saved);
+  assert.equal(editor.context.mode.value, "edit", "编辑已有定义必须进入编辑页面，不能激活新建业务定义");
   assert.equal(editor.context.parameters.value[0]!.comment, "目标实体\n用于移动");
   editor.context.parameters.value[0]!.comment = " \n ";
   const cleared = editor.draftDefinition();
