@@ -15,6 +15,7 @@ export interface Field {
 export interface Parameter {
   name: string;
   type: ValueType;
+  comment?: string; // 参数用途说明，生成到 Go 参数结构体的字段注释。
   default?: unknown;
   enum?: string[];
 }

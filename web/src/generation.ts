@@ -124,7 +124,10 @@ export function semanticSignature(project: Project): string {
     definition.params.sort((a, b) =>
       a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
     );
-    for (const parameter of definition.params) parameter.enum ??= [];
+    for (const parameter of definition.params) {
+      parameter.enum ??= [];
+      parameter.comment ??= ""; // 与 Go omitempty 的空注释表示一致，保存后不误报源码过期。
+    }
     definition.events.sort();
   }
   return stringifyJSON(canonicalValue(snapshot));

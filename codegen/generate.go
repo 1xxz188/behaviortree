@@ -173,10 +173,14 @@ func Generate(project model.Project) (Result, error) {
 	g.line("// %s 表示独立树入口没有父节点。", g.noParentSymbol)
 	g.line("const %s = -1", g.noParentSymbol)
 	for _, d := range p.Catalog {
-		g.line("// %sParams 是业务函数的强类型参数。", d.GoName)
+		g.line("// %sParams 是业务函数 %s（显示名 %q）的强类型参数。", d.GoName, d.GoName, d.Name)
 		g.line("type %sParams struct {", d.GoName)
 		for _, param := range d.Params {
-			g.line("// %s 由常量或黑板字段绑定提供。", param.Name)
+			if comment := strings.TrimSpace(param.Comment); comment != "" {
+				writeComment(&g.buf, param.Name+" "+comment)
+			} else {
+				g.line("// %s 由常量或黑板字段绑定提供。", param.Name)
+			}
 			g.line("%s %s", param.Name, goType(param.Type))
 		}
 		g.line("}")
@@ -354,6 +358,15 @@ func TreeFileName(id string) string {
 
 // line 追加一行可格式化的 Go 文本。
 func (g *generator) line(format string, args ...any) { fmt.Fprintf(&g.buf, format+"\n", args...) }
+
+// writeComment 为每行业务说明添加行注释前缀，避免换行或块注释符号改变生成代码。
+func writeComment(out *bytes.Buffer, text string) {
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	for line := range strings.SplitSeq(text, "\n") {
+		fmt.Fprintf(out, "// %s\n", line)
+	}
+}
 
 // symbolPart 在内部引用链中转义下划线，最终显示名称由 readableSymbol 整理。
 func symbolPart(id string) string {
@@ -559,6 +572,10 @@ func (g *generator) params(n model.Node) string {
 func (g *generator) emitNode(i int) {
 	n := g.nodes[i]
 	g.line("// %s 执行树 %q 中的节点 %q（显示名 %q）。", n.function, n.tree, n.node.ID, n.node.Name)
+	if n.node.Type == model.NodeAction || n.node.Type == model.NodeCondition {
+		d := g.defs[n.node.Binding]
+		g.line("// 业务函数 %s（显示名 %q）。", d.GoName, d.Name)
+	}
 	g.line("func %s(f *bt.Frame[%s]) bt.Status {", n.function, g.context)
 	g.line("const node = %s", n.symbol)
 	g.line("if cached,run:=f.Enter(node);!run{return cached}")

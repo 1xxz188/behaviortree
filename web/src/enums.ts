@@ -65,7 +65,7 @@ function items(value: unknown, path: string): unknown[] {
   if (!Array.isArray(value)) throw new Error(`${path}: 应为数组`);
   return value;
 }
-// 验证导入目录以及工程内目录的所有种类和参数类型。
+// 验证导入目录以及工程内目录的所有种类、参数类型与可选注释。
 export function validateCatalogTypes(value: unknown, path = "catalog"): void {
   items(value, path).forEach((item, index) => {
     const location = `${path}[${index}]`;
@@ -73,7 +73,11 @@ export function validateCatalogTypes(value: unknown, path = "catalog"): void {
     parseDefinitionKind(definition.kind, `${location}.kind`);
     items(definition.params, `${location}.params`).forEach((item, index) => {
       const parameterPath = `${location}.params[${index}]`;
-      parseValueType(record(item, parameterPath).type, `${parameterPath}.type`);
+      const parameter = record(item, parameterPath);
+      parseValueType(parameter.type, `${parameterPath}.type`);
+      if (parameter.comment !== undefined && typeof parameter.comment !== "string") {
+        throw new Error(`${parameterPath}.comment: 应为字符串`);
+      }
     });
   });
 }

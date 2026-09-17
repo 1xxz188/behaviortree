@@ -37,6 +37,7 @@ func Scaffold(project model.Project) ([]byte, error) {
 	definitions := append([]model.Definition(nil), project.Catalog...)
 	sort.Slice(definitions, func(i, j int) bool { return definitions[i].ID < definitions[j].ID })
 	for _, definition := range definitions {
+		fmt.Fprintf(&out, "// %s 的业务显示名称：%q。\n", definition.GoName, definition.Name)
 		if definition.Kind == model.DefinitionCondition {
 			fmt.Fprintf(&out, "// %s 判断业务条件；未实现时保守返回 false。\nfunc %s(f *bt.Frame[%s], node int, params %sParams) bool {\n// TODO：读取上下文和参数完成条件判断。\nreturn false\n}\n", definition.GoName, definition.GoName, context, definition.GoName)
 			continue
