@@ -479,10 +479,18 @@ pre {
   font-weight: 550;
 }
 .node-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
   margin-top: 7px;
   font-size: 10px;
   color: #748e9f;
   font-family: Consolas, monospace;
+}
+.node-code-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .vue-flow__handle {
   width: 9px;

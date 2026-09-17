@@ -1504,13 +1504,15 @@ onUnmounted(() => toolLifecycle.abort());
               data.node.name || data.kind.label
             }}</strong>
             <div class="node-detail">
+              <!-- 画布读取已提交代码名；业务绑定 ID 由属性面板独立管理。 -->
+              <span v-if="data.node.codeName" class="node-code-name" :title="data.node.codeName">{{ data.node.codeName }}</span>
               <span v-if="['wait', 'timeout'].includes(data.node.type)"
                 >{{ data.node.durationMs ?? 0 }} ms</span
               ><span v-else-if="['repeat', 'retry'].includes(data.node.type)"
                 >{{ data.node.count ?? 0 }} 次</span
-              ><span v-else-if="data.node.binding">{{ data.node.binding }}</span>
-              <span v-else-if="['action', 'condition'].includes(data.node.type)" class="unbound-node">未绑定业务定义</span>
-              <span v-else
+              >
+              <span v-else-if="['action', 'condition'].includes(data.node.type) && !data.node.binding" class="unbound-node">未绑定业务定义</span>
+              <span v-else-if="!['action', 'condition'].includes(data.node.type)"
                 >{{ data.node.children?.length ?? 0 }} 个子节点</span
               >
             </div>
