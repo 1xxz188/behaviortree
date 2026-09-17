@@ -156,7 +156,7 @@ test("代码名保存与撤销重做保留稳定身份和代码名", () => {
   const redone = restoreSnapshot(after).project;
   state.restore(stringifyJSON(redone));
   assert.equal(redone.trees[0]!.nodes[0]!.codeName, "Run");
-  assert.equal(redone.trees[0]!.nodes[0]!.id, "root");
+  assert.equal(redone.trees[0]!.nodes[0]!.id, node.id);
   assert.equal(state.dirty, true);
   assert.match(after.project, /"codeName":"Run"/);
 });

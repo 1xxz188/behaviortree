@@ -44,7 +44,7 @@ function session(options: ImportOptions = {}) {
     dirty: { get value() { return saveState.dirty; } },
     fileName: { value: "original.json" }, suggestedName: { value: "original.json" },
     workspace: { value: "E:/original" }, editRevision: 0,
-    treeID: { value: "main" }, selected: { value: "root" },
+    treeID: { value: project.value.trees[0]!.id }, selected: { value: project.value.trees[0]!.root },
     undoStack: { value: ["原撤销记录"] }, redoStack: { value: ["原重做记录"] },
     busy: { value: false }, message: { value: "原状态" }, error: { value: false },
     diagnostics: { value: [] }, importFailure: { value: undefined as { name: string; message: string } | undefined },
@@ -84,7 +84,7 @@ function assertPreserved(s: ReturnType<typeof session>) {
   assert.equal(s.context.suggestedName.value, "original.json");
   assert.deepEqual(s.context.undoStack.value, ["原撤销记录"]);
   assert.deepEqual(s.context.redoStack.value, ["原重做记录"]);
-  assert.equal(s.context.selected.value, "root");
+  assert.equal(s.context.selected.value, s.originalProject.trees[0]!.root);
   assert.equal(s.context.message.value, "原状态");
   assert.equal(s.context.error.value, false);
   assert.equal(s.context.busy.value, false);

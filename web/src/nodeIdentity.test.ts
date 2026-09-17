@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { computed, reactive } from "vue";
-import { allocateID, blankProject, clone } from "./project.ts";
+import { blankProject, clone } from "./project.ts";
 import type { Tree } from "./project.ts";
 import { parseJSON, stringifyJSON } from "./json.ts";
 import { captureSnapshot, restoreSnapshot } from "./treeIdentity.ts";
@@ -134,9 +134,8 @@ test("响应式索引支持连续改号、复制和删除", () => {
   assert.ok(ids.value.includes("attack"));
   index.rename("attack", "custom");
   assert.ok(ids.value.includes("custom"));
-  const occupied = new Set(index.byID.keys());
   const copy = clone(index.byID.get("custom")!);
-  copy.id = allocateID(occupied, "node", () => "copy-uuid");
+  copy.id = index.allocateID();
   copy.codeName = index.codeNames.allocateCopy(copy.codeName!);
   copy.children = [];
   tree.nodes.push(copy);
@@ -148,6 +147,45 @@ test("响应式索引支持连续改号、复制和删除", () => {
   index.removeNode(index.byID.get("custom")!);
   assert.deepEqual(tree.nodes[0]!.children, ["copied"]);
   assert.equal(index.rename("copied", "final"), 1);
+});
+
+// 新增及复制共用树内序列，旧字符串 ID 保持原样，不受其他树的编号影响。
+test("节点自动 ID 为树内递增数字字符串并兼容已有身份", () => {
+  const tree = makeTree();
+  tree.nodes.push({ id: "7", type: "wait" }, { id: "node_abcdef", type: "wait" });
+  const index = new NodeIdentityIndex(tree);
+  assert.equal(index.allocateID(), "8");
+  assert.equal(index.allocateID(), "9");
+  index.rename("attack", "20");
+  assert.equal(index.allocateID(), "21");
+  index.removeNode(index.byID.get("20")!);
+  assert.equal(index.allocateID(), "22");
+  assert.ok(index.byID.has("node_abcdef"));
+  assert.equal(new NodeIdentityIndex(makeTree()).allocateID(), "1");
+  const restored = new NodeIdentityIndex(parseJSON<Tree>(stringifyJSON(tree)));
+  assert.equal(restored.allocateID(), "8");
+});
+
+// 数字字符串不经过浮点数转换，超过安全整数后仍能递增且不会产生相同 ID。
+test("节点序列支持大整数且分配不扫描节点集合", () => {
+  const tree = makeTree();
+  tree.nodes.push({ id: "9007199254740992", type: "wait" });
+  const index = reactive(new NodeIdentityIndex(tree));
+  Object.defineProperty(tree, "nodes", { get() { throw new Error("分配不应扫描节点集合"); } });
+  assert.equal(index.allocateID(), "9007199254740993");
+  assert.equal(index.allocateID(), "9007199254740994");
+});
+
+// 自动分配不能意外接管草稿中尚未修复的根、连线或布局身份。
+test("自动序列避开草稿悬挂引用及残留布局", () => {
+  const tree = makeTree();
+  tree.root = "10";
+  tree.nodes[0]!.children!.push("11");
+  tree.layout!["12"] = { x: 0, y: 0 };
+  const index = new NodeIdentityIndex(tree);
+  assert.equal(index.allocateID(), "13");
+  index.setChildren(tree.nodes[0]!, ["50"]);
+  assert.equal(index.allocateID(), "51");
 });
 
 // 建索引后的查重和改号不读取节点集合，也不遍历父节点的整个孩子列表。

@@ -18,6 +18,40 @@ function makeProject(...trees: Tree[]): Project {
   return { ...emptyProject(), trees };
 }
 
+// 数字树 ID 按工程内最大值递增，手动改号推进游标，保存重载和历史恢复可重建。
+test("树 ID 递增并纳入手动修改，恢复后继续分配", () => {
+  const project = makeProject(makeTree("1"), makeTree("2"), makeTree("3"));
+  const index = new TreeIdentityIndex(project);
+  index.rename("2", "100");
+  assert.equal(index.allocateID(), "101");
+  assert.equal(index.allocateID(), "102");
+  const restored = restoreSnapshot(captureSnapshot(project, "100", ""));
+  assert.equal(restored.index.allocateID(), "101");
+  index.removeTree(index.byID.get("100")!);
+  assert.equal(index.allocateID(), "103");
+  assert.equal(new TreeIdentityIndex(makeProject()).allocateID(), "1");
+});
+
+// 大整数和未完成的子树引用均参与游标计算；分配不扫描工程或树节点。
+test("树 ID 避开悬挂引用且支持大整数常数次分配", () => {
+  const ref: BTNode = { id: "1", type: "subtree", tree: "9007199254740992" };
+  const tree = makeTree("1", [ref]);
+  const project = makeProject(tree);
+  const index = new TreeIdentityIndex(project);
+  Object.defineProperty(project, "trees", { get() { throw new Error("不应扫描工程"); } });
+  Object.defineProperty(tree, "nodes", { get() { throw new Error("不应扫描树节点"); } });
+  assert.equal(index.allocateID(), "9007199254740993");
+  index.setReference(ref, "9007199254741000");
+  assert.equal(index.allocateID(), "9007199254741001");
+});
+
+// 自动序列也遵守后端 80 位上限，耗尽时不能分配不可保存的树身份。
+test("树 ID 达到长度上限时明确拒绝自动创建", () => {
+  const index = new TreeIdentityIndex(makeProject(makeTree("9".repeat(80))));
+  assert.throws(() => index.allocateID(), /超过 80 位/);
+  assert.equal(index.byID.size, 1);
+});
+
 // 格式严格对应 Go 规则，不自动清理空白、转换大小写或接受旧格式。
 test("树 ID 严格校验格式与工程内唯一性，名称允许重复", () => {
   for (const id of ["", " ", "hello world", "树", "a-b", "a\n", "abc\n", "abc\r\n", "abc\u2028", "abc\u2029", null, 123]) {

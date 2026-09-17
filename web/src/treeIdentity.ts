@@ -15,10 +15,26 @@ export class TreeIdentityIndex {
   private readonly byFileID = new Map<string, Tree>(); // 跨平台生成文件名按 ASCII 小写查重。
   // 每个目标 ID 对应实际引用节点，包含尚未创建目标树的草稿引用。
   private readonly references = new Map<string, Set<BTNode>>();
+  private nextID = 1n; // 工程内数字树 ID 的递增游标，不受浮点数精度限制。
 
   // 加载或恢复工程时一次扫描，后续编辑增量维护。
   constructor(project: Project) {
     for (const tree of project.trees ?? []) this.addTree(tree);
+  }
+
+  // 登记树、子树引用和手动改号时推进游标，避免自动创建接管悬挂引用。
+  private observeID(id: string): void {
+    if (!/^[1-9][0-9]*$/.test(id)) return;
+    const value = BigInt(id);
+    if (value >= this.nextID) this.nextID = value + 1n;
+  }
+
+  // 分配只访问缓存游标；超出树 ID 的长度上限时明确拒绝，不生成非法身份。
+  allocateID(): string {
+    const id = String(this.nextID);
+    if (!validTreeID(id)) throw new Error("自动树 ID 已超过 80 位，请调整现有数字树 ID 后重新打开工程");
+    this.nextID++;
+    return id;
   }
 
   // 添加树及其节点引用；校验失败时不改变索引。
@@ -29,6 +45,7 @@ export class TreeIdentityIndex {
       throw new Error(`行为树 ID 已存在：${tree.id}`);
     this.byID.set(tree.id, tree);
     this.byFileID.set(tree.id.toLowerCase(), tree);
+    this.observeID(tree.id);
     for (const node of tree.nodes ?? []) this.addNode(node);
   }
 
@@ -43,6 +60,7 @@ export class TreeIdentityIndex {
   // 任何非空 tree 字段都参与同步，避免暂时改变节点类型时遗漏引用。
   addNode(node: BTNode): void {
     if (!node.tree) return;
+    this.observeID(node.tree);
     let nodes = this.references.get(node.tree);
     if (!nodes) this.references.set(node.tree, (nodes = new Set()));
     nodes.add(node);
@@ -100,6 +118,7 @@ export class TreeIdentityIndex {
     this.byID.set(newID, tree);
     this.byFileID.delete(oldID.toLowerCase());
     this.byFileID.set(newID.toLowerCase(), tree);
+    this.observeID(newID);
     return count;
   }
 }

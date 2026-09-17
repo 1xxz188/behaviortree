@@ -259,9 +259,9 @@ export function blankProject(): Project {
     name: "未命名工程",
     blackboard: [],
     catalog: [],
-    trees: [{ id: "main", name: "主行为树", root: "root", nodes: [
-      { id: "root", codeName: "Root", type: "sequence", name: "根节点", children: [] },
-    ], layout: { root: { x: 80, y: 80 } } }],
+    trees: [{ id: "1", name: "主行为树", root: "1", nodes: [
+      { id: "1", codeName: "Root", type: "sequence", name: "根节点", children: [] },
+    ], layout: { "1": { x: 80, y: 80 } } }],
     generation: { package: "behavior", contextImport: "", contextType: "any" },
   };
 }

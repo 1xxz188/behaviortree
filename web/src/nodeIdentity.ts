@@ -19,24 +19,41 @@ export class NodeIdentityIndex {
   private readonly references = new Map<string, Set<ChildReference>>(); // 按孩子 ID 分组的入边。
   private readonly outgoing = new Map<BTNode, ChildReference[]>(); // 按父节点记录已登记出边。
   private readonly tree: Tree; // 身份和布局所属的实际树对象。
+  private nextID = 1n; // 大于本索引已见数字身份的游标，不受浮点精度限制。
 
   // 打开、切换或恢复树时建立索引，普通编辑随后增量更新。
   constructor(tree: Tree) {
     this.tree = tree;
     this.codeNames = new CodeNameIndex(tree);
+    this.observeID(tree.root);
+    for (const id of Object.keys(tree.layout ?? {})) this.observeID(id);
     for (const node of tree.nodes) this.addNode(node);
+  }
+
+  // 只在加载、登记或改号时推进游标，保留旧字符串身份；不扫描其他节点。
+  private observeID(id: string): void {
+    if (!/^[1-9][0-9]*$/.test(id)) return;
+    const value = BigInt(id);
+    if (value >= this.nextID) this.nextID = value + 1n;
+  }
+
+  // 新增与复制共享树内递增序列，调用即预留编号，单次分配无需遍历占用表。
+  allocateID(): string {
+    return String(this.nextID++);
   }
 
   // 新增和复制完成后登记节点，不改变工程数组。
   addNode(node: BTNode): void {
     this.codeNames.add(node);
     this.byID.set(node.id, node);
+    this.observeID(node.id);
     this.indexChildren(node);
   }
 
   // 登记父节点的孩子位置，悬挂引用也保留以支持未完成的草稿。
   private indexChildren(parent: BTNode): void {
     const edges = (parent.children ?? []).map((id, position) => {
+      this.observeID(id);
       const edge = { parent, position };
       let bucket = this.references.get(id);
       if (!bucket) this.references.set(id, (bucket = new Set()));
@@ -79,7 +96,7 @@ export class NodeIdentityIndex {
     if (this.tree.layout) delete this.tree.layout[node.id];
   }
 
-  // 只在显式提交时校验，原值不变为合法无操作。
+  // 草稿输入及显式提交共用常数时间校验，原值不变为合法无操作。
   validateRename(oldID: string, newID: string): string | null {
     if (!this.byID.has(oldID)) return "要修改的节点不存在";
     if (!validNodeID(newID)) return "节点 ID 不能为空";
@@ -116,6 +133,7 @@ export class NodeIdentityIndex {
     node.id = newID;
     this.byID.delete(oldID);
     this.byID.set(newID, node);
+    this.observeID(newID);
     return count;
   }
 }

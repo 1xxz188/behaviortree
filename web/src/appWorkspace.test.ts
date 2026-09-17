@@ -73,7 +73,7 @@ function session(options: SessionOptions = {}) {
     diagnostics: { value: [{ message: "旧诊断" }] }, semanticRevision: { value: 0 }, editRevision: 0,
     generationRequests: new GenerationRequests(),
     codeSnapshot: { value: { source: "旧目录源码" } }, scaffoldSnapshot: { value: { source: "旧业务骨架" } },
-    treeID: { value: project.value.trees[0]!.id }, selected: { value: "root" },
+    treeID: { value: project.value.trees[0]!.id }, selected: { value: project.value.trees[0]!.root },
     treeIdentity: { value: new TreeIdentityIndex(project.value) }, occupiedIDs: new Set<string>(),
     undoStack: { value: ["原撤销记录"] }, redoStack: { value: ["原重做记录"] },
     workspaceError: { value: "" }, failedOpen: { value: "" }, openingName: { value: "" }, inspectorOpen: { value: true },

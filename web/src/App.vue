@@ -67,11 +67,9 @@ class RequestError extends Error {
 const project = ref<Project>(blankProject());
 const treeID = ref(project.value.trees[0]!.id);
 const treeIDDraft = ref(treeID.value); // ID 输入草稿，应用前不影响工程。
-const treeIDError = ref(""); // 当前改号失败原因。
 let renamingTree = false; // 同一棵树改号时保留选择与视口。
-const selected = ref("root");
+const selected = ref(project.value.trees[0]!.root);
 const nodeIDDraft = ref(selected.value); // 节点身份草稿，显式应用前不修改工程。
-const nodeIDError = ref(""); // 当前节点改号失败原因。
 const codeNameDraft = ref(""); // 代码名草稿仅在显式应用后写入工程。
 const codeNameError = ref(""); // 代码名格式或树内占用校验结果。
 const inspectorOpen = ref(false);
@@ -123,7 +121,7 @@ function selectCanvasNode({ node: item }: NodeMouseEvent) {
   followSourceSelection();
 }
 const catalogDialog = ref<{ mode: "create" | "import" | "manage"; kind?: DefinitionKind }>();
-// 加载工程时一次建立集合，后续新增与复制只做集合查重。
+// 加载工程时一次建立黑板字段占用集合；树和节点使用各自的递增索引。
 let occupiedIDs = new Set<string>();
 const treeIdentity = shallowRef(new TreeIdentityIndex(project.value)); // 索引持有响应式树和节点。
 rebuildIDs();
@@ -219,6 +217,11 @@ const tree = computed(
 const nodeIdentity = shallowRef(reactive(new NodeIdentityIndex(tree.value))); // 当前树的增量身份及入边索引。
 const nodeIndex = computed(() => nodeIdentity.value.byID);
 const node = computed(() => nodeIndex.value.get(selected.value));
+// 草稿逐次输入只查询当前树索引，冲突即时提示且禁止提交。
+const nodeIDError = computed(() => node.value
+  ? nodeIdentity.value.validateRename(selected.value, nodeIDDraft.value) ?? "" : "");
+// 树 ID 草稿同样实时检查工程内占用，不允许冲突提交。
+const treeIDError = computed(() => treeIdentity.value.validateRename(treeID.value, treeIDDraft.value) ?? "");
 const definitionIndex = computed(() => new Map(project.value.catalog.map((d) => [d.id, d])));
 const definition = computed(() => definitionIndex.value.get(node.value?.binding ?? ""));
 const bindingOptions = computed(() => project.value.catalog.filter((d) => d.kind === node.value?.type));
@@ -288,10 +291,6 @@ function mutate(fn: () => void, semantic = true) {
 // 只在替换工程时扫描一次已有 ID，删除过的 ID 在本会话中也不复用。
 function rebuildIDs() {
   occupiedIDs = new Set(project.value.blackboard.map((f) => f.id));
-  for (const t of project.value.trees) {
-    occupiedIDs.add(t.id);
-    for (const n of t.nodes) occupiedIDs.add(n.id);
-  }
 }
 // 工程切换隔离源码、诊断和请求，避免显示另一工程的结果。
 function resetResults() {
@@ -368,12 +367,10 @@ function changeTreeName(event: Event) {
 // 取消尚未提交的 ID 输入，不产生工程修改。
 function cancelTreeID() {
   treeIDDraft.value = treeID.value;
-  treeIDError.value = "";
 }
 // 放弃尚未应用的节点身份草稿，不产生历史记录。
 function cancelNodeID() {
   nodeIDDraft.value = selected.value;
-  nodeIDError.value = "";
   cancelCodeName();
 }
 // 放弃代码名草稿，选中节点变化或历史恢复时同时刷新输入。
@@ -399,14 +396,10 @@ function applyNodeID() {
   const previous = selected.value;
   const next = nodeIDDraft.value;
   const failure = nodeIdentity.value.validateRename(previous, next);
-  if (failure) {
-    nodeIDError.value = failure;
-    return;
-  }
+  if (failure) return;
   if (previous === next) return cancelNodeID();
   mutate(() => {
     nodeIdentity.value.rename(previous, next);
-    occupiedIDs.add(next);
     selected.value = next;
   });
   cancelNodeID();
@@ -417,16 +410,12 @@ function applyTreeID() {
   const previous = treeID.value;
   const next = treeIDDraft.value;
   const failure = treeIdentity.value.validateRename(previous, next);
-  if (failure) {
-    treeIDError.value = failure;
-    return;
-  }
+  if (failure) return;
   if (previous === next) return cancelTreeID();
   let references = 0;
   mutate(() => {
     references = treeIdentity.value.rename(previous, next);
-    occupiedIDs.add(next);
-    // 保留旧 ID 的会话预留，避免自动创建意外复用曾经的入口。
+    // 同一棵树改号保留当前节点选择，避免触发切树时的清空逻辑。
     renamingTree = true;
     try { treeID.value = next; } finally { renamingTree = false; }
   });
@@ -442,7 +431,7 @@ function changeTreeReference(event: Event) {
 // 创建稳定节点 ID，并放置到当前树画布。
 function addNode(type: NodeType, binding?: string, position?: NodePosition) {
   mutate(() => {
-    const id = allocateID(occupiedIDs),
+    const id = nodeIdentity.value.allocateID(),
       item: BTNode = { id, type, name: kinds[type]?.label ?? type };
     if (binding) {
       item.binding = binding;
@@ -532,7 +521,7 @@ function duplicate() {
   if (!node.value) return;
   mutate(() => {
     const n = clone(node.value!);
-    n.id = allocateID(occupiedIDs);
+    n.id = nodeIdentity.value.allocateID();
     n.codeName = nodeIdentity.value.codeNames.allocateCopy(n.codeName!);
     n.name = `${n.name ?? kinds[n.type]?.label} 副本`;
     n.children = [];
@@ -566,8 +555,10 @@ function layout() {
 }
 // 创建可独立生成或作为子树引用的入口。
 function addTree() {
+  let id: string;
+  try { id = treeIdentity.value.allocateID(); }
+  catch (error) { return notice(String(error), true); }
   mutate(() => {
-    const id = allocateID(occupiedIDs, "tree");
     project.value.trees.push({
       id,
       name: "新行为树",
@@ -1498,12 +1489,12 @@ onUnmounted(() => toolLifecycle.abort());
         <label class="field-label"
           >Node ID<input v-model="nodeIDDraft" class="mono"
             :aria-invalid="!!nodeIDError" aria-describedby="node-id-help node-id-error"
-            @input="nodeIDError = ''" @keydown.enter.prevent="applyNodeID" @keydown.esc.prevent="cancelNodeID"
+            @keydown.enter.prevent="applyNodeID" @keydown.esc.prevent="cancelNodeID"
         /></label>
-        <p id="node-id-help" class="muted identity-help">当前树内唯一且不能为空。应用时同步根、连线和布局；修改名称不会改变 ID。显式改号后需更新外部旧 ID 关联。</p>
+        <p id="node-id-help" class="muted identity-help">仅当前树内唯一，不同树可重复；新增和复制自动分配递增数字 ID。不能为空或与本树其他节点重复，冲突时不生效。应用时同步根、连线和布局；显式改号后需更新外部旧 ID 关联。</p>
         <p v-if="nodeIDError" id="node-id-error" class="identity-error" role="alert">{{ nodeIDError }}</p>
         <div class="identity-actions">
-          <button @click="applyNodeID" :disabled="nodeIDDraft === node.id">应用</button>
+          <button @click="applyNodeID" :disabled="nodeIDDraft === node.id || !!nodeIDError">应用</button>
           <button @click="cancelNodeID" :disabled="nodeIDDraft === node.id && !nodeIDError">取消</button>
         </div>
         <label
@@ -1662,12 +1653,12 @@ onUnmounted(() => toolLifecycle.abort());
         <label class="field-label"
           >行为树 ID<input v-model="treeIDDraft" class="mono"
             :aria-invalid="!!treeIDError" aria-describedby="tree-id-help tree-id-error"
-            @input="treeIDError = ''" @keydown.enter.prevent="applyTreeID" @keydown.esc.prevent="cancelTreeID"
+            @keydown.enter.prevent="applyTreeID" @keydown.esc.prevent="cancelTreeID"
         /></label>
-        <p id="tree-id-help" class="muted identity-help">1–80 位英文、数字或下划线；工程内唯一，且不能仅大小写不同。直接用作生成文件名。应用时同步当前工程全部引用，外部入口调用需同步调整。</p>
+        <p id="tree-id-help" class="muted identity-help">工程内唯一，新建树自动分配递增数字 ID；手动改为更大数字后继续递增。允许 1–80 位英文、数字或下划线，不能仅大小写不同；冲突时不生效。应用时同步全部子树引用，外部入口调用需同步调整。</p>
         <p v-if="treeIDError" id="tree-id-error" class="identity-error" role="alert">{{ treeIDError }}</p>
         <div class="identity-actions">
-          <button @click="applyTreeID" :disabled="treeIDDraft === tree.id">应用</button>
+          <button @click="applyTreeID" :disabled="treeIDDraft === tree.id || !!treeIDError">应用</button>
           <button @click="cancelTreeID" :disabled="treeIDDraft === tree.id && !treeIDError">取消</button>
         </div>
         <div class="panel-heading small-heading">Go 生成设置</div>

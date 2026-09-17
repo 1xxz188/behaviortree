@@ -9,7 +9,7 @@ import { ProjectSaveState } from "./saveState.ts";
 
 // 沿用编辑器快照入口，包含布局和无损整数，选择信息不参与保存比较。
 function snapshot(project: Project): EditorSnapshot {
-  return captureSnapshot(project, project.trees[0]!.id, "root");
+  return captureSnapshot(project, project.trees[0]!.id, project.trees[0]!.root);
 }
 
 // 先恢复真实工程，再用恢复内容更新状态，模拟撤销和重做调用链。
@@ -143,7 +143,7 @@ test("布局与相邻64位整数变化均参与保存状态判断", () => {
   project.blackboard.push({ id: "id", name: "实体编号", type: "uint64", default: parseInput("18446744073709551614", "uint64") });
   const saved = snapshot(project);
   state.reset(saved.project);
-  project.trees[0]!.layout!.root!.x += 1;
+  project.trees[0]!.layout![project.trees[0]!.root]!.x += 1;
   state.changed();
   const moved = snapshot(project);
   project = restore(state, moved);
