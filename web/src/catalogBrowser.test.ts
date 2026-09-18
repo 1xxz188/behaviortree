@@ -55,7 +55,7 @@ function browser() {
   const emissions: { name: string; args: unknown[] }[] = [];
   const transactions = { attempts: 0, succeeded: 0, errors: [] as string[] };
   const props = shallowReactive({
-    index, revision: 0, search: "", disabled: false,
+    index, revision: 0, search: "", disabled: false, collapsed: false,
     commit: (change: () => void) => {
       transactions.attempts++;
       try { change(); transactions.succeeded++; props.revision++; return true; }

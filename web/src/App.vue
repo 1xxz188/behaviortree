@@ -100,6 +100,8 @@ const codeNameDraft = ref(""); // 代码名草稿仅在显式应用后写入工�
 const codeNameError = ref(""); // 代码名格式或树内占用校验结果。
 const inspectorOpen = ref(false);
 const nodeHelp = ref<NodeType>(); // 库节点的说明窗口独立于画布选择和工程历史。
+const builtinCollapsed = ref(false); // 内置节点区仅保存当前页面的折叠偏好，不进入工程历史。
+const catalogCollapsed = ref(false); // 业务节点区独立折叠，切换黑板或行为树时保留。
 const search = ref("");
 const fileName = ref(""); // 仅表示当前工作目录内已成功打开或保存的文件。
 const suggestedName = ref("project.json"); // 新建及导入只提供首次保存建议。
@@ -1503,7 +1505,12 @@ onUnmounted(() => toolLifecycle.abort());
           placeholder="搜索节点…"
           aria-label="搜索节点"
         />
-        <div class="node-library">
+        <div class="library-section-heading">
+          <button type="button" class="library-section-toggle" :aria-expanded="!builtinCollapsed" aria-controls="builtin-node-list" @click="builtinCollapsed = !builtinCollapsed">
+            <span aria-hidden="true">{{ builtinCollapsed ? '▸' : '▾' }}</span>内置节点
+          </button>
+        </div>
+        <div id="builtin-node-list" v-show="!builtinCollapsed" class="node-library">
           <button
             v-for="{ type, info } in availableKinds"
             :key="type"
@@ -1521,7 +1528,7 @@ onUnmounted(() => toolLifecycle.abort());
             ><span class="add-sign" aria-hidden="true">ⓘ</span>
           </button>
         </div>
-        <CatalogBrowser ref="catalogBrowser" :index="catalogIndex" :revision="catalogRevision" :search="search"
+        <CatalogBrowser ref="catalogBrowser" v-model:collapsed="catalogCollapsed" :index="catalogIndex" :revision="catalogRevision" :search="search"
           :disabled="workspaceChanging" :commit="commitCatalogOrganization" :failure-message="error ? message : ''"
           @select="catalogFolder = $event" @clear-search="search = ''"
           @create="manageCatalog('create', false, $event)" @import="manageCatalog('import', false, $event)" @manage="manageCatalog('manage')"

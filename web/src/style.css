@@ -278,6 +278,11 @@ pre {
 .node-search {
   margin-bottom: 12px;
 }
+.library-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 4px; margin: 14px 0 10px; }
+.library-section-toggle { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; text-align: left; background: transparent; border-color: transparent; padding: 5px 0; font-size: 12px; font-weight: 600; }
+.library-section-toggle:hover { background: #243541; }
+.library-section-toggle:focus-visible { outline: 2px solid #68dfc6; outline-offset: 2px; }
+.library-section-toggle > span { width: 12px; text-align: center; }
 .node-library {
   display: grid;
   gap: 3px;

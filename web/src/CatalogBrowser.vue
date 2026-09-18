@@ -4,6 +4,7 @@ import type { Definition } from "./project";
 import type { CatalogEntry, CatalogOrganizationIndex } from "./catalogOrganization";
 
 const props = defineProps<{
+  collapsed: boolean; // 折叠偏好由父级持有，组件重建时仍保留。
   index: CatalogOrganizationIndex; // 工程分类索引，由父级历史边界维护。
   revision: number; // 索引原地更新后驱动可见行重算。
   search: string; // 与内置节点共用搜索输入。
@@ -12,6 +13,7 @@ const props = defineProps<{
   failureMessage: string; // 父级操作失败的具体原因，在模态框内可见。
 }>();
 const emit = defineEmits<{
+  "update:collapsed": [value: boolean]; // 只切换业务区显示，不修改工程或目录状态。
   create: [folderId: string]; import: [folderId: string]; manage: [];
   inspect: [definition: Definition]; menu: [event: MouseEvent | KeyboardEvent, definition: Definition];
   drag: [event: DragEvent, definition: Definition]; dragend: [];
@@ -249,7 +251,14 @@ onBeforeUnmount(() => { document.removeEventListener("pointerdown", outside, tru
 
 <template>
   <section class="catalog-browser" aria-label="业务节点库">
-    <div class="section-title"><span>Go 业务节点</span><button class="text-button" :disabled="disabled" @click="emit('manage')">管理定义</button></div>
+    <div class="library-section-heading">
+      <button type="button" class="library-section-toggle" :aria-expanded="!collapsed" aria-controls="catalog-node-content" @click="emit('update:collapsed', !collapsed)">
+        <span aria-hidden="true">{{ collapsed ? '▸' : '▾' }}</span>Go 业务节点
+      </button>
+      <button class="text-button" :disabled="disabled" @click="emit('manage')">管理定义</button>
+    </div>
+    <!-- 仅隐藏内容，保留目录展开、标签筛选及当前选择。 -->
+    <div id="catalog-node-content" v-show="!collapsed">
     <div class="catalog-tools">
       <button :disabled="disabled" @click="openDialog('create', selectedFolder)">新建目录</button>
       <button :disabled="disabled" @click="emit('create', selectedFolder)">新建定义</button>
@@ -306,6 +315,7 @@ onBeforeUnmount(() => { document.removeEventListener("pointerdown", outside, tru
       </div>
       <p v-if="!rows.length" class="muted empty-note">新建业务定义，或粘贴 JSON 导入已有定义。</p>
     </div>
+    </div>
     <Teleport to="body">
       <div v-if="folderMenu" ref="menuElement" class="folder-context-menu" role="menu" aria-label="目录菜单" :style="{ left: `${folderMenu.x}px`, top: `${folderMenu.y}px` }" @keydown.stop="menuKey" @contextmenu.prevent>
         <button role="menuitem" @click="openDialog('create', folderMenu.id)">新建子目录</button>
@@ -335,7 +345,6 @@ onBeforeUnmount(() => { document.removeEventListener("pointerdown", outside, tru
 
 <style scoped>
 .catalog-tools { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 9px; }
-.section-title { display: flex; align-items: center; justify-content: space-between; margin: 14px 0 10px; font-weight: 600; font-size: 12px; }
 .catalog-tools button, .catalog-more button { font-size: 11px; padding: 5px 7px; }
 .catalog-more { display: grid; gap: 4px; margin-bottom: 8px; }
 .catalog-root, .catalog-folder, .catalog-definition { display: flex; align-items: center; gap: 7px; width: 100%; text-align: left; border: 1px solid transparent; }
