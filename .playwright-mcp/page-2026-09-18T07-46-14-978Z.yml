@@ -1,0 +1,275 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6]: ⑂
+      - strong [ref=e7]: 行为树工作台
+      - generic [ref=e8]: LOCAL
+    - generic [ref=e9]:
+      - generic [ref=e10]:
+        - generic [ref=e11]: 工作目录
+        - generic "E:\\fl\\behaviortree_test" [ref=e12]
+        - button "打开工作目录" [disabled] [ref=e13]: 📁 打开目录
+        - button "复制路径" [ref=e14] [cursor=pointer]
+      - generic [ref=e15]:
+        - generic [ref=e16]: 当前工程
+        - combobox "当前工程" [disabled] [ref=e17]:
+          - option "bt_test1.json" [selected]
+        - button "刷新列表" [disabled] [ref=e18]
+        - button "重载文件" [disabled] [ref=e19]
+        - generic [ref=e20]: 已保存
+        - generic "大乱斗行为树" [ref=e21]
+    - generic [ref=e22]:
+      - button "新建" [disabled] [ref=e23]
+      - button "导入" [disabled] [ref=e24]
+      - button "导出 JSON" [ref=e25] [cursor=pointer]
+      - button "保存 Ctrl S" [disabled] [ref=e26]
+      - button "另存为" [disabled] [ref=e27]
+      - button "校验" [disabled] [ref=e28]
+      - button "预览 Go" [disabled] [ref=e29]
+      - button "生成到目录 ↗" [disabled] [ref=e30]
+  - complementary [ref=e31]:
+    - generic [ref=e32]:
+      - text: 行为树
+      - button "＋" [ref=e33] [cursor=pointer]
+    - navigation [ref=e34]:
+      - button "NPC行为树，行为树 ID：NPC，3 个节点" [ref=e35] [cursor=pointer]:
+        - generic [ref=e36]: ⑂
+        - generic [ref=e37]:
+          - text: NPC行为树
+          - code [ref=e38]: "ID: NPC"
+        - generic "3 个节点" [ref=e39]: "3"
+      - button "测试行为树，行为树 ID：Test，3 个节点" [ref=e40] [cursor=pointer]:
+        - generic [ref=e41]: ⑂
+        - generic [ref=e42]:
+          - text: 测试行为树
+          - code [ref=e43]: "ID: Test"
+        - generic "3 个节点" [ref=e44]: "3"
+    - generic [ref=e45]:
+      - button "节点库" [ref=e46] [cursor=pointer]
+      - button "黑板" [ref=e47] [cursor=pointer]
+    - textbox "搜索节点" [ref=e48]:
+      - /placeholder: 搜索节点…
+    - button "内置节点" [expanded] [ref=e50] [cursor=pointer]:
+      - generic [ref=e51]: ▾
+      - text: 内置节点
+    - generic [ref=e52]:
+      - button "→ 顺序 sequence" [ref=e53]:
+        - generic [ref=e54]: →
+        - generic [ref=e55]:
+          - text: 顺序
+          - generic [ref=e56]: sequence
+        - generic [ref=e57]: ⓘ
+      - button "? 选择 selector" [ref=e58]:
+        - generic [ref=e59]: "?"
+        - generic [ref=e60]:
+          - text: 选择
+          - generic [ref=e61]: selector
+        - generic [ref=e62]: ⓘ
+      - button "⇡ 优先级 priority" [ref=e63]:
+        - generic [ref=e64]: ⇡
+        - generic [ref=e65]:
+          - text: 优先级
+          - generic [ref=e66]: priority
+        - generic [ref=e67]: ⓘ
+      - button "⇉ 并行 parallel" [ref=e68]:
+        - generic [ref=e69]: ⇉
+        - generic [ref=e70]:
+          - text: 并行
+          - generic [ref=e71]: parallel
+        - generic [ref=e72]: ⓘ
+      - button "◇ 条件 condition" [ref=e73]:
+        - generic [ref=e74]: ◇
+        - generic [ref=e75]:
+          - text: 条件
+          - generic [ref=e76]: condition
+        - generic [ref=e77]: ⓘ
+      - button "▶ 动作 action" [ref=e78]:
+        - generic [ref=e79]: ▶
+        - generic [ref=e80]:
+          - text: 动作
+          - generic [ref=e81]: action
+        - generic [ref=e82]: ⓘ
+      - button "◷ 等待 wait" [ref=e83]:
+        - generic [ref=e84]: ◷
+        - generic [ref=e85]:
+          - text: 等待
+          - generic [ref=e86]: wait
+        - generic [ref=e87]: ⓘ
+      - button "⌛ 超时 timeout" [ref=e88]:
+        - generic [ref=e89]: ⌛
+        - generic [ref=e90]:
+          - text: 超时
+          - generic [ref=e91]: timeout
+        - generic [ref=e92]: ⓘ
+      - button "↻ 重复 repeat" [ref=e93]:
+        - generic [ref=e94]: ↻
+        - generic [ref=e95]:
+          - text: 重复
+          - generic [ref=e96]: repeat
+        - generic [ref=e97]: ⓘ
+      - button "⟳ 重试 retry" [ref=e98]:
+        - generic [ref=e99]: ⟳
+        - generic [ref=e100]:
+          - text: 重试
+          - generic [ref=e101]: retry
+        - generic [ref=e102]: ⓘ
+      - button "¬ 取反 inverter" [ref=e103]:
+        - generic [ref=e104]: ¬
+        - generic [ref=e105]:
+          - text: 取反
+          - generic [ref=e106]: inverter
+        - generic [ref=e107]: ⓘ
+      - button "✓ 强制成功 succeed" [ref=e108]:
+        - generic [ref=e109]: ✓
+        - generic [ref=e110]:
+          - text: 强制成功
+          - generic [ref=e111]: succeed
+        - generic [ref=e112]: ⓘ
+      - button "× 强制失败 fail" [ref=e113]:
+        - generic [ref=e114]: ×
+        - generic [ref=e115]:
+          - text: 强制失败
+          - generic [ref=e116]: fail
+        - generic [ref=e117]: ⓘ
+      - button "↳ 子树 subtree" [ref=e118]:
+        - generic [ref=e119]: ↳
+        - generic [ref=e120]:
+          - text: 子树
+          - generic [ref=e121]: subtree
+        - generic [ref=e122]: ⓘ
+    - region "业务节点库" [ref=e123]:
+      - generic [ref=e124]:
+        - button "Go 业务节点" [expanded] [ref=e125] [cursor=pointer]:
+          - generic [ref=e126]: ▾
+          - text: Go 业务节点
+        - button "管理定义" [ref=e127] [cursor=pointer]
+      - generic [ref=e128]:
+        - generic [ref=e129]:
+          - button "新建目录" [ref=e130] [cursor=pointer]
+          - button "新建定义" [ref=e131] [cursor=pointer]
+          - button "导入业务定义" [ref=e132] [cursor=pointer]
+          - button "管理标签" [ref=e133] [cursor=pointer]
+          - button "业务定义更多操作" [ref=e134] [cursor=pointer]: 更多 ⋯
+        - generic "标签筛选（全部满足）" [ref=e135]:
+          - generic [ref=e136]:
+            - checkbox "战斗" [ref=e137]
+            - text: 战斗
+          - generic [ref=e138]:
+            - checkbox "建筑" [ref=e139]
+            - text: 建筑
+        - button "▣ 根目录 4 个定义" [ref=e140] [cursor=pointer]:
+          - text: ▣ 根目录
+          - generic [ref=e141]: 4 个定义
+        - paragraph [ref=e142]: 新增位置：根目录
+        - generic "业务目录树" [ref=e143]:
+          - button "▸ ▰ 测试1" [ref=e145] [cursor=pointer]:
+            - generic [ref=e146]: ▸ ▰
+            - generic [ref=e147]: 测试1
+          - button "▸ ▰ 测试2" [ref=e149] [cursor=pointer]:
+            - generic [ref=e150]: ▸ ▰
+            - generic [ref=e151]: 测试2
+          - button "▶ 移动2 Move2" [ref=e153] [cursor=pointer]:
+            - generic [ref=e154]: ▶
+            - generic [ref=e155]:
+              - generic [ref=e156]: 移动2
+              - generic [ref=e157]: Move2
+          - button "▶ 移动4 Move4" [ref=e159] [cursor=pointer]:
+            - generic [ref=e160]: ▶
+            - generic [ref=e161]:
+              - generic [ref=e162]: 移动4
+              - generic [ref=e163]: Move4
+          - button "▶ 移动到目标 MoveTo" [ref=e165] [cursor=pointer]:
+            - generic [ref=e166]: ▶
+            - generic [ref=e167]:
+              - generic [ref=e168]: 移动到目标
+              - generic [ref=e169]: MoveTo
+  - main [ref=e170]:
+    - generic [ref=e171]:
+      - generic [ref=e172]:
+        - strong [ref=e173]: NPC行为树
+        - text: 3 个节点
+      - generic [ref=e174]:
+        - button "↶" [disabled] [ref=e175]
+        - button "↷" [disabled] [ref=e176]
+        - button "自动布局" [ref=e177] [cursor=pointer]
+        - button "适应画布" [ref=e178] [cursor=pointer]
+    - generic [ref=e179]:
+      - generic [ref=e181]:
+        - generic:
+          - img
+          - img:
+            - group "Edge from 1 to 2" [ref=e182] [cursor=pointer]:
+              - generic [ref=e185]:
+                - generic: "1"
+          - img:
+            - group "Edge from 1 to 3" [ref=e187] [cursor=pointer]:
+              - generic [ref=e190]:
+                - generic: "2"
+      - img [ref=e192]
+      - generic [ref=e194]:
+        - button [ref=e195] [cursor=pointer]:
+          - img [ref=e196]
+        - button [ref=e198] [cursor=pointer]:
+          - img [ref=e199]
+        - button [ref=e201] [cursor=pointer]:
+          - img [ref=e202]
+    - generic: 从节点库拖入画布添加 · 拖动节点端点连接 · 子节点顺序在右侧调整
+  - complementary [ref=e205]:
+    - generic [ref=e206]:
+      - text: 行为树设置
+      - generic [ref=e207]: TREE
+    - paragraph [ref=e208]: 选择节点编辑属性，或从左侧添加新节点。
+    - generic [ref=e209]:
+      - text: 工程名称
+      - textbox "工程名称" [ref=e210]: 大乱斗行为树
+    - generic [ref=e211]:
+      - text: 行为树名称
+      - textbox "行为树名称" [ref=e212]: NPC行为树
+    - generic [ref=e213]:
+      - text: 行为树 ID
+      - textbox "行为树 ID" [ref=e214]: NPC
+    - generic [ref=e215]:
+      - button "应用 ID" [disabled] [ref=e216]
+      - button "取消" [disabled] [ref=e217]
+    - paragraph [ref=e218]: 工程内唯一，新建树自动分配递增数字 ID；手动改为更大数字后继续递增。允许 1–80 位英文、数字或下划线，不能仅大小写不同；冲突时不生效。应用时同步全部子树引用，外部入口调用需同步调整。
+    - generic [ref=e219]: Go 生成设置
+    - generic [ref=e220]:
+      - text: 生成包路径
+      - textbox "生成包路径" [ref=e221]:
+        - /placeholder: 例如：ai/brawl
+        - text: bt_code
+    - status [ref=e222]:
+      - text: 生成目录：
+      - code [ref=e223]: bt_code
+      - text: Go package：
+      - code [ref=e224]: bt_code
+    - paragraph [ref=e225]: 生成目录相对于当前工程目录，路径最后一级目录名将作为 Go package 名。例如 ai/brawl 会生成到 ai/brawl/，package 为 brawl。
+    - paragraph [ref=e226]: 更改路径后会在新目录生成，旧目录保留；手写代码请自行迁移。
+    - generic [ref=e227]:
+      - text: 业务上下文导入路径
+      - textbox "业务上下文导入路径" [ref=e228]:
+        - /placeholder: 例如 bt_context 或 bt_test/bt_context；留空使用同包类型
+        - text: bt_context
+    - generic [ref=e229]:
+      - text: 上下文类型
+      - textbox "上下文类型" [ref=e230]:
+        - /placeholder: any 或 *Context
+        - text: "*Context"
+    - paragraph [ref=e231]: 例如填写 bt_context 和 *Context：生成或下载业务骨架时首次创建 bt_context/context.go，已有类型不覆盖。短路径按当前目录 go.mod 补全；留空则在生成包创建，any 不创建。预览不写盘。
+    - button "删除当前行为树" [ref=e232] [cursor=pointer]
+  - generic [ref=e233]:
+    - separator "调整输出面板高度" [ref=e234]
+    - generic [ref=e235]:
+      - button "校验结果" [ref=e236] [cursor=pointer]
+      - button "生成代码" [ref=e237] [cursor=pointer]
+      - button "业务骨架" [ref=e238] [cursor=pointer]
+      - button "查看上次生成" [disabled] [ref=e239]
+    - paragraph [ref=e241]: 点击「校验」检查结构与类型。「预览 Go」查看源码，「生成到目录」先保存工程再写入生成文件。
+  - contentinfo [ref=e242]:
+    - generic [ref=e243]: 已打开 bt_test1.json
+    - generic [ref=e245]:
+      - text: Schema 2
+      - generic [ref=e246]: ·
+      - text: 2 棵树
+      - generic [ref=e247]: ·
+      - text: 2 个字段

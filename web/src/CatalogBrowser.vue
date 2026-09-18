@@ -11,6 +11,8 @@ const props = defineProps<{
   disabled: boolean; // 工程切换期间禁止修改。
   commit: (change: () => void) => boolean; // 分类变更进入统一撤销边界。
   failureMessage: string; // 父级操作失败的具体原因，在模态框内可见。
+  presentation?: "sidebar" | "directories" | "tags"; // 管理页复用目录手势及分类表单，默认作为侧栏。
+  initialFolder?: string; // 管理页打开时继承侧栏的当前目录。
 }>();
 const emit = defineEmits<{
   "update:collapsed": [value: boolean]; // 只切换业务区显示，不修改工程或目录状态。
@@ -28,11 +30,11 @@ interface OrganizationDialog {
   mode: "create" | "rename" | "move" | "tags" | "tag-create" | "tag-rename" | "tag-delete";
   id: string; name: string; parentId: string; entry?: CatalogEntry; tagIds: string[];
 }
-const selectedFolder = ref("");
+const selectedFolder = ref(props.initialFolder ?? "");
 const selectedDefinition = ref(""); // 当前操作的定义与目录互斥高亮，新增位置仍采用其所属目录。
-const expanded = ref(new Set<string>([""]));
+const expanded = ref(new Set<string>(["", props.initialFolder ?? ""]));
 const filters = ref<string[]>([]);
-const tagManager = ref(false);
+const filtersOpen = ref(false); // 标签筛选默认收起，选择保持到用户主动清除。
 const dialog = ref<OrganizationDialog>();
 const modal = ref<HTMLDialogElement>();
 const failure = ref("");
@@ -41,7 +43,7 @@ const dropHint = ref("");
 const folderMenu = ref<{ id: string; x: number; y: number }>();
 const menuElement = ref<HTMLElement>();
 let menuTrigger: HTMLElement | undefined;
-const moreOpen = ref(false);
+let dialogTrigger: HTMLElement | undefined; // 子弹窗关闭后恢复原按钮或上下文菜单触发位置。
 const isFiltered = computed(() => Boolean(props.search.trim() || filters.value.length));
 const allTags = computed(() => { props.revision; return [...props.index.tags.values()]; });
 const results = computed(() => { props.revision; return props.index.search(props.search, filters.value); });
@@ -86,9 +88,15 @@ watch(() => props.index, () => {
   filters.value = filters.value.filter(id => props.index.tags.has(id));
 });
 watch(() => props.disabled, disabled => { if (disabled) { dialog.value = undefined; folderMenu.value = undefined; endDrag(); } });
+// 管理页筛选变化只同步选中目录，避免向父级重复发送选择事件。
+watch(() => props.initialFolder, value => {
+  selectedFolder.value = value ?? ""; selectedDefinition.value = "";
+  let parent = selectedFolder.value;
+  while (parent && props.index.folders.has(parent)) { expanded.value.add(parent); parent = props.index.folders.get(parent)!.parentId; }
+}, { immediate: true });
 watch(dialog, async value => {
   failure.value = "";
-  if (!value) { modal.value?.close(); return; }
+  if (!value) { modal.value?.close(); await nextTick(); dialogTrigger?.focus(); return; }
   await nextTick(); modal.value?.showModal();
   modal.value?.querySelector<HTMLElement>("input, select, button")?.focus();
 });
@@ -120,6 +128,7 @@ function toggleFolder(id: string) {
 // 菜单和按钮共用草稿弹窗，避免使用浏览器阻塞式 prompt。
 function openDialog(mode: OrganizationDialog["mode"], id = "", entry?: CatalogEntry) {
   if (props.disabled) return;
+  dialogTrigger = folderMenu.value ? menuTrigger : document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
   folderMenu.value = undefined;
   dialog.value = { mode, id, entry, name: mode.startsWith("tag-") ? props.index.tags.get(id)?.name ?? "" : props.index.folders.get(id)?.name ?? "",
     parentId: mode === "create" ? id : entry?.kind === "folder" ? props.index.folders.get(entry.id)!.parentId : props.index.assignments.get(id)?.folderId ?? "",
@@ -128,7 +137,9 @@ function openDialog(mode: OrganizationDialog["mode"], id = "", entry?: CatalogEn
 // 业务定义菜单由父级捕获身份，本组件仅接管移动和标签草稿。
 function openMoveDefinition(id: string) { openDialog("move", id, { kind: "definition", id, order: 0 }); }
 function openDefinitionTags(id: string) { openDialog("tags", id); }
-defineExpose({ openMoveDefinition, openDefinitionTags });
+// 管理入口允许直接创建标签，仍使用同一个事务表单。
+function openTagCreate() { openDialog("tag-create"); }
+defineExpose({ openMoveDefinition, openDefinitionTags, openTagCreate });
 
 // 所有表单提交通过父级事务；校验失败时保留草稿供纠正。
 async function submitDialog() {
@@ -153,6 +164,7 @@ async function submitDialog() {
 }
 // 空目录可直接删除，子目录和直属定义由索引常数时间判断。
 function deleteFolder(id: string) {
+  if (props.disabled || !id) return;
   folderMenu.value = undefined;
   if (props.commit(() => props.index.deleteFolder(id))) {
     expanded.value.delete(id);
@@ -175,9 +187,9 @@ function startDrag(event: DragEvent, entry: CatalogEntry) {
   if (props.disabled || !event.dataTransfer) return;
   dragged.value = entry;
   if (entry.kind === "definition") selectDefinition(entry.id); else selectFolder(entry.id);
-  if (entry.kind === "definition") emit("drag", event, props.index.definitions.get(entry.id)!);
+  if (entry.kind === "definition" && (!props.presentation || props.presentation === "sidebar")) emit("drag", event, props.index.definitions.get(entry.id)!);
   else emit("dragend");
-  event.dataTransfer.effectAllowed = entry.kind === "definition" ? "copyMove" : "move";
+  event.dataTransfer.effectAllowed = entry.kind === "definition" && (!props.presentation || props.presentation === "sidebar") ? "copyMove" : "move";
   event.dataTransfer.setData("application/x-behaviortree-catalog", `${entry.kind}:${entry.id}`);
 }
 // 拖拽取消与松手都清理本地状态，只有有效 drop 才提交工程修改。
@@ -244,47 +256,50 @@ function menuKey(event: KeyboardEvent) {
 function outside(event: PointerEvent) { if (!menuElement.value?.contains(event.target as Node)) folderMenu.value = undefined; }
 onMounted(() => {
   document.addEventListener("pointerdown", outside, true);
-  emit("select", selectedFolder.value); // 从黑板页返回时，新增默认位置与当前可见选择一致。
+  if (props.presentation !== "tags") emit("select", selectedFolder.value); // 从黑板页返回时，新增默认位置与当前可见选择一致。
 });
 onBeforeUnmount(() => { document.removeEventListener("pointerdown", outside, true); emit("dragend"); });
 </script>
 
 <template>
-  <section class="catalog-browser" aria-label="业务节点库">
-    <div class="library-section-heading">
+  <section class="catalog-browser" :class="{ 'catalog-management': presentation && presentation !== 'sidebar' }" aria-label="业务节点库">
+    <div v-if="!presentation || presentation === 'sidebar'" class="library-section-heading">
       <button type="button" class="library-section-toggle" :aria-expanded="!collapsed" aria-controls="catalog-node-content" @click="emit('update:collapsed', !collapsed)">
         <span aria-hidden="true">{{ collapsed ? '▸' : '▾' }}</span>Go 业务节点
       </button>
-      <button class="text-button" :disabled="disabled" @click="emit('manage')">管理定义</button>
+      <button class="text-button" :disabled="disabled" @click="emit('manage')">管理</button>
     </div>
     <!-- 仅隐藏内容，保留目录展开、标签筛选及当前选择。 -->
-    <div id="catalog-node-content" v-show="!collapsed">
-    <div class="catalog-tools">
-      <button :disabled="disabled" @click="openDialog('create', selectedFolder)">新建目录</button>
-      <button :disabled="disabled" @click="emit('create', selectedFolder)">新建定义</button>
-      <button :disabled="disabled" @click="emit('import', selectedFolder)">导入业务定义</button>
-      <button :disabled="disabled" @click="tagManager = !tagManager">管理标签</button>
-      <button :disabled="disabled" aria-label="业务定义更多操作" :aria-expanded="moreOpen" @click="moreOpen = !moreOpen">更多 ⋯</button>
-    </div>
-    <div v-if="moreOpen" class="catalog-more">
-      <button :disabled="disabled || !index.definitions.size" @click="emit('transfer', 'copy'); moreOpen = false">复制全部定义 JSON</button>
-      <button :disabled="disabled || !index.definitions.size" @click="emit('transfer', 'download'); moreOpen = false">导出全部定义 JSON</button>
-    </div>
-    <div v-if="allTags.length" class="tag-filters" aria-label="标签筛选（全部满足）">
-      <label v-for="tag in allTags" :key="tag.id"><input v-model="filters" type="checkbox" :value="tag.id" />{{ tag.name }}</label>
-    </div>
-    <div v-if="tagManager" class="tag-manager">
+    <div :id="!presentation || presentation === 'sidebar' ? 'catalog-node-content' : undefined" v-show="presentation === 'tags' || presentation === 'directories' || !collapsed">
+    <template v-if="!presentation || presentation === 'sidebar'">
+      <div class="filter-heading">
+        <button class="text-button" :aria-expanded="filtersOpen" @click="filtersOpen = !filtersOpen">{{ filtersOpen ? '▾' : '▸' }} 标签筛选（{{ filters.length }}）</button>
+        <button v-if="filters.length" class="text-button" @click="filters = []">清除</button>
+      </div>
+      <div v-if="filtersOpen" class="tag-filters" aria-label="标签筛选（全部满足）">
+        <label v-for="tag in allTags" :key="tag.id"><input v-model="filters" type="checkbox" :value="tag.id" />{{ tag.name }}</label>
+        <p v-if="!allTags.length" class="muted">暂无标签，可在管理中创建。</p>
+      </div>
+    </template>
+    <div v-if="presentation === 'tags'" class="tag-manager">
       <div class="tag-heading"><strong>工程标签</strong><button :disabled="disabled" @click="openDialog('tag-create')">新建标签</button></div>
+      <p class="muted">删除标签仅解除关联，保留业务定义。</p>
       <p v-if="!allTags.length" class="muted">暂无标签，可创建后关联业务定义。</p>
-      <div v-for="tag in allTags" :key="tag.id" class="tag-row"><span>{{ tag.name }}</span>
-        <button :disabled="disabled" :aria-label="`重命名标签 ${tag.name}`" @click="openDialog('tag-rename', tag.id)">改名</button>
+      <div v-for="tag in allTags" :key="tag.id" class="tag-row"><span><b>{{ tag.name }}</b><small>{{ index.tagMembers.get(tag.id)?.size ?? 0 }} 个关联定义</small></span>
+        <button :disabled="disabled" :aria-label="`重命名标签 ${tag.name}`" @click="openDialog('tag-rename', tag.id)">重命名</button>
         <button :disabled="disabled" :aria-label="`删除标签 ${tag.name}`" @click="openDialog('tag-delete', tag.id)">删除</button>
       </div>
     </div>
+    <template v-else>
+    <p class="catalog-current muted" :title="index.folderPath(selectedFolder)">当前目录：{{ index.folderPath(selectedFolder) }}</p>
+    <div v-if="presentation === 'directories'" class="directory-tools" aria-label="当前目录操作">
+      <button :disabled="disabled" @click="openDialog('create', selectedFolder)">新建子目录</button>
+      <button :disabled="disabled || !selectedFolder" @click="openDialog('rename', selectedFolder)">重命名</button>
+      <button :disabled="disabled || !selectedFolder" @click="openDialog('move', selectedFolder, { kind: 'folder', id: selectedFolder, order: 0 })">移动到</button>
+      <button :disabled="disabled || !selectedFolder || !index.isFolderEmpty(selectedFolder)" title="仅允许删除空目录" @click="deleteFolder(selectedFolder)">删除空目录</button>
+    </div>
     <button class="catalog-root" :class="{ selected: !selectedFolder && !selectedDefinition, 'drop-inside': dropHint === 'root' }" :disabled="disabled"
       @click="selectFolder('')" @dragenter="dragOver($event)" @dragover="dragOver($event)" @dragleave="leaveDropTarget" @drop="drop($event)">▣ 根目录 <small>{{ index.definitions.size }} 个定义</small></button>
-    <!-- 根目录也保留说明行，避免拖拽开始时切换选择导致整棵目录树跳动。 -->
-    <p class="catalog-current muted" :title="index.folderPath(selectedFolder)">新增位置：{{ index.folderPath(selectedFolder) }}</p>
     <template v-if="isFiltered">
       <div class="search-summary">{{ results.length }} 个结果 <button @click="filters = []; emit('clearSearch')">清除筛选</button></div>
       <div v-for="definition in results" :key="definition.id" class="catalog-result">
@@ -306,7 +321,7 @@ onBeforeUnmount(() => { document.removeEventListener("pointerdown", outside, tru
           @click="toggleFolder(row.entry.id)" @contextmenu.prevent.stop="openFolderMenu($event, row.entry.id)" @keydown.shift.f10.prevent.stop="openFolderMenu($event, row.entry.id)">
           <span>{{ expanded.has(row.entry.id) ? '▾' : '▸' }} ▰</span><b>{{ index.folders.get(row.entry.id)!.name }}</b>
         </button>
-        <button v-else :id="`catalog-definition-${row.entry.id}`" class="catalog-definition" :class="{ selected: selectedDefinition === row.entry.id }" :disabled="disabled" draggable="true"
+        <button v-else :id="`${presentation === 'directories' ? 'catalog-managed-definition' : 'catalog-definition'}-${row.entry.id}`" class="catalog-definition" :class="{ selected: selectedDefinition === row.entry.id }" :disabled="disabled" draggable="true"
           @dragstart="startDrag($event, row.entry)" @dragend="endDrag" @click="inspectDefinition(index.definitions.get(row.entry.id)!)"
           @contextmenu.prevent.stop="definitionMenu($event, index.definitions.get(row.entry.id)!)" @keydown.shift.f10.prevent.stop="definitionMenu($event, index.definitions.get(row.entry.id)!)">
           <span>{{ index.definitions.get(row.entry.id)!.kind === 'action' ? '▶' : '?' }}</span>
@@ -315,8 +330,10 @@ onBeforeUnmount(() => { document.removeEventListener("pointerdown", outside, tru
       </div>
       <p v-if="!rows.length" class="muted empty-note">新建业务定义，或粘贴 JSON 导入已有定义。</p>
     </div>
+    </template>
     </div>
-    <Teleport to="body">
+    <!-- 管理弹窗与承载节点在同一轮挂载，延迟解析目标以避免首次打开时目标尚未进入 DOM。 -->
+    <Teleport defer :to="presentation === 'directories' || presentation === 'tags' ? '#catalog-manager-overlays' : 'body'">
       <div v-if="folderMenu" ref="menuElement" class="folder-context-menu" role="menu" aria-label="目录菜单" :style="{ left: `${folderMenu.x}px`, top: `${folderMenu.y}px` }" @keydown.stop="menuKey" @contextmenu.prevent>
         <button role="menuitem" @click="openDialog('create', folderMenu.id)">新建子目录</button>
         <button role="menuitem" @click="openDialog('rename', folderMenu.id)">重命名</button>
@@ -324,7 +341,7 @@ onBeforeUnmount(() => { document.removeEventListener("pointerdown", outside, tru
         <button role="menuitem" :disabled="!index.isFolderEmpty(folderMenu.id)" :title="index.isFolderEmpty(folderMenu.id) ? '删除空目录，可撤销' : '目录中仍有定义或子目录，请先移走内容'" @click="deleteFolder(folderMenu.id)">删除目录</button>
         <small v-if="!index.isFolderEmpty(folderMenu.id)">仅允许删除空目录</small>
       </div>
-      <dialog v-if="dialog" ref="modal" class="project-dialog organization-dialog" :aria-label="dialogTitle" @cancel.prevent="dialog = undefined" @keydown.stop>
+      <dialog v-if="dialog" ref="modal" class="project-dialog organization-dialog" :aria-label="dialogTitle" @cancel.prevent.stop="dialog = undefined" @keydown.stop>
         <form @submit.prevent="submitDialog">
           <h2>{{ dialogTitle }}</h2>
           <label v-if="['create', 'rename', 'tag-create', 'tag-rename'].includes(dialog.mode)">名称<input v-model="dialog.name" required autofocus /></label>
@@ -332,11 +349,11 @@ onBeforeUnmount(() => { document.removeEventListener("pointerdown", outside, tru
           <template v-if="dialog.mode === 'tags'">
             <p class="muted">可选择多个标签；取消勾选即解除关联。</p>
             <label v-for="tag in allTags" :key="tag.id" class="tag-choice"><input v-model="dialog.tagIds" type="checkbox" :value="tag.id" />{{ tag.name }}</label>
-            <p v-if="!allTags.length">暂无标签，请先在“管理标签”中创建。</p>
+            <p v-if="!allTags.length">暂无标签，请先在管理窗口的“标签”页中创建。</p>
           </template>
           <p v-if="dialog.mode === 'tag-delete'">删除标签“{{ dialog.name }}”？将解除 {{ index.tagMembers.get(dialog.id)?.size ?? 0 }} 个定义的关联，定义本身会保留。此操作可撤销。</p>
           <p v-if="failure" class="identity-error" role="alert">{{ failure }}</p>
-          <div class="dialog-actions"><button type="button" @click="dialog = undefined">取消</button><button type="submit">{{ dialog.mode === 'tag-delete' ? '确认删除' : '确定' }}</button></div>
+          <div class="dialog-actions"><button type="button" @click="dialog = undefined">取消</button><button type="submit" :disabled="disabled">{{ dialog.mode === 'tag-delete' ? '确认删除' : '确定' }}</button></div>
         </form>
       </dialog>
     </Teleport>
@@ -344,9 +361,17 @@ onBeforeUnmount(() => { document.removeEventListener("pointerdown", outside, tru
 </template>
 
 <style scoped>
-.catalog-tools { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 9px; }
-.catalog-tools button, .catalog-more button { font-size: 11px; padding: 5px 7px; }
-.catalog-more { display: grid; gap: 4px; margin-bottom: 8px; }
+.filter-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 6px 0; }
+.directory-tools { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.directory-tools button, .tag-row button { flex-shrink: 0; }
+.catalog-browser { min-width: 0; }
+.catalog-management .catalog-current { font-size: 13px; }
+.catalog-management .tag-manager { margin: 0; padding: 0; border: 0; background: transparent; }
+.catalog-management .tag-heading, .catalog-management .tag-row { font-size: 14px; gap: 12px; padding: 12px 0; }
+.catalog-management .tag-row { border-bottom: 1px solid #304653; flex-wrap: wrap; }
+.catalog-management .tag-row span { min-width: 100px; }
+.catalog-management .tag-row small { display: block; font-size: 12px; color: #8fa5b6; margin-top: 5px; }
+.catalog-management .tag-heading button, .catalog-management .tag-row button { font-size: 13px; padding: 8px 12px; }
 .catalog-root, .catalog-folder, .catalog-definition { display: flex; align-items: center; gap: 7px; width: 100%; text-align: left; border: 1px solid transparent; }
 .catalog-root { justify-content: space-between; margin-top: 8px; background: #14202a; }
 .catalog-root small, .catalog-current { font-size: 10px; }
@@ -382,4 +407,7 @@ onBeforeUnmount(() => { document.removeEventListener("pointerdown", outside, tru
 .organization-dialog label { display: grid; gap: 8px; }
 .organization-dialog .tag-choice { display: flex; align-items: center; margin: 10px 0; }
 .organization-dialog select { width: 100%; }
+.organization-dialog { max-width: min(560px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow-y: auto; box-sizing: border-box; }
+.organization-dialog form { min-width: 0; }
+.organization-dialog h2, .organization-dialog p, .organization-dialog label { overflow-wrap: anywhere; }
 </style>

@@ -1,0 +1,118 @@
+[     589ms] [WARNING] [Vue warn]: Property "moreOpen" was accessed during render but is not defined on instance. 
+  at <CatalogBrowser ref="catalogBrowser" collapsed=false onUpdate:collapsed=fn  ... > 
+  at <App> @ http://127.0.0.1:5173/node_modules/.vite/deps/chunk-3X77PPTX.js?v=940ecc96:2256
+[     589ms] [WARNING] [Vue warn]: Property "moreOpen" was accessed during render but is not defined on instance. 
+  at <CatalogBrowser ref="catalogBrowser" collapsed=false onUpdate:collapsed=fn  ... > 
+  at <App> @ http://127.0.0.1:5173/node_modules/.vite/deps/chunk-3X77PPTX.js?v=940ecc96:2256
+[     589ms] [WARNING] [Vue warn]: Property "tagManager" was accessed during render but is not defined on instance. 
+  at <CatalogBrowser ref="catalogBrowser" collapsed=false onUpdate:collapsed=fn  ... > 
+  at <App> @ http://127.0.0.1:5173/node_modules/.vite/deps/chunk-3X77PPTX.js?v=940ecc96:2256
+[     674ms] [WARNING] [Vue Flow]: Viewport not initialized yet. @ http://127.0.0.1:5173/node_modules/.vite/deps/chunk-W3WN2UN2.js?v=940ecc96:4729
+[     701ms] [WARNING] [Vue warn]: Property "moreOpen" was accessed during render but is not defined on instance. 
+  at <CatalogBrowser ref="catalogBrowser" collapsed=false onUpdate:collapsed=fn  ... > 
+  at <App> @ http://127.0.0.1:5173/node_modules/.vite/deps/chunk-3X77PPTX.js?v=940ecc96:2256
+[     701ms] [WARNING] [Vue warn]: Property "moreOpen" was accessed during render but is not defined on instance. 
+  at <CatalogBrowser ref="catalogBrowser" collapsed=false onUpdate:collapsed=fn  ... > 
+  at <App> @ http://127.0.0.1:5173/node_modules/.vite/deps/chunk-3X77PPTX.js?v=940ecc96:2256
+[     701ms] [WARNING] [Vue warn]: Property "tagManager" was accessed during render but is not defined on instance. 
+  at <CatalogBrowser ref="catalogBrowser" collapsed=false onUpdate:collapsed=fn  ... > 
+  at <App> @ http://127.0.0.1:5173/node_modules/.vite/deps/chunk-3X77PPTX.js?v=940ecc96:2256
+[     780ms] [WARNING] [Vue Flow]: Viewport not initialized yet. @ http://127.0.0.1:5173/node_modules/.vite/deps/chunk-W3WN2UN2.js?v=940ecc96:4729
+[   28651ms] [WARNING] [Vue warn]: Property "moreOpen" was accessed during render but is not defined on instance. 
+  at <CatalogBrowser ref="catalogBrowser" collapsed=false onUpdate:collapsed=fn  ... > 
+  at <App> @ http://127.0.0.1:5173/node_modules/.vite/deps/chunk-3X77PPTX.js?v=940ecc96:2256
+[   28651ms] [WARNING] [Vue warn]: Property "moreOpen" was accessed during render but is not defined on instance. 
+  at <CatalogBrowser ref="catalogBrowser" collapsed=false onUpdate:collapsed=fn  ... > 
+  at <App> @ http://127.0.0.1:5173/node_modules/.vite/deps/chunk-3X77PPTX.js?v=940ecc96:2256
+[   28652ms] [WARNING] [Vue warn]: Property "tagManager" was accessed during render but is not defined on instance. 
+  at <CatalogBrowser ref="catalogBrowser" collapsed=false onUpdate:collapsed=fn  ... > 
+  at <App> @ http://127.0.0.1:5173/node_modules/.vite/deps/chunk-3X77PPTX.js?v=940ecc96:2256
+[   82599ms] [WARNING] [Vue warn]: Failed to locate Teleport target with selector "#catalog-manager-overlays". Note the target element must exist before the component is mounted - i.e. the target cannot be rendered by the component itself, and ideally should be outside of the entire Vue component tree. 
+  at <CatalogBrowser key=0 ref="organizationBrowser" presentation="directories"  ... > 
+  at <CatalogManager key=2 ref="catalogManager" catalog= [Object, Object, Object, Object]  ... > 
+  at <App> @ http://127.0.0.1:5173/node_modules/.vite/deps/chunk-3X77PPTX.js?v=940ecc96:2256
+[   82600ms] [WARNING] [Vue warn]: Invalid Teleport target on mount: null (object) 
+  at <CatalogBrowser key=0 ref="organizationBrowser" presentation="directories"  ... > 
+  at <CatalogManager key=2 ref="catalogManager" catalog= [Object, Object, Object, Object]  ... > 
+  at <App> @ http://127.0.0.1:5173/node_modules/.vite/deps/chunk-3X77PPTX.js?v=940ecc96:2256
+[   91496ms] [WARNING] [Vue warn]: Failed to locate Teleport target with selector "#catalog-manager-overlays". Note the target element must exist before the component is mounted - i.e. the target cannot be rendered by the component itself, and ideally should be outside of the entire Vue component tree. 
+  at <CatalogBrowser key=0 ref="organizationBrowser" presentation="directories"  ... > 
+  at <CatalogManager key=2 ref="catalogManager" catalog= [Object, Object, Object, Object]  ... > 
+  at <App> @ http://127.0.0.1:5173/node_modules/.vite/deps/chunk-3X77PPTX.js?v=940ecc96:2256
+[   91497ms] [WARNING] [Vue warn]: Invalid Teleport target on mount: null (object) 
+  at <CatalogBrowser key=0 ref="organizationBrowser" presentation="directories"  ... > 
+  at <CatalogManager key=2 ref="catalogManager" catalog= [Object, Object, Object, Object]  ... > 
+  at <App> @ http://127.0.0.1:5173/node_modules/.vite/deps/chunk-3X77PPTX.js?v=940ecc96:2256
+[   97904ms] [WARNING] [Vue Flow]: Viewport not initialized yet. @ http://127.0.0.1:5173/node_modules/.vite/deps/chunk-W3WN2UN2.js?v=940ecc96:4729
+[   97946ms] [WARNING] [Vue Flow]: Viewport not initialized yet. @ http://127.0.0.1:5173/node_modules/.vite/deps/chunk-W3WN2UN2.js?v=940ecc96:4729
+[   98004ms] [WARNING] [Vue warn]: Failed to locate Teleport target with selector "#catalog-manager-overlays". Note the target element must exist before the component is mounted - i.e. the target cannot be rendered by the component itself, and ideally should be outside of the entire Vue component tree. 
+  at <CatalogBrowser key=0 ref="organizationBrowser" presentation="directories"  ... > 
+  at <CatalogManager key=2 ref="catalogManager" catalog= [Object, Object, Object, Object]  ... > 
+  at <App> @ http://127.0.0.1:5173/node_modules/.vite/deps/chunk-3X77PPTX.js?v=940ecc96:2256
+[   98004ms] [WARNING] [Vue warn]: Invalid Teleport target on mount: null (object) 
+  at <CatalogBrowser key=0 ref="organizationBrowser" presentation="directories"  ... > 
+  at <CatalogManager key=2 ref="catalogManager" catalog= [Object, Object, Object, Object]  ... > 
+  at <App> @ http://127.0.0.1:5173/node_modules/.vite/deps/chunk-3X77PPTX.js?v=940ecc96:2256
+[  122505ms] [WARNING] [Vue warn]: Failed to locate Teleport target with selector "#catalog-manager-overlays". Note the target element must exist before the component is mounted - i.e. the target cannot be rendered by the component itself, and ideally should be outside of the entire Vue component tree. 
+  at <CatalogBrowser key=0 ref="organizationBrowser" presentation="directories"  ... > 
+  at <CatalogManager key=2 ref="catalogManager" catalog= [Object, Object, Object, Object]  ... > 
+  at <App> @ http://127.0.0.1:5173/node_modules/.vite/deps/chunk-3X77PPTX.js?v=940ecc96:2256
+[  122505ms] [WARNING] [Vue warn]: Invalid Teleport target on mount: null (object) 
+  at <CatalogBrowser key=0 ref="organizationBrowser" presentation="directories"  ... > 
+  at <CatalogManager key=2 ref="catalogManager" catalog= [Object, Object, Object, Object]  ... > 
+  at <App> @ http://127.0.0.1:5173/node_modules/.vite/deps/chunk-3X77PPTX.js?v=940ecc96:2256
+[  128351ms] [WARNING] [Vue warn]: Unhandled error during execution of component update 
+  at <CatalogBrowser key=0 ref="organizationBrowser" presentation="directories"  ... > 
+  at <CatalogManager key=2 ref="catalogManager" catalog= [Object, Object, Object, Object]  ... > 
+  at <App> @ http://127.0.0.1:5173/node_modules/.vite/deps/chunk-3X77PPTX.js?v=940ecc96:2256
+[  128352ms] [WARNING] [Vue warn]: Unhandled error during execution of watcher callback 
+  at <CatalogBrowser key=0 ref="organizationBrowser" presentation="directories"  ... > 
+  at <CatalogManager key=2 ref="catalogManager" catalog= [Object, Object, Object, Object]  ... > 
+  at <App> @ http://127.0.0.1:5173/node_modules/.vite/deps/chunk-3X77PPTX.js?v=940ecc96:2256
+[  128365ms] TypeError: Cannot read properties of null (reading 'nextSibling')
+    at nextSibling (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-3X77PPTX.js?v=940ecc96:11081:31)
+    at getNextHostNode (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-3X77PPTX.js?v=940ecc96:9158:16)
+    at patch (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-3X77PPTX.js?v=940ecc96:7784:16)
+    at patchBlockChildren (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-3X77PPTX.js?v=940ecc96:8212:7)
+    at Object.process (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-3X77PPTX.js?v=940ecc96:3297:9)
+    at patch (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-3X77PPTX.js?v=940ecc96:7846:16)
+    at patchBlockChildren (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-3X77PPTX.js?v=940ecc96:8212:7)
+    at patchElement (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-3X77PPTX.js?v=940ecc96:8130:7)
+    at processElement (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-3X77PPTX.js?v=940ecc96:7972:9)
+    at patch (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-3X77PPTX.js?v=940ecc96:7822:11)
+[  175405ms] [WARNING] [Vue warn]: Unhandled error during execution of component update 
+  at <CatalogBrowser key=0 ref="organizationBrowser" presentation="directories"  ... > 
+  at <CatalogManager key=2 ref="catalogManager" catalog= [Object, Object, Object, Object]  ... > 
+  at <App> @ http://127.0.0.1:5173/node_modules/.vite/deps/chunk-3X77PPTX.js?v=940ecc96:2256
+[  175405ms] [WARNING] [Vue warn]: Unhandled error during execution of watcher callback 
+  at <CatalogBrowser key=0 ref="organizationBrowser" presentation="directories"  ... > 
+  at <CatalogManager key=2 ref="catalogManager" catalog= [Object, Object, Object, Object]  ... > 
+  at <App> @ http://127.0.0.1:5173/node_modules/.vite/deps/chunk-3X77PPTX.js?v=940ecc96:2256
+[  175418ms] TypeError: Cannot set properties of null (setting '__vnode')
+    at patchElement (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-3X77PPTX.js?v=940ecc96:8101:18)
+    at processElement (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-3X77PPTX.js?v=940ecc96:7972:9)
+    at patch (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-3X77PPTX.js?v=940ecc96:7822:11)
+    at patchBlockChildren (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-3X77PPTX.js?v=940ecc96:8212:7)
+    at Object.process (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-3X77PPTX.js?v=940ecc96:3297:9)
+    at patch (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-3X77PPTX.js?v=940ecc96:7846:16)
+    at patchBlockChildren (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-3X77PPTX.js?v=940ecc96:8212:7)
+    at patchElement (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-3X77PPTX.js?v=940ecc96:8130:7)
+    at processElement (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-3X77PPTX.js?v=940ecc96:7972:9)
+    at patch (http://127.0.0.1:5173/node_modules/.vite/deps/chunk-3X77PPTX.js?v=940ecc96:7822:11)
+[  176800ms] [WARNING] [Vue warn]: Failed to locate Teleport target with selector "#catalog-manager-overlays". Note the target element must exist before the component is mounted - i.e. the target cannot be rendered by the component itself, and ideally should be outside of the entire Vue component tree. 
+  at <CatalogBrowser key=0 ref="organizationBrowser" presentation="directories"  ... > 
+  at <CatalogManager key=2 ref="catalogManager" catalog= [Object, Object, Object, Object]  ... > 
+  at <App> @ http://127.0.0.1:5173/node_modules/.vite/deps/chunk-3X77PPTX.js?v=940ecc96:2256
+[  176800ms] [WARNING] [Vue warn]: Invalid Teleport target on mount: null (object) 
+  at <CatalogBrowser key=0 ref="organizationBrowser" presentation="directories"  ... > 
+  at <CatalogManager key=2 ref="catalogManager" catalog= [Object, Object, Object, Object]  ... > 
+  at <App> @ http://127.0.0.1:5173/node_modules/.vite/deps/chunk-3X77PPTX.js?v=940ecc96:2256
+[  223694ms] [WARNING] [Vue Flow]: Viewport not initialized yet. @ http://127.0.0.1:5173/node_modules/.vite/deps/chunk-W3WN2UN2.js?v=940ecc96:4729
+[  223697ms] [ERROR] Failed to load resource: the server responded with a status of 500 (Internal Server Error) @ http://127.0.0.1:5173/api/projects:0
+[  325608ms] [WARNING] [Vue Flow]: Viewport not initialized yet. @ http://127.0.0.1:5173/node_modules/.vite/deps/chunk-W3WN2UN2.js?v=940ecc96:4729
+[  325635ms] [WARNING] [Vue Flow]: Viewport not initialized yet. @ http://127.0.0.1:5173/node_modules/.vite/deps/chunk-W3WN2UN2.js?v=940ecc96:4729
+[  325640ms] [ERROR] Failed to load resource: the server responded with a status of 400 (Bad Request) @ http://127.0.0.1:5173/api/generated:0
+[  628098ms] [WARNING] [Vue Flow]: Viewport not initialized yet. @ http://127.0.0.1:5173/node_modules/.vite/deps/chunk-W3WN2UN2.js?v=940ecc96:4729
+[  628128ms] [WARNING] [Vue Flow]: Viewport not initialized yet. @ http://127.0.0.1:5173/node_modules/.vite/deps/chunk-W3WN2UN2.js?v=940ecc96:4729
+[  628129ms] [ERROR] Failed to load resource: the server responded with a status of 400 (Bad Request) @ http://127.0.0.1:5173/api/generated:0
+[  684693ms] [LOG] [vite] server connection lost. Polling for restart... @ http://127.0.0.1:5173/@vite/client:864

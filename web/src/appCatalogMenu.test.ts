@@ -10,12 +10,13 @@ import { synchronizeCatalog } from "./catalogSync.ts";
 import { captureSnapshot, restoreSnapshot } from "./treeIdentity.ts";
 import type { EditorSnapshot } from "./treeIdentity.ts";
 import { stringifyJSON } from "./json.ts";
+import { CatalogOrganizationIndex } from "./catalogOrganization.ts";
 
 // 抽取真实右键处理函数，验证目标身份和二次确认边界，避免复制实现。
 const source = readFileSync(new URL("./App.vue", import.meta.url), "utf8")
   .split('<script setup lang="ts">')[1]!.split("</script>")[0]!;
 const script = ts.createSourceFile("App.ts", source, ts.ScriptTarget.Latest, true);
-const names = new Set(["openCatalogMenu", "editCatalogDefinition", "confirmDeleteDefinition"]);
+const names = new Set(["openCatalogMenu", "editCatalogDefinition", "confirmDeleteDefinition", "organizeCatalogDefinition"]);
 const handlers = script.statements.filter(statement =>
   ts.isFunctionDeclaration(statement) && names.has(statement.name?.text ?? ""),
 ).map(statement => statement.getText(script)).join("\n");
@@ -41,6 +42,9 @@ function session() {
   const notices: string[] = [];
   const context = {
     project, treeID, selected, definitionIndex, catalogMenu, catalogDialog,
+    catalogIndex: shallowRef(new CatalogOrganizationIndex(project.value)),
+    catalogManager: shallowRef<{ editDefinition: (target: Definition) => void; openMoveDefinition: (id: string) => void; openDefinitionTags: (id: string) => void }>(),
+    catalogBrowser: shallowRef<{ openMoveDefinition: (id: string) => void; openDefinitionTags: (id: string) => void }>(),
     workspaceChanging: ref(false), treeMenu: shallowRef(),
     notice: (text: string) => notices.push(text),
     applyCatalog: async (catalog: Definition[]) => {
@@ -48,7 +52,8 @@ function session() {
       synchronizeCatalog(project.value, catalog);
     },
   };
-  const app = runInNewContext(`${js}\n({ openCatalogMenu, editCatalogDefinition, confirmDeleteDefinition });`, context) as {
+  const app = runInNewContext(`${js}\n({ openCatalogMenu, editCatalogDefinition, confirmDeleteDefinition, organizeCatalogDefinition });`, context) as {
+    organizeCatalogDefinition: (operation: "move" | "tags") => void; // 分类操作路由到当前可见窗口。
     openCatalogMenu: (event: unknown, target: Definition) => void; // 仅记录右击目标和位置。
     editCatalogDefinition: (target: Definition) => void; // 直接打开该定义的编辑页面。
     confirmDeleteDefinition: () => void | Promise<void>; // 二次确认后才移除定义。
@@ -74,6 +79,31 @@ test("业务节点右键编辑指定定义，保持画布选择", () => {
   assert.equal(s.catalogDialog.value!.mode, "edit");
   assert.equal(s.catalogDialog.value!.definition, target);
   assert.equal(s.catalogMenu.value, undefined);
+  assert.equal(s.history.length, 0);
+});
+
+// 管理窗口已经打开时复用内部页面，防止只修改初始属性而未真正切换编辑目标。
+test("管理列表菜单编辑和分类操作复用当前管理窗口", () => {
+  const s = session();
+  const target = s.project.value.catalog[1]!;
+  const calls: string[] = [];
+  s.catalogDialog.value = { mode: "manage" };
+  s.catalogManager.value = {
+    editDefinition: item => calls.push(`edit:${item.id}`),
+    openMoveDefinition: id => calls.push(`move:${id}`),
+    openDefinitionTags: id => calls.push(`tags:${id}`),
+  };
+  s.catalogBrowser.value = {
+    openMoveDefinition: () => assert.fail("不应打开背景侧栏表单"),
+    openDefinitionTags: () => assert.fail("不应打开背景侧栏表单"),
+  };
+  s.app.editCatalogDefinition(target);
+  for (const operation of ["move", "tags"] as const) {
+    s.app.openCatalogMenu(menuEvent(), target);
+    s.app.organizeCatalogDefinition(operation);
+  }
+  assert.deepEqual(calls, ["edit:MoveTo", "move:MoveTo", "tags:MoveTo"]);
+  assert.equal(s.catalogDialog.value.mode, "manage");
   assert.equal(s.history.length, 0);
 });
 

@@ -50,6 +50,8 @@ function edit() {
 // 分类表单接管焦点，卸载菜单时不再抢回原节点。
 function organize(action: "move" | "tags") {
   restoreFocus = false;
+  // 分类表单记录稳定的行按钮，避免取消后尝试聚焦已卸载的菜单项。
+  if (previousFocus?.isConnected) previousFocus.focus();
   if (action === "move") emit("move"); else emit("tags");
 }
 

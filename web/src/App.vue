@@ -81,6 +81,7 @@ const catalogIndex = shallowRef(new CatalogOrganizationIndex(project.value)); //
 const catalogRevision = ref(0); // 组织索引原地修改后的界面修订。
 const catalogFolder = ref(""); // 新建和导入定义的默认目标目录。
 const catalogBrowser = ref<InstanceType<typeof CatalogBrowser>>(); // 菜单到组织表单的入口。
+const catalogManager = ref<InstanceType<typeof CatalogManager>>(); // 管理窗口中的编辑与分类表单入口。
 const catalogCopy = ref<string>(); // 剪贴板不可用时展示可手动复制的文本。
 const catalogTransferBusy = ref(false); // 防止重复发起复制或下载校验。
 // 工程替换和撤销只重建一次组织索引，不深度监听每次属性编辑。
@@ -1139,8 +1140,9 @@ function organizeCatalogDefinition(operation: "move" | "tags") {
   const target = catalogMenu.value?.definition;
   catalogMenu.value = undefined;
   if (!target || workspaceChanging.value || definitionIndex.value.get(target.id) !== target) return;
-  if (operation === "move") catalogBrowser.value?.openMoveDefinition(target.id);
-  else catalogBrowser.value?.openDefinitionTags(target.id);
+  const host = catalogDialog.value ? catalogManager.value : catalogBrowser.value;
+  if (operation === "move") host?.openMoveDefinition(target.id);
+  else host?.openDefinitionTags(target.id);
 }
 // 单条与全部共享服务端校验及无损 JSON，复制和下载不进入工程历史。
 async function transferCatalog(operation: "copy" | "download", target?: Definition) {
@@ -1182,7 +1184,11 @@ function openCatalogMenu(event: MouseEvent | KeyboardEvent, target: Definition) 
 function editCatalogDefinition(target: Definition) {
   catalogMenu.value = undefined;
   if (workspaceChanging.value || definitionIndex.value.get(target.id) !== target) return;
-  catalogDialog.value = { mode: "edit", definition: target };
+  if (catalogDialog.value && catalogManager.value) {
+    catalogManager.value.editDefinition(target);
+    return;
+  }
+  catalogDialog.value = { mode: "edit", definition: target, folderId: catalogIndex.value.assignments.get(target.id)?.folderId ?? "" };
 }
 // 二次确认后复用目录同步的撤销和校验边界；保留失效引用，供用户重新绑定。
 async function confirmDeleteDefinition() {
@@ -2054,8 +2060,11 @@ onUnmounted(() => toolLifecycle.abort());
       @change="importProject"
     />
     <NodeHelpDialog v-if="nodeHelp" :type="nodeHelp" @close="nodeHelp = undefined" />
-    <CatalogManager v-if="catalogDialog" :catalog="project.catalog" :initial-mode="catalogDialog.mode" :initial-kind="catalogDialog.kind"
-      :initial-definition="catalogDialog.definition"
+    <CatalogManager v-if="catalogDialog" ref="catalogManager" :catalog="project.catalog" :initial-mode="catalogDialog.mode" :initial-kind="catalogDialog.kind"
+      :initial-definition="catalogDialog.definition" :initial-folder="catalogDialog.folderId"
+      :index="catalogIndex" :revision="catalogRevision" :disabled="workspaceChanging" :commit="commitCatalogOrganization"
+      :failure-message="error ? message : ''" :transfer-busy="catalogTransferBusy"
+      @select="catalogDialog.folderId = $event" @transfer="transferCatalog($event)" @menu="openCatalogMenu"
       @apply="applyCatalog" @close="catalogDialog = undefined" />
     <CatalogContextMenu v-if="catalogMenu" :key="`${catalogMenu.definition.id}:${catalogMenu.x}:${catalogMenu.y}`"
       :definition="catalogMenu.definition" :x="catalogMenu.x" :y="catalogMenu.y"

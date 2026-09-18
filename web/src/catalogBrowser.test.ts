@@ -55,7 +55,7 @@ function browser() {
   const emissions: { name: string; args: unknown[] }[] = [];
   const transactions = { attempts: 0, succeeded: 0, errors: [] as string[] };
   const props = shallowReactive({
-    index, revision: 0, search: "", disabled: false, collapsed: false,
+    index, revision: 0, search: "", disabled: false, collapsed: false, presentation: "sidebar" as "sidebar" | "directories" | "tags",
     commit: (change: () => void) => {
       transactions.attempts++;
       try { change(); transactions.succeeded++; props.revision++; return true; }
@@ -100,7 +100,7 @@ function renderBrowser(view: ReturnType<typeof browser>): VNode[] {
     ...view.props, ...view, rows: view.rows.value, expanded: view.context.expanded.value,
     selectedFolder: view.context.selectedFolder.value, selectedDefinition: view.context.selectedDefinition.value,
     dropHint: view.context.dropHint.value, isFiltered: Boolean(view.props.search), results: view.index.search(view.props.search),
-    allTags: [], moreOpen: false, tagManager: false, folderMenu: undefined, dialog: undefined,
+    allTags: [...view.index.tags.values()], filters: view.context.filters.value, filtersOpen: false, folderMenu: undefined, dialog: undefined,
     endDrag: view.endDrag, emit: view.context.emit,
   }, []));
 }
@@ -313,4 +313,53 @@ test("移动定义表单仅在成功后同步选中定义的目录", async () =>
     assert.equal(view.context.selectedDefinition.value, "A");
     assert.equal(view.context.dialog.value === undefined, destination === "parent");
   }
+});
+
+// 侧栏只提供浏览与管理入口，避免同层排列创建、导入和分类维护操作。
+test("侧栏集中管理入口且标签筛选默认折叠", () => {
+  const view = browser();
+  view.index.addTag("战斗");
+  const nodes = renderBrowser(view);
+  const labels = nodes.filter(node => node.type === "button").map(node => typeof node.children === "string" ? node.children.trim() : "");
+  assert.ok(labels.includes("管理"));
+  assert.ok(labels.includes("▸ 标签筛选（0）"));
+  for (const text of ["新建目录", "新建定义", "导入业务定义", "管理标签"]) assert.ok(!labels.includes(text));
+  assert.equal(nodes.some(node => node.props?.["aria-label"] === "标签筛选（全部满足）"), false);
+});
+
+// 管理目录页复用原有排序，但不会触发向画布复制节点的事件。
+test("目录管理页保留分类排序且阻止画布拖入事件", () => {
+  const view = browser();
+  view.props.presentation = "directories";
+  const event = dragEvent();
+  view.startDrag(event.event, view.entry("A"));
+  assert.equal(event.transfer.effectAllowed, "move");
+  assert.equal(view.emissions.some(item => item.name === "drag"), false);
+  view.drop(dragEvent().event, view.entry("parent"));
+  assert.equal(view.index.assignments.get("A")!.folderId, "parent");
+  const nodes = renderBrowser(view);
+  assert.ok(nodes.some(node => node.props?.["aria-label"] === "当前目录操作"));
+});
+
+// 根目录的工具栏仅允许新建子目录，防止无效改名、移动或删除。
+test("目录管理根目录禁用自身修改按钮", () => {
+  const view = browser();
+  view.props.presentation = "directories";
+  view.context.selectedFolder.value = "";
+  const nodes = renderBrowser(view);
+  for (const label of ["重命名", "移动到", "删除空目录"]) {
+    const button = nodes.find(node => node.type === "button" && node.children === label)!;
+    assert.equal(button.props!.disabled, true);
+  }
+});
+
+// 标签页展示关联数量并隔离目录浏览，删除标签仍调用共享事务表单。
+test("标签管理页展示关联定义数量且不混入目录树", () => {
+  const view = browser();
+  view.props.presentation = "tags";
+  const tag = view.index.addTag("战斗");
+  view.index.setTags("A", [tag.id]);
+  const nodes = renderBrowser(view);
+  assert.ok(nodes.some(node => node.type === "small" && node.children === "1 个关联定义"));
+  assert.equal(nodes.some(node => node.props?.["aria-label"] === "业务目录树"), false);
 });
