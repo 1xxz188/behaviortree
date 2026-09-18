@@ -13,7 +13,7 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{
   create: [folderId: string]; import: [folderId: string]; manage: [];
-  add: [definition: Definition]; menu: [event: MouseEvent | KeyboardEvent, definition: Definition];
+  inspect: [definition: Definition]; menu: [event: MouseEvent | KeyboardEvent, definition: Definition];
   drag: [event: DragEvent, definition: Definition]; dragend: [];
   select: [folderId: string]; clearSearch: [];
   transfer: [operation: "copy" | "download"];
@@ -27,6 +27,7 @@ interface OrganizationDialog {
   id: string; name: string; parentId: string; entry?: CatalogEntry; tagIds: string[];
 }
 const selectedFolder = ref("");
+const selectedDefinition = ref(""); // 当前操作的定义与目录互斥高亮，新增位置仍采用其所属目录。
 const expanded = ref(new Set<string>([""]));
 const filters = ref<string[]>([]);
 const tagManager = ref(false);
@@ -75,7 +76,8 @@ const dialogTitle = computed(() => ({ create: "新建目录", rename: "重命名
 
 // 工程替换或撤销后放弃旧对象上的菜单、拖拽和弹窗，修复失效筛选。
 watch(() => props.index, () => {
-  folderMenu.value = undefined; dialog.value = undefined; dragged.value = undefined;
+  folderMenu.value = undefined; dialog.value = undefined; endDrag();
+  selectedDefinition.value = "";
   if (!props.index.folders.has(selectedFolder.value)) selectFolder("");
   expanded.value = new Set([...expanded.value].filter(id => !id || props.index.folders.has(id)));
   if (selectedFolder.value) expanded.value.add(selectedFolder.value);
@@ -90,7 +92,22 @@ watch(dialog, async value => {
 });
 
 // 选中目录只决定新增节点的默认位置，不修改工程。
-function selectFolder(id: string) { selectedFolder.value = id; emit("select", id); }
+function selectFolder(id: string) { selectedDefinition.value = ""; selectedFolder.value = id; emit("select", id); }
+// 查看或拖动定义时选中该定义，同步新增位置但不再高亮原目录。
+function selectDefinition(id: string) {
+  selectFolder(props.index.assignments.get(id)?.folderId ?? "");
+  selectedDefinition.value = id;
+}
+// 普通单击只打开定义窗口，创建画布实例继续由拖放入口负责。
+function inspectDefinition(definition: Definition) {
+  if (props.disabled) return;
+  selectDefinition(definition.id); emit("inspect", definition);
+}
+// 右键与键盘菜单也应选中正在操作的定义。
+function definitionMenu(event: MouseEvent | KeyboardEvent, definition: Definition) {
+  if (props.disabled) return;
+  selectDefinition(definition.id); emit("menu", event, definition);
+}
 // 折叠状态属于当前页面，不进入工程 JSON 或撤销栈。
 function toggleFolder(id: string) {
   const next = new Set(expanded.value);
@@ -126,7 +143,10 @@ async function submitDialog() {
       case "tag-delete": props.index.deleteTag(draft.id); filters.value = filters.value.filter(id => id !== draft.id); break;
     }
   });
-  if (ok) dialog.value = undefined;
+  if (ok) {
+    if (draft.mode === "move" && draft.entry?.kind === "definition") selectDefinition(draft.id);
+    dialog.value = undefined;
+  }
   else { await nextTick(); failure.value = props.failureMessage || "操作未完成，请修正后重试。"; }
 }
 // 空目录可直接删除，子目录和直属定义由索引常数时间判断。
@@ -152,6 +172,7 @@ async function locate(definition: Definition) {
 function startDrag(event: DragEvent, entry: CatalogEntry) {
   if (props.disabled || !event.dataTransfer) return;
   dragged.value = entry;
+  if (entry.kind === "definition") selectDefinition(entry.id); else selectFolder(entry.id);
   if (entry.kind === "definition") emit("drag", event, props.index.definitions.get(entry.id)!);
   else emit("dragend");
   event.dataTransfer.effectAllowed = entry.kind === "definition" ? "copyMove" : "move";
@@ -169,12 +190,18 @@ function dropLocation(event: DragEvent, entry?: CatalogEntry) {
   const after = ratio >= .5;
   return { folder: location.folder, before: after ? location.next : entry, hint: `${after ? "after" : "before"}:${entry.kind}:${entry.id}` };
 }
-// 只接受本组件发起的组织拖拽，搜索结果中停用目录排序。
+// 进入及悬停落点都接收本地拖拽，确保快速跨行后立即松手也有效；筛选时停用排序。
 function dragOver(event: DragEvent, entry?: CatalogEntry) {
+  event.stopPropagation(); dropHint.value = "";
   if (!dragged.value || props.disabled || isFiltered.value || !event.dataTransfer) return;
   const target = dropLocation(event, entry);
   if (dragged.value.kind === "folder" && !props.index.canMoveFolder(dragged.value.id, target.folder)) return;
-  event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = "move"; dropHint.value = target.hint;
+  event.preventDefault(); event.dataTransfer.dropEffect = "move"; dropHint.value = target.hint;
+}
+// 离开落点及其子元素后清除提示，避免空白区或无效目标残留旧排序线。
+function leaveDropTarget(event: DragEvent) {
+  const target = event.currentTarget as HTMLElement;
+  if (!(event.relatedTarget instanceof Node) || !target.contains(event.relatedTarget)) dropHint.value = "";
 }
 // 每次拖放只提交一次分类事务，嵌套落点不会冒泡重复移动。
 function drop(event: DragEvent, entry?: CatalogEntry) {
@@ -183,12 +210,16 @@ function drop(event: DragEvent, entry?: CatalogEntry) {
   event.preventDefault();
   const target = dropLocation(event, entry), source = dragged.value;
   if (source.kind === entry?.kind && source.id === entry.id) { endDrag(); return; }
-  if (props.commit(() => props.index.move(source, target.folder, target.before))) expanded.value.add(target.folder);
+  if (props.commit(() => props.index.move(source, target.folder, target.before))) {
+    expanded.value.add(target.folder);
+    if (source.kind === "definition") selectDefinition(source.id);
+  }
   endDrag();
 }
 // 菜单键盘入口和鼠标入口共享视口边界定位。
 async function openFolderMenu(event: MouseEvent | KeyboardEvent, id: string) {
   if (props.disabled) return;
+  selectFolder(id);
   menuTrigger = event.currentTarget as HTMLElement;
   const bounds = menuTrigger.getBoundingClientRect();
   folderMenu.value = { id, x: "clientX" in event ? event.clientX : bounds.left, y: "clientY" in event ? event.clientY : bounds.bottom };
@@ -241,32 +272,34 @@ onBeforeUnmount(() => { document.removeEventListener("pointerdown", outside, tru
         <button :disabled="disabled" :aria-label="`删除标签 ${tag.name}`" @click="openDialog('tag-delete', tag.id)">删除</button>
       </div>
     </div>
-    <button class="catalog-root" :class="{ selected: !selectedFolder, 'drop-inside': dropHint === 'root' }" :disabled="disabled"
-      @click="selectFolder('')" @dragover="dragOver($event)" @drop="drop($event)">▣ 根目录 <small>{{ index.definitions.size }} 个定义</small></button>
-    <p v-if="selectedFolder" class="catalog-current muted">新增位置：{{ index.folderPath(selectedFolder) }}</p>
+    <button class="catalog-root" :class="{ selected: !selectedFolder && !selectedDefinition, 'drop-inside': dropHint === 'root' }" :disabled="disabled"
+      @click="selectFolder('')" @dragenter="dragOver($event)" @dragover="dragOver($event)" @dragleave="leaveDropTarget" @drop="drop($event)">▣ 根目录 <small>{{ index.definitions.size }} 个定义</small></button>
+    <!-- 根目录也保留说明行，避免拖拽开始时切换选择导致整棵目录树跳动。 -->
+    <p class="catalog-current muted" :title="index.folderPath(selectedFolder)">新增位置：{{ index.folderPath(selectedFolder) }}</p>
     <template v-if="isFiltered">
       <div class="search-summary">{{ results.length }} 个结果 <button @click="filters = []; emit('clearSearch')">清除筛选</button></div>
       <div v-for="definition in results" :key="definition.id" class="catalog-result">
-        <button class="catalog-definition" :disabled="disabled" draggable="true" @dragstart="startDrag($event, { kind: 'definition', id: definition.id, order: 0 })" @dragend="endDrag"
-          @click="emit('add', definition)" @contextmenu.prevent.stop="emit('menu', $event, definition)" @keydown.shift.f10.prevent.stop="emit('menu', $event, definition)">
+        <button class="catalog-definition" :class="{ selected: selectedDefinition === definition.id }" :disabled="disabled" draggable="true" @dragstart="startDrag($event, { kind: 'definition', id: definition.id, order: 0 })" @dragend="endDrag"
+          @click="inspectDefinition(definition)" @contextmenu.prevent.stop="definitionMenu($event, definition)" @keydown.shift.f10.prevent.stop="definitionMenu($event, definition)">
           <span>{{ definition.kind === 'action' ? '▶' : '?' }}</span><span><b>{{ definition.name }}</b><small>{{ definition.goName }}</small></span>
         </button>
         <div class="result-path"><span>{{ index.definitionPath(definition.id) || '根目录' }}</span><button @click="locate(definition)">定位</button></div>
       </div>
       <p v-if="!results.length" class="muted">没有符合条件的业务定义。</p>
     </template>
-    <div v-else class="catalog-tree" aria-label="业务目录树">
+    <div v-else class="catalog-tree" :class="{ 'drop-end': dropHint === 'root' }" aria-label="业务目录树"
+      @dragenter="dragOver($event)" @dragover="dragOver($event)" @dragleave="leaveDropTarget" @drop="drop($event)">
       <div v-for="row in rows" :key="`${row.entry.kind}:${row.entry.id}`" class="catalog-row"
         :class="{ 'drop-before': dropHint === `before:${row.entry.kind}:${row.entry.id}`, 'drop-after': dropHint === `after:${row.entry.kind}:${row.entry.id}`, 'drop-inside': row.entry.kind === 'folder' && dropHint === `in:${row.entry.id}` }"
-        :style="{ paddingLeft: `${Math.min(row.depth, 10) * 12}px` }" @dragover="dragOver($event, row.entry)" @drop="drop($event, row.entry)">
-        <button v-if="row.entry.kind === 'folder'" class="catalog-folder" :class="{ selected: selectedFolder === row.entry.id }" :disabled="disabled"
+        :style="{ paddingLeft: `${Math.min(row.depth, 10) * 12}px` }" @dragenter="dragOver($event, row.entry)" @dragover="dragOver($event, row.entry)" @dragleave="leaveDropTarget" @drop="drop($event, row.entry)">
+        <button v-if="row.entry.kind === 'folder'" class="catalog-folder" :class="{ selected: !selectedDefinition && selectedFolder === row.entry.id }" :disabled="disabled"
           :aria-expanded="expanded.has(row.entry.id)" draggable="true" @dragstart="startDrag($event, row.entry)" @dragend="endDrag"
           @click="toggleFolder(row.entry.id)" @contextmenu.prevent.stop="openFolderMenu($event, row.entry.id)" @keydown.shift.f10.prevent.stop="openFolderMenu($event, row.entry.id)">
           <span>{{ expanded.has(row.entry.id) ? '▾' : '▸' }} ▰</span><b>{{ index.folders.get(row.entry.id)!.name }}</b>
         </button>
-        <button v-else :id="`catalog-definition-${row.entry.id}`" class="catalog-definition" :disabled="disabled" draggable="true"
-          @dragstart="startDrag($event, row.entry)" @dragend="endDrag" @click="emit('add', index.definitions.get(row.entry.id)!)"
-          @contextmenu.prevent.stop="emit('menu', $event, index.definitions.get(row.entry.id)!)" @keydown.shift.f10.prevent.stop="emit('menu', $event, index.definitions.get(row.entry.id)!)">
+        <button v-else :id="`catalog-definition-${row.entry.id}`" class="catalog-definition" :class="{ selected: selectedDefinition === row.entry.id }" :disabled="disabled" draggable="true"
+          @dragstart="startDrag($event, row.entry)" @dragend="endDrag" @click="inspectDefinition(index.definitions.get(row.entry.id)!)"
+          @contextmenu.prevent.stop="definitionMenu($event, index.definitions.get(row.entry.id)!)" @keydown.shift.f10.prevent.stop="definitionMenu($event, index.definitions.get(row.entry.id)!)">
           <span>{{ index.definitions.get(row.entry.id)!.kind === 'action' ? '▶' : '?' }}</span>
           <span><b>{{ index.definitions.get(row.entry.id)!.name }}</b><small>{{ index.definitions.get(row.entry.id)!.goName }}</small></span>
         </button>
@@ -308,15 +341,18 @@ onBeforeUnmount(() => { document.removeEventListener("pointerdown", outside, tru
 .catalog-root, .catalog-folder, .catalog-definition { display: flex; align-items: center; gap: 7px; width: 100%; text-align: left; border: 1px solid transparent; }
 .catalog-root { justify-content: space-between; margin-top: 8px; background: #14202a; }
 .catalog-root small, .catalog-current { font-size: 10px; }
+.catalog-current { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .catalog-folder { padding: 8px 5px; background: transparent; color: #d7dfe5; }
 .catalog-folder b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
-.selected { border-color: #54b6ae; background: #213a41; }
 .catalog-definition { background: #2b404c; padding: 7px; margin: 3px 0; min-height: 43px; }
 .catalog-definition > span:first-child { color: #85baff; font-size: 19px; }
 .catalog-definition > span:last-child { min-width: 0; }
 .catalog-definition b, .catalog-definition small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .catalog-definition b { font-size: 12px; font-weight: 500; }
 .catalog-definition small { font-size: 10px; color: #9cabb8; }
+.selected { border-color: #54b6ae; background: #213a41; }
+.catalog-tree { position: relative; min-height: 80px; padding-bottom: 40px; }
+.catalog-tree.drop-end::after { content: ""; position: absolute; bottom: 38px; left: 0; right: 0; border-top: 2px solid #68dfc6; pointer-events: none; }
 .catalog-row { border-top: 2px solid transparent; border-bottom: 2px solid transparent; }
 .drop-before { border-top-color: #68dfc6; }
 .drop-after { border-bottom-color: #68dfc6; }

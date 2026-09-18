@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, shallowRef, watch } from "vue";
 import CatalogManager from "./CatalogManager.vue";
 import CatalogBrowser from "./CatalogBrowser.vue";
+import NodeHelpDialog from "./NodeHelpDialog.vue";
 import CatalogCopyDialog from "./CatalogCopyDialog.vue";
 import { CatalogOrganizationIndex } from "./catalogOrganization";
 import { validatedCatalogJSON } from "./catalogTransfer";
@@ -98,6 +99,7 @@ const nodeIDDraft = ref(selected.value); // 节点身份草稿，显式应用前
 const codeNameDraft = ref(""); // 代码名草稿仅在显式应用后写入工程。
 const codeNameError = ref(""); // 代码名格式或树内占用校验结果。
 const inspectorOpen = ref(false);
+const nodeHelp = ref<NodeType>(); // 库节点的说明窗口独立于画布选择和工程历史。
 const search = ref("");
 const fileName = ref(""); // 仅表示当前工作目录内已成功打开或保存的文件。
 const suggestedName = ref("project.json"); // 新建及导入只提供首次保存建议。
@@ -1510,19 +1512,20 @@ onUnmounted(() => toolLifecycle.abort());
             :title="info.help"
             @dragstart="startPaletteDrag($event, type)"
             @dragend="endPaletteDrag"
-            @click="addNode(type)"
+            :disabled="workspaceChanging"
+            @click="nodeHelp = type"
           >
             <span :class="['kind-icon', info.color]">{{ info.icon }}</span
             ><span
               >{{ info.label }}<small>{{ type }}</small></span
-            ><span class="add-sign">＋</span>
+            ><span class="add-sign" aria-hidden="true">ⓘ</span>
           </button>
         </div>
         <CatalogBrowser ref="catalogBrowser" :index="catalogIndex" :revision="catalogRevision" :search="search"
           :disabled="workspaceChanging" :commit="commitCatalogOrganization" :failure-message="error ? message : ''"
           @select="catalogFolder = $event" @clear-search="search = ''"
           @create="manageCatalog('create', false, $event)" @import="manageCatalog('import', false, $event)" @manage="manageCatalog('manage')"
-          @add="addNode($event.kind, $event.id)" @menu="openCatalogMenu"
+          @inspect="editCatalogDefinition" @menu="openCatalogMenu"
           @drag="(event, definition) => startPaletteDrag(event, definition.kind, definition.id)" @dragend="endPaletteDrag"
           @transfer="transferCatalog($event)" />
       </template>
@@ -2043,6 +2046,7 @@ onUnmounted(() => toolLifecycle.abort());
       hidden
       @change="importProject"
     />
+    <NodeHelpDialog v-if="nodeHelp" :type="nodeHelp" @close="nodeHelp = undefined" />
     <CatalogManager v-if="catalogDialog" :catalog="project.catalog" :initial-mode="catalogDialog.mode" :initial-kind="catalogDialog.kind"
       :initial-definition="catalogDialog.definition"
       @apply="applyCatalog" @close="catalogDialog = undefined" />
