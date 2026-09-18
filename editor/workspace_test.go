@@ -76,7 +76,7 @@ func TestDirectoryBrowseDoesNotSwitchOrRecurse(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, path := range []string{filepath.Join(target, "top.json"), filepath.Join(child, "nested.json"), filepath.Join(target, "notes.txt")} {
-		if err := os.WriteFile(path, []byte(`{"schemaVersion":1,"trees":[{"id":"main","nodes":[]}]}`), 0644); err != nil {
+		if err := os.WriteFile(path, []byte(`{"schemaVersion":2,"trees":[{"id":"main","nodes":[]}]}`), 0644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -197,7 +197,7 @@ func TestSaveAsOverwriteAndFailureKeepWorkspace(t *testing.T) {
 		Path string // 待调用接口。
 		Body any    // 必须失败的请求。
 	}{
-		{"/api/project", map[string]any{"name": "invalid.json", "directory": target, "project": map[string]any{"schemaVersion": 1, "trees": []any{}}}},
+		{"/api/project", map[string]any{"name": "invalid.json", "directory": target, "project": map[string]any{"schemaVersion": 2, "trees": []any{}}}},
 		{"/api/workspace", map[string]any{"directory": filepath.Join(target, "missing")}},
 		{"/api/workspace", map[string]any{"directory": filepath.Join(target, "existing.json")}},
 		{"/api/project", map[string]any{"name": "invalid.json", "directory": filepath.Join(target, "existing.json"), "project": p}},

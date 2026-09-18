@@ -1,6 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, shallowRef, watch } from "vue";
 import CatalogManager from "./CatalogManager.vue";
+import CatalogBrowser from "./CatalogBrowser.vue";
+import CatalogCopyDialog from "./CatalogCopyDialog.vue";
+import { CatalogOrganizationIndex } from "./catalogOrganization";
+import { validatedCatalogJSON } from "./catalogTransfer";
 import { synchronizeCatalog } from "./catalogSync";
 import SourceViewer from "./SourceViewer.vue";
 import ProjectDialog from "./ProjectDialog.vue";
@@ -72,6 +76,18 @@ class RequestError extends Error {
 }
 
 const project = ref<Project>(blankProject());
+const catalogIndex = shallowRef(new CatalogOrganizationIndex(project.value)); // 分类缓存不扫描行为树。
+const catalogRevision = ref(0); // 组织索引原地修改后的界面修订。
+const catalogFolder = ref(""); // 新建和导入定义的默认目标目录。
+const catalogBrowser = ref<InstanceType<typeof CatalogBrowser>>(); // 菜单到组织表单的入口。
+const catalogCopy = ref<string>(); // 剪贴板不可用时展示可手动复制的文本。
+const catalogTransferBusy = ref(false); // 防止重复发起复制或下载校验。
+// 工程替换和撤销只重建一次组织索引，不深度监听每次属性编辑。
+watch(project, () => {
+  catalogIndex.value = new CatalogOrganizationIndex(project.value);
+  if (!catalogIndex.value.folders.has(catalogFolder.value)) catalogFolder.value = "";
+  catalogCopy.value = undefined;
+}, { flush: "sync" });
 // 路径末级仅供即时说明，合法性统一交由 Go 解析器校验。
 const generationPackageName = computed(() => project.value.generation.packagePath.split("/").at(-1) ?? "");
 const treeID = ref(project.value.trees[0]!.id);
@@ -141,6 +157,7 @@ const catalogDialog = ref<{
   mode: "create" | "edit" | "import" | "manage"; // 区分新建、编辑和目录操作。
   kind?: DefinitionKind; // 新建时可绑定当前节点的种类。
   definition?: Definition; // 编辑入口捕获的业务定义。
+  folderId?: string; // 打开弹窗时捕获导入或新建的目标目录。
 }>();
 const catalogMenu = shallowRef<{
   definition: Definition; // 捕获右击对象，确认时校验身份以排除过期菜单。
@@ -1090,9 +1107,59 @@ async function importProject(event: Event) {
   input.value = "";
 }
 // 从节点属性或节点库打开同一目录管理入口。
-function manageCatalog(mode: "create" | "import" | "manage", forNode = false) {
+function manageCatalog(mode: "create" | "import" | "manage", forNode = false, folderId = catalogFolder.value) {
   const kind = forNode && (node.value?.type === "action" || node.value?.type === "condition") ? node.value.type : undefined;
-  catalogDialog.value = { mode, kind };
+  catalogDialog.value = { mode, kind, folderId };
+}
+// 分类变更成功后才登记历史；校验失败保留原工程与当前表单。
+function commitCatalogOrganization(change: () => void): boolean {
+  if (workspaceChanging.value) return false;
+  const snapshot = captureSnapshot(project.value, treeID.value, selected.value);
+  try {
+    change();
+    undoStack.value.push(snapshot);
+    if (undoStack.value.length > 100) undoStack.value.shift();
+    redoStack.value = [];
+    editRevision++;
+    saveState.changed();
+    catalogRevision.value++;
+    notice("分类已更新，请保存工程");
+    return true;
+  } catch (cause) {
+    notice(cause instanceof Error ? cause.message : String(cause), true);
+    return false;
+  }
+}
+// 定义菜单的移动和标签操作使用捕获对象身份，避免作用于已替换的工程。
+function organizeCatalogDefinition(operation: "move" | "tags") {
+  const target = catalogMenu.value?.definition;
+  catalogMenu.value = undefined;
+  if (!target || workspaceChanging.value || definitionIndex.value.get(target.id) !== target) return;
+  if (operation === "move") catalogBrowser.value?.openMoveDefinition(target.id);
+  else catalogBrowser.value?.openDefinitionTags(target.id);
+}
+// 单条与全部共享服务端校验及无损 JSON，复制和下载不进入工程历史。
+async function transferCatalog(operation: "copy" | "download", target?: Definition) {
+  catalogMenu.value = undefined;
+  if (catalogTransferBusy.value || workspaceChanging.value || (target && definitionIndex.value.get(target.id) !== target)) return;
+  const definitions = target ? [target] : project.value.catalog;
+  if (!definitions.length) return;
+  const owner = project.value;
+  catalogTransferBusy.value = true;
+  try {
+    const content = await validatedCatalogJSON(clone(definitions));
+    if (project.value !== owner || workspaceChanging.value) return;
+    if (operation === "download") {
+      download(target ? "business-definition.json" : "business-definitions.json", content);
+      notice(`已导出 ${definitions.length} 个业务定义`);
+    } else {
+      try {
+        await navigator.clipboard.writeText(content);
+        if (project.value === owner && !workspaceChanging.value) notice(`已复制 ${definitions.length} 个业务定义 JSON`);
+      } catch { if (project.value === owner && !workspaceChanging.value) catalogCopy.value = content; }
+    }
+  } catch (cause) { if (project.value === owner && !workspaceChanging.value) notice(cause instanceof Error ? cause.message : String(cause), true); }
+  finally { catalogTransferBusy.value = false; }
 }
 // 鼠标和键盘菜单入口只捕获定义，不添加节点或改变画布选择。
 function openCatalogMenu(event: MouseEvent | KeyboardEvent, target: Definition) {
@@ -1123,24 +1190,31 @@ async function confirmDeleteDefinition() {
 // 目录与所有节点参数在同一撤销边界内同步，随后立即用同一快照校验整个工程。
 async function applyCatalog(catalog: Definition[], bindID?: string) {
   let resets: Diagnostic[] = [];
+  const previousIDs = new Set(project.value.catalog.map(item => item.id));
+  const nextIDs = new Set(catalog.map(item => item.id));
+  const folder = catalogDialog.value?.folderId ?? "";
   mutate(() => {
+    for (const id of previousIDs) if (!nextIDs.has(id)) catalogIndex.value.removeDefinition(id);
     if (bindID && node.value) {
       node.value.binding = bindID;
       node.value.params = {};
     }
     resets = synchronizeCatalog(project.value, catalog);
+    catalogIndex.value = new CatalogOrganizationIndex(project.value);
+    catalogIndex.value.assignNewDefinitions(catalog.filter(item => !previousIDs.has(item.id)).map(item => item.id), catalogIndex.value.folders.has(folder) ? folder : "");
+    catalogRevision.value++;
   });
   catalogDialog.value = undefined;
   const revision = semanticRevision.value;
   diagnostics.value = resets;
   showOutput("diagnostics");
-  notice(`业务目录已更新，共 ${catalog.length} 个定义；正在校验`);
+  notice(`业务定义已应用，请保存工程；共 ${catalog.length} 个定义，正在校验`);
   // 不经过文件操作的 busy 锁，避免在保存或旧校验期间更新目录时跳过本次校验。
   try {
     const result = await request<{ diagnostics: Diagnostic[] }>("/api/validate", clone(project.value));
     if (revision !== semanticRevision.value) return;
     diagnostics.value = [...resets, ...(result.diagnostics ?? [])];
-    notice(diagnostics.value.length ? `业务目录已同步，发现 ${diagnostics.value.length} 条校验提示` : "业务目录已同步，校验通过", diagnostics.value.length > 0);
+    notice(diagnostics.value.length ? `业务定义已应用，请保存工程；发现 ${diagnostics.value.length} 条校验提示` : "业务定义已应用，请保存工程；校验通过", diagnostics.value.length > 0);
   } catch (cause) {
     if (revision !== semanticRevision.value) return;
     notice(`业务目录已同步，但校验失败：${cause instanceof Error ? cause.message : String(cause)}`, true);
@@ -1444,38 +1518,13 @@ onUnmounted(() => toolLifecycle.abort());
             ><span class="add-sign">＋</span>
           </button>
         </div>
-        <div class="panel-heading small-heading">
-          Go 业务节点<button class="text-button" @click="manageCatalog('manage')">
-            管理目录
-          </button>
-        </div>
-        <p v-if="!project.catalog.length" class="muted empty-note">
-          尚无业务定义。新建定义或导入 Go 导出的目录后，即可绑定动作和条件。
-        </p>
-        <div class="binding-actions">
-          <button @click="manageCatalog('create')">新建定义</button>
-          <button @click="manageCatalog('import')">导入目录</button>
-        </div>
-        <button
-          v-for="d in project.catalog"
-          :key="d.id"
-          class="palette-node"
-          draggable="true"
-          aria-haspopup="menu"
-          @contextmenu.prevent.stop="openCatalogMenu($event, d)"
-          @keydown.shift.f10.prevent.stop="openCatalogMenu($event, d)"
-          @keydown.prevent.stop.context-menu="openCatalogMenu($event, d)"
-          @dragstart="startPaletteDrag($event, d.kind, d.id)"
-          @dragend="endPaletteDrag"
-          @click="addNode(d.kind, d.id)"
-        >
-          <span
-            :class="['kind-icon', d.kind === 'action' ? 'blue' : 'amber']"
-            >{{ d.kind === "action" ? "▶" : "◇" }}</span
-          ><span
-            >{{ d.name }}<small>{{ d.goName }}</small></span
-          >
-        </button>
+        <CatalogBrowser ref="catalogBrowser" :index="catalogIndex" :revision="catalogRevision" :search="search"
+          :disabled="workspaceChanging" :commit="commitCatalogOrganization" :failure-message="error ? message : ''"
+          @select="catalogFolder = $event" @clear-search="search = ''"
+          @create="manageCatalog('create', false, $event)" @import="manageCatalog('import', false, $event)" @manage="manageCatalog('manage')"
+          @add="addNode($event.kind, $event.id)" @menu="openCatalogMenu"
+          @drag="(event, definition) => startPaletteDrag(event, definition.kind, definition.id)" @dragend="endPaletteDrag"
+          @transfer="transferCatalog($event)" />
       </template>
       <template v-else>
         <div class="panel-heading small-heading">
@@ -1741,14 +1790,14 @@ onUnmounted(() => toolLifecycle.abort());
             </select></label
           >
           <p v-if="!bindingOptions.length" class="binding-note">
-            尚无{{ node.type === 'action' ? '动作' : '条件' }}定义。请新建业务定义或导入目录，再选择绑定。
+            尚无{{ node.type === 'action' ? '动作' : '条件' }}定义。请新建或导入业务定义，再选择绑定。
           </p>
           <p v-else-if="node.binding && (!definition || definition.kind !== node.type)" class="binding-note">
             当前绑定 {{ node.binding }} 不存在或种类不匹配，请重新选择。
           </p>
           <div class="binding-actions">
             <button @click="manageCatalog('create', true)">新建业务定义</button>
-            <button @click="manageCatalog('import', true)">导入目录</button>
+            <button @click="manageCatalog('import', true)">导入业务定义</button>
             <button @click="manageCatalog('manage', true)">管理定义</button>
             <button v-if="definition" @click="editCatalogDefinition(definition)">编辑定义</button>
             <button :disabled="busy || !project.catalog.length" @click="previewScaffold">预览业务骨架</button>
@@ -1999,7 +2048,10 @@ onUnmounted(() => toolLifecycle.abort());
       @apply="applyCatalog" @close="catalogDialog = undefined" />
     <CatalogContextMenu v-if="catalogMenu" :key="`${catalogMenu.definition.id}:${catalogMenu.x}:${catalogMenu.y}`"
       :definition="catalogMenu.definition" :x="catalogMenu.x" :y="catalogMenu.y"
-      @close="catalogMenu = undefined" @edit="editCatalogDefinition(catalogMenu.definition)" @delete="confirmDeleteDefinition" />
+      @close="catalogMenu = undefined" @edit="editCatalogDefinition(catalogMenu.definition)" @delete="confirmDeleteDefinition"
+      @move="organizeCatalogDefinition('move')" @tags="organizeCatalogDefinition('tags')"
+      @copy="transferCatalog('copy', catalogMenu.definition)" @export="transferCatalog('download', catalogMenu.definition)" />
+    <CatalogCopyDialog v-if="catalogCopy !== undefined" :content="catalogCopy" @close="catalogCopy = undefined" />
     <ProjectDialog v-if="projectDialog" :kind="projectDialog.kind" :reload="projectDialog.reload" :workspace="workspace" :suggestion="fileName || suggestedName" :files="allFiles" @close="closeProjectDialog" />
     <ImportErrorDialog v-if="importFailure" :name="importFailure.name" :message="importFailure.message" @close="importFailure = undefined" />
     <ScaffoldOverwriteDialog v-if="scaffoldOverwrite" :path="scaffoldOverwrite.path" @close="closeScaffoldOverwrite" />

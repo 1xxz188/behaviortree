@@ -14,17 +14,44 @@ export interface CatalogConflict {
 
 // 校验目录容器和唯一索引；复杂 Go 标识符与参数约束由服务端统一检查。
 export function parseCatalog(value: unknown): Definition[] {
-  if (!Array.isArray(value)) throw new Error("业务目录应为 JSON 数组");
+  if (!Array.isArray(value)) throw new Error("业务定义应为 JSON 数组，不能使用完整工程文件");
   validateCatalogTypes(value);
   const ids = new Set<string>();
   for (const item of value) {
+    rejectUnknownFields(item, definitionFields, `定义 ${item.id ?? ""}`);
     if (typeof item.id !== "string" || !item.id.trim()) throw new Error("业务定义 ID 不能为空");
     if (typeof item.name !== "string" || !item.name.trim()) throw new Error(`${item.id}：显示名称不能为空`);
     if (typeof item.goName !== "string" || !item.goName.trim()) throw new Error(`${item.id}：Go 函数名不能为空`);
     if (ids.has(item.id)) throw new Error(`目录内存在重复 ID：${item.id}`);
     ids.add(item.id);
+    for (const parameter of item.params ?? []) {
+      rejectUnknownFields(parameter, parameterFields, `${item.id} 参数 ${parameter.name ?? ""}`);
+    }
   }
   return value;
+}
+
+const definitionFields = new Set(["id", "name", "kind", "goName", "params", "events"]);
+const parameterFields = new Set(["name", "type", "comment", "default", "enum"]);
+
+// 严格限制独立定义格式，避免误把工程分类或拼错的字段静默丢弃。
+function rejectUnknownFields(value: object, fields: ReadonlySet<string>, path: string): void {
+  for (const key of Object.keys(value)) {
+    if (!fields.has(key)) throw new Error(`${path}：不支持字段 ${key}，请仅提供业务定义声明`);
+  }
+}
+
+// 按声明字段而非输入键顺序比较；Go 的空集合省略不应产生伪冲突。
+function definitionSignature(item: Definition): string {
+  return stringifyJSON({
+    id: item.id, name: item.name, kind: item.kind, goName: item.goName,
+    params: (item.params ?? []).map(parameter => ({
+      name: parameter.name, type: parameter.type, comment: parameter.comment ?? "",
+      ...(parameter.default !== undefined ? { default: parameter.default } : {}),
+      enum: parameter.enum ?? [],
+    })),
+    events: item.events ?? [],
+  });
 }
 
 // 使用一次索引定位同 ID 变更，复杂度为 O(当前目录数 + 导入目录数)。
@@ -35,7 +62,7 @@ export function catalogConflicts(current: Definition[], incoming: Definition[]):
   const conflicts: CatalogConflict[] = [];
   for (const item of incoming) {
     const previous = existing.get(item.id);
-    if (previous && stringifyJSON(previous) !== stringifyJSON(item)) {
+    if (previous && definitionSignature(previous) !== definitionSignature(item)) {
       conflicts.push({ id: item.id, current: previous, incoming: item });
     }
   }

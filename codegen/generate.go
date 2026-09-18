@@ -767,6 +767,8 @@ func ProjectVersion(project model.Project) (string, error) {
 // normalizeProject 深拷贝并规范化集合，统一预览、产物和草稿的版本判定。
 func normalizeProject(project model.Project) (model.Project, string, error) {
 	project = model.WithCodeNames(project)
+	// 业务分类仅影响编辑器展示，不参与代码内容或生成版本。
+	project.CatalogOrganization = nil
 	// 路径使用同一规范形式参与摘要，避免 Windows 分隔符导致虚假的版本变更。
 	project.Generation.PackagePath = model.NormalizePackagePath(project.Generation.PackagePath)
 	// 经 JSON 深拷贝后规范化集合，避免修改调用者的工程或画布。

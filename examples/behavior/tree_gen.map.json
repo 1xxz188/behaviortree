@@ -1,11 +1,11 @@
 {
   "generator": "behaviortree/codegen",
-  "version": "c39a37237cb84ac5d461c3bd97423b06",
+  "version": "c9b6402a5f6ea1300d02016bdb3fffd6",
   "files": [
     {
       "name": "glue.gen.go",
       "treeId": "",
-      "sha256": "d41826c1a0792ae81538c6d1b3afb2a828cc06b276d66552b47c4a5b7bba931f"
+      "sha256": "d1fe293218ba6200eff25be771220d54bb7afc627c5621c104c952f8dc98a215"
     },
     {
       "name": "tree_main.gen.go",

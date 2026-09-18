@@ -24,6 +24,7 @@ function form() {
     parseJSON, stringifyJSON, props: {}, busy: { value: false }, mode: { value: "create" },
     incoming: { value: [] }, choices: { value: {} }, acknowledged: { value: false },
     error: { value: "" }, editingID: { value: "" }, fileLabel: { value: "" }, bindNew: { value: false },
+    importSource: { value: "paste" }, importText: { value: "" }, previewReady: { value: false }, previewValidated: { value: false },
     draft: { value: { id: "Move", name: "移动", kind: "action", goName: "Move", events: "" } },
     parameters: { value: [] as { name: string; comment: string }[] },
   };
@@ -49,7 +50,7 @@ test("目录与工程导入拒绝非字符串参数注释", () => {
   for (const comment of [null, false, 123, {}, []]) {
     const catalog = [{ id: "Move", name: "移动", kind: "action", goName: "Move", params: [{ name: "Target", type: "entity", comment }] }];
     assert.throws(() => parseCatalog(catalog), /catalog\[0\].params\[0\].comment.*字符串/);
-    assert.throws(() => validateProjectTypes({ catalog }), /catalog\[0\].params\[0\].comment.*字符串/);
+    assert.throws(() => validateProjectTypes({ schemaVersion: 2, catalog }), /catalog\[0\].params\[0\].comment.*字符串/);
   }
 });
 

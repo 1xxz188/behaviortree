@@ -94,6 +94,7 @@ function canonicalValue(value: unknown): unknown {
 // 工程集合的排序规则与生成器一致；树展示名、布局和集合原始顺序不使代码过期。
 export function semanticSignature(project: Project): string {
   const snapshot = clone(project);
+  delete snapshot.catalogOrganization; // 目录、标签和排序不改变生成语义。
   normalizeCodeNames(snapshot);
   const byID = (a: { id: string }, b: { id: string }) =>
     a.id < b.id ? -1 : a.id > b.id ? 1 : 0;

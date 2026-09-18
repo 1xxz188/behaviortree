@@ -1,5 +1,6 @@
 import { parseJSON, stringifyJSON } from "./json.ts";
 import type { DefinitionKind, NodeType, ValueType } from "./enums.ts";
+import type { CatalogOrganization } from "./catalogOrganization.ts";
 
 export interface Value {
   field?: string;
@@ -56,6 +57,7 @@ export interface Project {
   name: string;
   blackboard: Field[];
   catalog: Definition[];
+  catalogOrganization?: CatalogOrganization; // 业务定义目录、标签和排序，仅属于工程编辑元数据。
   trees: Tree[];
   generation: {
     packagePath: string; // 相对工程根目录的生成路径，使用 / 分隔，末级决定 Go 包名。
@@ -260,7 +262,7 @@ export function autoLayout(tree: Tree): void {
 // 新建工程只包含一个可编辑的根节点，示例由用户单独选择。
 export function blankProject(): Project {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     name: "未命名工程",
     blackboard: [],
     catalog: [],
@@ -299,7 +301,7 @@ export function emptyProject(): Project {
   };
   autoLayout(tree);
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     name: "巡逻行为",
     blackboard: [],
     catalog: [],

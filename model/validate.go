@@ -142,6 +142,9 @@ func Validate(p Project) []Diagnostic {
 	if p.SchemaVersion != SchemaVersion {
 		add("", "", "schemaVersion", "不支持的工程格式版本")
 	}
+	if err := ValidateCatalogOrganization(p); err != nil {
+		add("", "", "catalogOrganization", err.Error())
+	}
 	if _, err := ResolveGoPackage("", p.Generation.PackagePath); err != nil {
 		add("", "", "generation.packagePath", err.Error())
 	}

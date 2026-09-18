@@ -166,6 +166,10 @@ func normalizeDraft(p *model.Project) error {
 	if p.SchemaVersion != model.SchemaVersion {
 		return fmt.Errorf("不支持 schemaVersion %d", p.SchemaVersion)
 	}
+	if err := model.ValidateCatalogOrganization(*p); err != nil {
+		return err
+	}
+	p.CatalogOrganization = model.NormalizedCatalogOrganization(p.CatalogOrganization)
 	if len(p.Trees) == 0 {
 		return errors.New("工程至少需要一棵树")
 	}
@@ -354,6 +358,9 @@ func (s *Server) importProject(w http.ResponseWriter, r *http.Request) {
 func (s *Server) importCatalog(w http.ResponseWriter, r *http.Request) {
 	data, err := readBody(w, r)
 	var catalog []model.Definition
+	if err == nil && !bytes.HasPrefix(bytes.TrimSpace(data), []byte("[")) {
+		err = errors.New("业务定义必须为 JSON 数组，单个定义也须放入数组")
+	}
 	if err == nil {
 		decoder := json.NewDecoder(bytes.NewReader(data))
 		decoder.DisallowUnknownFields()

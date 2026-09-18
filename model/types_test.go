@@ -71,16 +71,16 @@ func TestDefinitionKindJSON(t *testing.T) {
 // TestDecodeRequiredTypes 验证缺失类型在输入边界被拒绝，而未完成拓扑仍可解码。
 func TestDecodeRequiredTypes(t *testing.T) {
 	for _, body := range []string{
-		`{"blackboard":[{"id":"f"}]}`,
-		`{"catalog":[{"id":"a"}]}`,
-		`{"catalog":[{"id":"a","kind":"action","params":[{"name":"P"}]}]}`,
-		`{"trees":[{"id":"t","nodes":[{"id":"n"}]}]}`,
+		`{"schemaVersion":2,"blackboard":[{"id":"f"}]}`,
+		`{"schemaVersion":2,"catalog":[{"id":"a"}]}`,
+		`{"schemaVersion":2,"catalog":[{"id":"a","kind":"action","params":[{"name":"P"}]}]}`,
+		`{"schemaVersion":2,"trees":[{"id":"t","nodes":[{"id":"n"}]}]}`,
 	} {
 		if _, err := Decode([]byte(body)); err == nil {
 			t.Fatalf("缺失类型未拒绝: %s", body)
 		}
 	}
-	if _, err := Decode([]byte(`{"trees":[{"id":"t","root":"missing","nodes":[{"id":"n","type":"sequence"}]}]}`)); err != nil {
+	if _, err := Decode([]byte(`{"schemaVersion":2,"trees":[{"id":"t","root":"missing","nodes":[{"id":"n","type":"sequence"}]}]}`)); err != nil {
 		t.Fatalf("未完成拓扑不能解码: %v", err)
 	}
 }

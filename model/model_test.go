@@ -2,11 +2,157 @@ package model
 
 import (
 	"encoding/json"
+	"math"
+	"reflect"
 	"strings"
 	"testing"
 
 	bt "github.com/1xxz188/behaviortree"
 )
+
+// organizationProject 构造有嵌套目录、共享标签及稀疏归属的合法工程。
+func organizationProject() Project {
+	p := Example()
+	p.Catalog = []Definition{{ID: "move", Name: "移动", Kind: DefinitionAction, GoName: "Move", Params: []Parameter{}}, {ID: "idle", Name: "空闲", Kind: DefinitionAction, GoName: "Idle", Params: []Parameter{}}}
+	p.CatalogOrganization = &CatalogOrganization{
+		Folders:     []CatalogFolder{{ID: "parent", Name: "行为", Order: -1}, {ID: "child", Name: "移动", ParentID: "parent", Order: 0.5}},
+		Tags:        []CatalogTag{{ID: "tag", Name: "常用"}},
+		Assignments: map[string]CatalogAssignment{"move": {FolderID: "child", TagIDs: []string{"tag"}, Order: 0.25}},
+	}
+	return p
+}
+
+// TestCatalogOrganizationRoundTrip 验证完整工程保留分类、稀疏归属与无损默认值，独立导出不携带分类。
+func TestCatalogOrganizationRoundTrip(t *testing.T) {
+	p := organizationProject()
+	p.Catalog[0].Params = []Parameter{{Name: "Target", Type: bt.UIntType, Default: json.RawMessage("18446744073709551615")}}
+	raw, err := Encode(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := Decode(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(decoded.CatalogOrganization, p.CatalogOrganization) {
+		t.Fatal("分类往返发生变化")
+	}
+	if _, exists := decoded.CatalogOrganization.Assignments["idle"]; exists {
+		t.Fatal("不应擅自补齐缺省归属")
+	}
+	if diagnostics := Validate(decoded); len(diagnostics) != 0 {
+		t.Fatal(diagnostics)
+	}
+	catalog, err := ExportCatalog(decoded.Catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(catalog), "catalogOrganization") || !strings.Contains(string(catalog), "18446744073709551615") {
+		t.Fatal("独立导出泄漏分类或丢失整数精度")
+	}
+	p.CatalogOrganization.Folders[0].Name = "  行为  "
+	raw, err = Encode(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err = Decode(raw)
+	if err != nil || decoded.CatalogOrganization.Folders[0].Name != "行为" || p.CatalogOrganization.Folders[0].Name != "  行为  " {
+		t.Fatalf("名称规范化应裁剪空白且不修改调用者: %v", err)
+	}
+}
+
+// TestCatalogOrganizationInvalid 验证输入、输出及公共校验均拒绝非法分类且不限制草稿拓扑。
+func TestCatalogOrganizationInvalid(t *testing.T) {
+	cases := []struct {
+		name string         // 校验场景。
+		edit func(*Project) // 注入非法分类。
+	}{
+		{"重复定义", func(p *Project) { p.Catalog = append(p.Catalog, p.Catalog[0]) }},
+		{"重复目录", func(p *Project) {
+			p.CatalogOrganization.Folders = append(p.CatalogOrganization.Folders, p.CatalogOrganization.Folders[0])
+		}},
+		{"同级重名", func(p *Project) {
+			p.CatalogOrganization.Folders = append(p.CatalogOrganization.Folders, CatalogFolder{ID: "other", Name: "  行为 "})
+		}},
+		{"大小写重名", func(p *Project) {
+			p.CatalogOrganization.Folders[0].Name = "AI"
+			p.CatalogOrganization.Folders = append(p.CatalogOrganization.Folders, CatalogFolder{ID: "other", Name: "ai"})
+		}},
+		{"空目录名", func(p *Project) { p.CatalogOrganization.Folders[0].Name = " " }},
+		{"悬空父目录", func(p *Project) { p.CatalogOrganization.Folders[0].ParentID = "missing" }},
+		{"自身环", func(p *Project) { p.CatalogOrganization.Folders[0].ParentID = "parent" }},
+		{"后代环", func(p *Project) { p.CatalogOrganization.Folders[0].ParentID = "child" }},
+		{"重复标签", func(p *Project) {
+			p.CatalogOrganization.Tags = append(p.CatalogOrganization.Tags, p.CatalogOrganization.Tags[0])
+		}},
+		{"标签重名", func(p *Project) {
+			p.CatalogOrganization.Tags = append(p.CatalogOrganization.Tags, CatalogTag{ID: "other", Name: " 常用 "})
+		}},
+		{"空标签名", func(p *Project) { p.CatalogOrganization.Tags[0].Name = " " }},
+		{"悬空定义", func(p *Project) { p.CatalogOrganization.Assignments["missing"] = CatalogAssignment{} }},
+		{"悬空归属", func(p *Project) { p.CatalogOrganization.Assignments["move"] = CatalogAssignment{FolderID: "missing"} }},
+		{"悬空标签", func(p *Project) {
+			p.CatalogOrganization.Assignments["move"] = CatalogAssignment{TagIDs: []string{"missing"}}
+		}},
+		{"重复关联", func(p *Project) {
+			p.CatalogOrganization.Assignments["move"] = CatalogAssignment{TagIDs: []string{"tag", "tag"}}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := organizationProject()
+			tc.edit(&p)
+			if err := ValidateCatalogOrganization(p); err == nil {
+				t.Fatal("公共分类校验未拒绝非法输入")
+			}
+			if _, err := Encode(p); err == nil {
+				t.Fatal("编码未拒绝非法分类")
+			}
+			raw, err := json.Marshal(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = Decode(raw); err == nil {
+				t.Fatal("解码未拒绝非法分类")
+			}
+			found := false
+			for _, diagnostic := range Validate(p) {
+				found = found || diagnostic.Field == "catalogOrganization"
+			}
+			if !found {
+				t.Fatal("未返回分类诊断")
+			}
+		})
+	}
+	for _, value := range []float64{math.Inf(1), math.Inf(-1), math.NaN()} {
+		p := organizationProject()
+		p.CatalogOrganization.Folders[0].Order = value
+		if ValidateCatalogOrganization(p) == nil {
+			t.Fatal("未拒绝非有限目录排序")
+		}
+		p = organizationProject()
+		p.CatalogOrganization.Assignments["move"] = CatalogAssignment{Order: value}
+		if ValidateCatalogOrganization(p) == nil {
+			t.Fatal("未拒绝非有限定义排序")
+		}
+	}
+}
+
+// TestSchemaVersionTwoOnly 验证新版输入拒绝旧工程，不执行隐式迁移。
+func TestSchemaVersionTwoOnly(t *testing.T) {
+	p := Example()
+	p.SchemaVersion = 1
+	raw, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = Decode(raw); err == nil {
+		t.Fatal("旧版工程被接受")
+	}
+	if _, err = Encode(p); err == nil {
+		t.Fatal("旧版工程被写出")
+	}
+}
 
 // TestRoundTrip 验证导入导出保留节点 ID、顺序和布局。
 func TestRoundTrip(t *testing.T) {

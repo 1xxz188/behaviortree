@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import type { Definition, Parameter } from "./project";
 import type { DefinitionKind, ValueType } from "./enums";
 import { valueTypes } from "./enums";
@@ -7,6 +7,7 @@ import { PARAM_TYPE_META, parameterTypeTooltip } from "./parameterTypeMeta";
 import { parseJSON, stringifyJSON } from "./json";
 import { catalogConflicts, mergeCatalog, parseCatalog } from "./catalog";
 import type { CatalogChoice } from "./catalog";
+import { validateCatalog } from "./catalogTransfer";
 
 const props = withDefaults(defineProps<{
   catalog: Definition[]; // 当前工程目录；提交成功前不修改。
@@ -40,11 +41,42 @@ const bindNew = ref(Boolean(props.initialKind));
 const error = ref("");
 const busy = ref(false);
 const fileLabel = ref("");
+const importSource = ref<"paste" | "file">("paste"); // 文件和粘贴共用同一份待解析文本。
+const importText = ref(""); // 尚未提交的原始 JSON，可反复编辑和解析。
+const previewReady = ref(false); // 只有显式解析成功后才显示预览。
+const previewValidated = ref(false); // 最终合并结果校验通过后允许应用。
+const importRevision = ref(0); // 工程或输入更新后丢弃已过期的异步校验结果。
 const dialog = ref<HTMLElement>();
 const conflictRows = computed(() => catalogConflicts(props.catalog, incoming.value));
+const previewRows = computed(() => {
+  const existing = new Set(props.catalog.map(item => item.id));
+  const conflicts = new Set(conflictRows.value.map(item => item.id));
+  return incoming.value.map(item => ({ item, status: !existing.has(item.id) ? "新增" : conflicts.has(item.id) ? "冲突" : "相同" }));
+});
+const previewCounts = computed(() => {
+  const counts = { added: 0, same: 0, conflict: 0 };
+  for (const row of previewRows.value) counts[row.status === "新增" ? "added" : row.status === "相同" ? "same" : "conflict"]++;
+  return counts;
+});
+const pendingChoices = computed(() => conflictRows.value.some(row => !choices.value[row.id]));
 const updatesExisting = computed(() => conflictRows.value.some((row) => choices.value[row.id] === "replace"));
 const dialogTitle = computed(() => mode.value === "edit" ? `编辑业务定义：${draft.value.name || editingID.value}`
-  : mode.value === "create" ? "新建业务定义" : "Go 业务节点目录"); // 标题明确区分修改已有定义和新增定义。
+  : mode.value === "create" ? "新建业务定义" : mode.value === "import" ? "导入业务定义" : "管理业务定义"); // 标题明确区分修改已有定义和新增定义。
+
+// 修改输入立即作废旧预览及确认；同步监听防止同一事件内误提交旧数据。
+watch(importText, resetPreview, { flush: "sync" });
+watch(() => props.catalog, resetPreview);
+
+// 输入或工程发生变化后，必须重新解析而不能沿用旧冲突选择。
+function resetPreview() {
+  importRevision.value++;
+  incoming.value = [];
+  choices.value = Object.create(null);
+  acknowledged.value = false;
+  previewReady.value = false;
+  previewValidated.value = false;
+  error.value = "";
+}
 
 // 切换页面时清空上次待提交内容，防止误应用其他工作页的导入。
 function changeMode(next: "create" | "edit" | "import" | "manage") {
@@ -58,6 +90,10 @@ function changeMode(next: "create" | "edit" | "import" | "manage") {
   draft.value = { id: "", name: "", kind: props.initialKind ?? "action", goName: "", events: "" };
   parameters.value = [];
   fileLabel.value = "";
+  importSource.value = "paste";
+  importText.value = "";
+  previewReady.value = false;
+  previewValidated.value = false;
   bindNew.value = Boolean(props.initialKind);
 }
 
@@ -104,23 +140,18 @@ function draftDefinition(): Definition {
   };
 }
 
-// 读取文件仅暂存目录，全部冲突处理并验证成功前不写入工程。
+// 读取文件仅填入文本，用户仍须显式解析才能预览和应用。
 async function readCatalog(event: Event) {
   const input = event.target as HTMLInputElement;
   const file = input.files?.[0];
   if (!file || busy.value) return;
   busy.value = true;
   error.value = "";
-  incoming.value = [];
-  choices.value = Object.create(null);
-  acknowledged.value = false;
+  resetPreview();
   fileLabel.value = "";
   try {
-    const parsed = parseCatalog(parseJSON(await file.text()));
-    // 先计算冲突以检测当前工程目录结构异常，再将文件放入响应式状态。
-    catalogConflicts(props.catalog, parsed);
-    incoming.value = parsed;
-    fileLabel.value = `${file.name} · ${parsed.length} 个定义`;
+    importText.value = await file.text();
+    fileLabel.value = file.name;
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : String(cause);
   } finally {
@@ -129,10 +160,56 @@ async function readCatalog(event: Event) {
   }
 }
 
+// 已有输入时禁用示例按钮，避免无提示地覆盖用户尚未解析的 JSON。
+function fillExample() {
+  if (busy.value || importText.value.trim()) return;
+  importText.value = stringifyJSON([{ id: "move_to", name: "移动到目标", kind: "action", goName: "MoveTo", params: [{ name: "Speed", type: "float64", default: 1.5, comment: "移动速度" }] }], 2);
+}
+
+// 显式解析并验证待导入数组，成功后才展示新增、相同和冲突列表。
+async function previewCatalog() {
+  if (busy.value) return;
+  resetPreview();
+  const revision = importRevision.value;
+  busy.value = true;
+  try {
+    const validated = await validateCatalog(parseCatalog(parseJSON(importText.value)));
+    if (revision !== importRevision.value) return;
+    incoming.value = validated;
+    previewReady.value = true;
+    if (!pendingChoices.value) await validatePreviewMerged();
+  } catch (cause) {
+    if (revision === importRevision.value) error.value = cause instanceof Error ? cause.message : String(cause);
+  } finally { busy.value = false; }
+}
+
+// 冲突选择全部明确后验证最终结果，跨 ID 的 Go 名冲突也会阻止应用。
+async function validatePreviewMerged() {
+  previewValidated.value = false;
+  error.value = "";
+  if (!previewReady.value || pendingChoices.value) return;
+  const revision = importRevision.value;
+  const decisions = new Map<string, CatalogChoice>();
+  for (const [id, choice] of Object.entries(choices.value)) if (choice) decisions.set(id, choice);
+  await validateCatalog(mergeCatalog(props.catalog, incoming.value, decisions));
+  if (revision === importRevision.value) previewValidated.value = true;
+}
+
+// 改变任意冲突选择使旧确认失效，并重新检查合并后约束。
+async function changeChoice() {
+  acknowledged.value = false;
+  busy.value = true;
+  try { await validatePreviewMerged(); }
+  catch (cause) { error.value = cause instanceof Error ? cause.message : String(cause); }
+  finally { busy.value = false; }
+}
+
 // 一次提交校验最终合并目录，服务端拒绝时保留表单和原工程，便于纠正。
 async function applyCatalog() {
   if (busy.value) return;
+  if (mode.value === "import" && (!previewReady.value || !previewValidated.value || pendingChoices.value || (updatesExisting.value && !acknowledged.value))) return;
   error.value = "";
+  const revision = importRevision.value;
   try {
     let candidate = incoming.value;
     const decisions = new Map<string, CatalogChoice>();
@@ -149,19 +226,13 @@ async function applyCatalog() {
     if (replaced && !acknowledged.value) throw new Error("请确认更新定义对已有绑定和手写 Go 函数的影响");
     const merged = mergeCatalog(props.catalog, candidate, decisions);
     busy.value = true;
-    const response = await fetch("/api/catalog", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: stringifyJSON(merged),
-    });
-    const result = parseJSON<unknown>(await response.text());
-    if (!response.ok) {
-      const detail = result as { error?: string };
-      throw new Error(detail?.error || `目录校验失败（${response.status}）`);
-    }
-    const validated = parseCatalog(result);
+    const validated = await validateCatalog(merged);
+    if (revision !== importRevision.value) return;
     const bindID = mode.value === "create" && !editingID.value && bindNew.value && draft.value.kind === props.initialKind
       ? candidate[0]!.id : undefined;
     emit("apply", validated, bindID);
   } catch (cause) {
+    if (mode.value === "import") previewValidated.value = false;
     error.value = cause instanceof Error ? cause.message : String(cause);
   } finally {
     busy.value = false;
@@ -189,14 +260,14 @@ onMounted(() => {
   previousFocus = document.activeElement as HTMLElement | null;
   dialog.value?.focus();
 });
-onUnmounted(() => previousFocus?.focus());
+onUnmounted(() => { importRevision.value++; previousFocus?.focus(); });
 </script>
 
 <template>
   <Teleport to="body">
     <div class="catalog-overlay" @click.self="close">
       <section ref="dialog" class="catalog-dialog" role="dialog" aria-modal="true" aria-labelledby="catalog-title" tabindex="-1" @keydown="dialogKeydown">
-        <header><div><h2 id="catalog-title">{{ dialogTitle }}</h2><p>{{ mode === 'edit' ? `正在修改已有${draft.kind === 'action' ? '动作' : '条件'}定义 · ID：${editingID}` : '声明可绑定的动作与条件，业务函数由 Go 实现。' }}</p></div><button type="button" :disabled="busy" aria-label="关闭目录管理" @click="close">关闭</button></header>
+        <header><div><h2 id="catalog-title">{{ dialogTitle }}</h2><p>{{ mode === 'edit' ? `正在修改已有${draft.kind === 'action' ? '动作' : '条件'}定义 · ID：${editingID}` : '声明可绑定的动作与条件，业务函数由 Go 实现。' }}</p></div><button type="button" :disabled="busy" aria-label="关闭业务定义管理" @click="close">关闭</button></header>
         <nav v-if="mode === 'edit'" aria-label="编辑定义导航">
           <button type="button" :disabled="busy" @click="changeMode('manage')">返回已有定义</button>
           <span>编辑定义</span>
@@ -204,7 +275,7 @@ onUnmounted(() => previousFocus?.focus());
         <nav v-else aria-label="目录操作">
           <button type="button" :class="{ active: mode === 'manage' }" :disabled="busy" @click="changeMode('manage')">已有定义（{{ catalog.length }}）</button>
           <button type="button" :class="{ active: mode === 'create' }" :disabled="busy" @click="changeMode('create')">新建业务定义</button>
-          <button type="button" :class="{ active: mode === 'import' }" :disabled="busy" @click="changeMode('import')">导入目录</button>
+          <button type="button" :class="{ active: mode === 'import' }" :disabled="busy" @click="changeMode('import')">导入业务定义</button>
         </nav>
         <div class="catalog-content">
           <div v-if="mode === 'manage'" class="catalog-existing">
@@ -234,26 +305,39 @@ onUnmounted(() => previousFocus?.focus());
             <label v-if="initialKind && !editingID && draft.kind === initialKind" class="catalog-check"><input v-model="bindNew" :disabled="busy" type="checkbox" />保存并绑定当前节点</label>
           </form>
           <div v-else class="catalog-import">
-            <p>选择 JSON 目录数组。新 ID 会追加；相同 ID 的变更由你逐项决定，现有目录中的其他定义会保留。</p>
-            <label>目录文件<input type="file" accept=".json,application/json" :disabled="busy" @change="readCatalog" /></label>
+            <p>粘贴业务定义 JSON 数组，或从文件读取。新 ID 会追加；相同 ID 的变更由你逐项决定，其他定义会保留。</p>
+            <div class="catalog-import-tools" role="group" aria-label="导入来源">
+              <button type="button" :class="{ active: importSource === 'paste' }" :disabled="busy" @click="importSource = 'paste'">粘贴 JSON</button>
+              <button type="button" :class="{ active: importSource === 'file' }" :disabled="busy" @click="importSource = 'file'">从文件读取</button>
+              <button type="button" :disabled="busy || Boolean(importText.trim())" :title="importText.trim() ? '请先清空输入，再填入示例' : '填入一个可编辑的业务定义示例'" @click="fillExample">填入示例</button>
+            </div>
+            <label v-if="importSource === 'file'">业务定义文件<input type="file" accept=".json,application/json" :disabled="busy" @change="readCatalog" /></label>
             <p v-if="fileLabel">{{ fileLabel }}</p>
-            <article v-for="row in conflictRows" :key="row.id" class="catalog-conflict">
+            <label>业务定义 JSON<textarea v-model="importText" :disabled="busy" rows="10" spellcheck="false" placeholder='[{"id":"move_to","name":"移动到目标","kind":"action","goName":"MoveTo"}]' /></label>
+            <button type="button" :disabled="busy || !importText.trim()" @click="previewCatalog">解析预览</button>
+            <section v-if="previewReady" class="catalog-preview" aria-label="导入预览">
+              <h3>新增 {{ previewCounts.added }} · 相同 {{ previewCounts.same }} · 冲突 {{ previewCounts.conflict }}</h3>
+              <p v-if="!previewRows.length" class="catalog-hint">输入数组为空，没有需要导入的定义。</p>
+              <ul><li v-for="row in previewRows" :key="row.item.id"><span>{{ row.status }}</span> {{ row.item.name }} · {{ row.item.id }} · {{ row.item.goName }}</li></ul>
+            </section>
+            <article v-for="row in previewReady ? conflictRows : []" :key="row.id" class="catalog-conflict">
               <strong>定义冲突：{{ row.id }}</strong>
               <div class="catalog-compare"><div><small>当前工程</small><pre>{{ stringifyJSON(row.current, 2) }}</pre></div><div><small>导入定义</small><pre>{{ stringifyJSON(row.incoming, 2) }}</pre></div></div>
-              <label>处理方式<select v-model="choices[row.id]" :disabled="busy" @change="acknowledged = false"><option :value="undefined" disabled>请选择处理方式</option><option value="keep">保留现有定义</option><option value="replace">使用导入定义</option></select></label>
+              <label>处理方式<select v-model="choices[row.id]" :disabled="busy" @change="changeChoice"><option :value="undefined" disabled>请选择处理方式</option><option value="keep">保留现有定义</option><option value="replace">使用导入定义</option></select></label>
             </article>
-            <p v-if="fileLabel && !conflictRows.length" class="catalog-hint">没有同 ID 变更；应用时将验证合并后的整个目录。</p>
+            <p v-if="previewReady && !conflictRows.length" class="catalog-hint">没有同 ID 变更；确认后点击“应用到工程”，再保存工程。</p>
             <div v-if="updatesExisting" class="catalog-warning"><p>更新后节点参数会按新定义同步：保留兼容绑定，删除已移除参数，重置不兼容绑定；新增参数采用默认值或保持未绑定。应用后自动校验工程，请按提示配置参数，并同步手写 Go 实现。</p><label class="catalog-check"><input v-model="acknowledged" :disabled="busy" type="checkbox" />确认使用所选导入定义更新已有绑定</label></div>
           </div>
           <p v-if="error" class="catalog-error" role="alert">{{ error }}</p>
         </div>
-        <footer><span>定义保存后，可在代码面板预览业务函数骨架。</span><button type="button" :disabled="busy" @click="close">取消</button><button v-if="mode !== 'manage'" class="catalog-primary" type="button" :disabled="busy || (mode === 'import' && !fileLabel)" @click="applyCatalog">{{ busy ? '校验中…' : mode === 'import' ? '验证并合并目录' : mode === 'edit' ? '验证并保存修改' : '验证并保存定义' }}</button></footer>
+        <footer><span>{{ mode === 'import' ? '仅在应用后修改工程；请保存工程以保留导入结果。' : '定义保存后，可在代码面板预览业务函数骨架。' }}</span><button type="button" :disabled="busy" @click="close">取消</button><button v-if="mode !== 'manage'" class="catalog-primary" type="button" :disabled="busy || (mode === 'import' && (!previewReady || !previewValidated || !incoming.length || pendingChoices || (updatesExisting && !acknowledged)))" @click="applyCatalog">{{ busy ? '校验中…' : mode === 'import' ? '应用到工程' : mode === 'edit' ? '验证并保存修改' : '验证并保存定义' }}</button></footer>
       </section>
     </div>
   </Teleport>
 </template>
 
 <style scoped>
+.catalog-import-tools{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}.catalog-import textarea{font-family:ui-monospace,monospace;font-size:12px}.catalog-preview{margin-top:20px;padding:14px;border:1px solid #385361;border-radius:8px}.catalog-preview ul{list-style:none;margin:10px 0 0;padding:0;max-height:220px;overflow:auto}.catalog-preview li{padding:5px 0;overflow-wrap:anywhere}.catalog-preview li span{color:#a3f1d9;margin-right:8px}
 .catalog-type-info{color:#94aebb;cursor:help;font-size:12px}.catalog-type-hint{line-height:1.5;overflow-wrap:anywhere}
 .catalog-overlay{position:fixed;inset:0;z-index:1000;display:grid;place-items:center;padding:24px;background:#071017b8;backdrop-filter:blur(4px);color:#d8e6ed;font:14px/1.5 system-ui,sans-serif}
 .catalog-dialog{width:min(940px,100%);max-height:calc(100dvh - 48px);display:flex;flex-direction:column;border:1px solid #365260;border-radius:14px;background:#14232d;box-shadow:0 24px 90px #0008;outline:none}

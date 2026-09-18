@@ -42,16 +42,16 @@ func TestProjectListWorkspace(t *testing.T) {
 
 	// 列表仅保留可读取的工程草稿，忽略无关配置、损坏内容、隐藏文件和目录。
 	for _, name := range []string{"z.json", "a.json", ".hidden.json", "notes.txt"} {
-		if err := os.WriteFile(filepath.Join(wantWorkspace, name), []byte(`{"schemaVersion":1,"trees":[{"id":"main","nodes":[]}]}`), 0644); err != nil {
+		if err := os.WriteFile(filepath.Join(wantWorkspace, name), []byte(`{"schemaVersion":2,"trees":[{"id":"main","nodes":[]}]}`), 0644); err != nil {
 			t.Fatal(err)
 		}
 	}
 	for name, content := range map[string]string{
 		"config.json": `{"exclude":[]}`, "broken.json": `{`, "empty.json": `{}`,
 		"version.json":   `{"schemaVersion":99,"trees":[{"id":"main"}]}`,
-		"duplicate.json": `{"schemaVersion":1,"trees":[{"id":"main"},{"id":"MAIN"}]}`,
-		"type.json":      `{"schemaVersion":1,"trees":[{"id":"main","nodes":[{"id":"n","type":"invalid"}]}]}`,
-		"trailing.json":  `{"schemaVersion":1,"trees":[{"id":"main"}]} {}`,
+		"duplicate.json": `{"schemaVersion":2,"trees":[{"id":"main"},{"id":"MAIN"}]}`,
+		"type.json":      `{"schemaVersion":2,"trees":[{"id":"main","nodes":[{"id":"n","type":"invalid"}]}]}`,
+		"trailing.json":  `{"schemaVersion":2,"trees":[{"id":"main"}]} {}`,
 	} {
 		if err := os.WriteFile(filepath.Join(wantWorkspace, name), []byte(content), 0644); err != nil {
 			t.Fatal(err)
@@ -93,7 +93,7 @@ func TestProjectListWorkspace(t *testing.T) {
 	}
 	// 外部修改后刷新必须重新判断内容：损坏的工程消失，修好的工程重新出现。
 	for name, content := range map[string]string{
-		"a.json": `{`, "broken.json": `{"schemaVersion":1,"trees":[{"id":"main","nodes":[]}]}`,
+		"a.json": `{`, "broken.json": `{"schemaVersion":2,"trees":[{"id":"main","nodes":[]}]}`,
 	} {
 		if err := os.WriteFile(filepath.Join(wantWorkspace, name), []byte(content), 0644); err != nil {
 			t.Fatal(err)

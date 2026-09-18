@@ -15,6 +15,51 @@ import (
 	"github.com/1xxz188/behaviortree/model"
 )
 
+// TestCatalogOrganizationDoesNotChangeGeneration 验证分类创建、移动、排序及标签变化不影响任何生成产物或版本。
+func TestCatalogOrganizationDoesNotChangeGeneration(t *testing.T) {
+	p := model.Example()
+	p.Catalog = []model.Definition{{ID: "move", Name: "移动", Kind: model.DefinitionAction, GoName: "Move", Params: []model.Parameter{}}}
+	before, err := Generate(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.CatalogOrganization = &model.CatalogOrganization{Folders: []model.CatalogFolder{{ID: "parent", Name: "父目录"}, {ID: "child", Name: "子目录", ParentID: "parent", Order: 1}}, Tags: []model.CatalogTag{{ID: "tag", Name: "常用"}}, Assignments: map[string]model.CatalogAssignment{"move": {FolderID: "child", TagIDs: []string{"tag"}, Order: 2}}}
+	for _, edit := range []func(){func() {}, func() {
+		p.CatalogOrganization.Folders[1].Name = "改名"
+		p.CatalogOrganization.Folders[1].ParentID = ""
+		p.CatalogOrganization.Folders[1].Order = -0.5
+	}, func() {
+		p.CatalogOrganization.Tags[0].Name = "更新标签"
+		p.CatalogOrganization.Assignments["move"] = model.CatalogAssignment{Order: 8}
+	}, func() { p.CatalogOrganization = nil }} {
+		edit()
+		input, err := model.Encode(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		after, err := Generate(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		version, err := ProjectVersion(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if version != before.Version || !reflect.DeepEqual(before, after) {
+			t.Fatal("分类编辑改变生成内容、映射或版本")
+		}
+		output, err := model.Encode(p)
+		if err != nil || string(input) != string(output) {
+			t.Fatal("生成修改了调用者分类数据")
+		}
+	}
+	p.Catalog[0].Name = "业务声明变化"
+	version, err := ProjectVersion(p)
+	if err != nil || version == before.Version {
+		t.Fatal("真实业务声明变化未改变版本")
+	}
+}
+
 // TestStableNativeSource 验证画布与集合排列不改变生成控制流，且映射定位实际 Go 函数。
 func TestStableNativeSource(t *testing.T) {
 	p := model.Example()
@@ -162,7 +207,7 @@ func fixtureProject() model.Project {
 	tree := func(id string, nodes ...model.Node) model.Tree {
 		return model.Tree{ID: id, Name: id, Root: nodes[0].ID, Nodes: nodes}
 	}
-	p := model.Project{SchemaVersion: 1, Name: "generated runtime tests", Generation: model.Generation{PackagePath: "generated", ContextType: "*testContext"}, Blackboard: []model.Field{{ID: "enabled", Name: "Enabled", Type: bt.BoolType}}, Catalog: []model.Definition{{ID: "ok", Name: "成功", Kind: model.DefinitionAction, GoName: "Pass", Params: []model.Parameter{{Name: "Label", Type: bt.StringType}}}, {ID: "fail", Name: "失败", Kind: model.DefinitionAction, GoName: "Fail", Params: []model.Parameter{{Name: "Label", Type: bt.StringType}}}, {ID: "hold", Name: "异步", Kind: model.DefinitionAction, GoName: "Hold", Params: []model.Parameter{{Name: "Label", Type: bt.StringType}}, Events: []string{"resume"}}, {ID: "flaky", Name: "重试", Kind: model.DefinitionAction, GoName: "Flaky", Params: []model.Parameter{{Name: "Label", Type: bt.StringType}}}, {ID: "gate", Name: "条件", Kind: model.DefinitionCondition, GoName: "Gate", Params: []model.Parameter{{Name: "Flag", Type: bt.BoolType}}}}}
+	p := model.Project{SchemaVersion: model.SchemaVersion, Name: "generated runtime tests", Generation: model.Generation{PackagePath: "generated", ContextType: "*testContext"}, Blackboard: []model.Field{{ID: "enabled", Name: "Enabled", Type: bt.BoolType}}, Catalog: []model.Definition{{ID: "ok", Name: "成功", Kind: model.DefinitionAction, GoName: "Pass", Params: []model.Parameter{{Name: "Label", Type: bt.StringType}}}, {ID: "fail", Name: "失败", Kind: model.DefinitionAction, GoName: "Fail", Params: []model.Parameter{{Name: "Label", Type: bt.StringType}}}, {ID: "hold", Name: "异步", Kind: model.DefinitionAction, GoName: "Hold", Params: []model.Parameter{{Name: "Label", Type: bt.StringType}}, Events: []string{"resume"}}, {ID: "flaky", Name: "重试", Kind: model.DefinitionAction, GoName: "Flaky", Params: []model.Parameter{{Name: "Label", Type: bt.StringType}}}, {ID: "gate", Name: "条件", Kind: model.DefinitionCondition, GoName: "Gate", Params: []model.Parameter{{Name: "Flag", Type: bt.BoolType}}}}}
 	p.Catalog = append(p.Catalog, model.Definition{ID: "enumWrite", Name: "枚举写入", Kind: model.DefinitionAction, GoName: "WriteEnum", Params: []model.Parameter{{Name: "Label", Type: bt.StringType}}})
 	p.Trees = []model.Tree{
 		tree("enumValid", action("root", "enumWrite", "move")),

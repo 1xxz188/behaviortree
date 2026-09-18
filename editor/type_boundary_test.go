@@ -25,7 +25,7 @@ func TestEditorTypeBoundaries(t *testing.T) {
 			if value != "missing" {
 				item[key] = value
 			}
-			p := map[string]any{"schemaVersion": 1, "generation": map[string]any{"packagePath": "behavior", "contextType": "any"}, "trees": []any{map[string]any{"id": "t", "root": "root", "nodes": []any{map[string]any{"id": "root", "type": "wait"}}}}}
+			p := map[string]any{"schemaVersion": 2, "generation": map[string]any{"packagePath": "behavior", "contextType": "any"}, "trees": []any{map[string]any{"id": "t", "root": "root", "nodes": []any{map[string]any{"id": "root", "type": "wait"}}}}}
 			switch target {
 			case "node":
 				p["trees"] = []any{map[string]any{"id": "t", "nodes": []any{item}}}

@@ -11,6 +11,10 @@ const emit = defineEmits<{
   close: []; // 取消或点击菜单外部。
   edit: []; // 打开目标定义的编辑表单。
   delete: []; // 仅在二次确认后提交删除。
+  move: []; // 打开目录选择，不影响画布实例。
+  tags: []; // 编辑工程内多标签关联。
+  copy: []; // 复制单条定义的 JSON 数组。
+  export: []; // 下载单条定义的 JSON 文件。
 }>();
 const confirming = ref(false); // 删除确认与菜单互斥显示。
 const menu = ref<HTMLElement>(); // 浮层菜单，用于定位和键盘导航。
@@ -43,6 +47,11 @@ function edit() {
   restoreFocus = false;
   emit("edit");
 }
+// 分类表单接管焦点，卸载菜单时不再抢回原节点。
+function organize(action: "move" | "tags") {
+  restoreFocus = false;
+  if (action === "move") emit("move"); else emit("tags");
+}
 
 // 只在菜单阶段响应外部点击，确认框由原生模态行为保护。
 function onOutsidePointer(event: PointerEvent) {
@@ -51,7 +60,7 @@ function onOutsidePointer(event: PointerEvent) {
   emit("close");
 }
 
-// 方向键选择两个菜单项，Escape 关闭，Tab 返回页面导航。
+// 方向键选择菜单项，Escape 关闭，Tab 返回页面导航。
 function onMenuKeydown(event: KeyboardEvent) {
   if (event.key === "Escape" || event.key === "Tab") {
     if (event.key === "Escape") event.preventDefault();
@@ -88,6 +97,10 @@ onBeforeUnmount(() => {
     <div v-if="!confirming" ref="menu" class="catalog-context-menu" role="menu" aria-label="业务定义菜单"
       :style="{ left: `${position.left}px`, top: `${position.top}px` }" @contextmenu.prevent @keydown.stop="onMenuKeydown">
       <button type="button" role="menuitem" @click="edit">编辑定义</button>
+      <button type="button" role="menuitem" @click="organize('move')">移动到</button>
+      <button type="button" role="menuitem" @click="organize('tags')">设置标签</button>
+      <button type="button" role="menuitem" @click="emit('copy')">复制定义 JSON</button>
+      <button type="button" role="menuitem" @click="emit('export')">导出定义 JSON</button>
       <button type="button" role="menuitem" class="delete-action" @click="requestDelete">删除</button>
     </div>
     <dialog v-else ref="dialog" class="project-dialog" aria-labelledby="catalog-delete-title" @keydown.stop @cancel.prevent="emit('close')">

@@ -15,6 +15,86 @@ import (
 	"github.com/1xxz188/behaviortree/model"
 )
 
+// TestCatalogOrganizationBoundaries 验证分类保存重开、导入和非法保存的原子拒绝行为。
+func TestCatalogOrganizationBoundaries(t *testing.T) {
+	dir := t.TempDir()
+	s, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	p := model.Example()
+	p.Catalog = []model.Definition{{ID: "move", Name: "移动", Kind: model.DefinitionAction, GoName: "Move", Params: []model.Parameter{}}}
+	p.CatalogOrganization = &model.CatalogOrganization{Folders: []model.CatalogFolder{{ID: "folder", Name: "移动"}}, Tags: []model.CatalogTag{{ID: "tag", Name: "常用"}}, Assignments: map[string]model.CatalogAssignment{"move": {FolderID: "folder", TagIDs: []string{"tag"}, Order: 3}}}
+	w := callEditor(t, s, "POST", "/api/project", map[string]any{"name": "organized.json", "project": p})
+	if w.Code != 200 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	baseline, err := os.ReadFile(filepath.Join(dir, "organized.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, endpoint := range []string{"read", "import"} {
+		if endpoint == "read" {
+			w = callEditor(t, s, "GET", "/api/project?name=organized.json", nil)
+		} else {
+			w = callEditor(t, s, "POST", "/api/import", p)
+		}
+		loaded, err := model.Decode(w.Body.Bytes())
+		if err != nil || w.Code != 200 || loaded.CatalogOrganization.Assignments["move"].FolderID != "folder" {
+			t.Fatalf("分类往返失败: %s %v", w.Body.String(), err)
+		}
+	}
+	// 不合法目录引用和旧格式都不能覆盖已有文件。
+	for _, oldVersion := range []bool{false, true} {
+		invalid := p
+		if oldVersion {
+			invalid.SchemaVersion = 1
+		} else {
+			invalid.CatalogOrganization = &model.CatalogOrganization{Folders: []model.CatalogFolder{{ID: "bad", Name: "非法", ParentID: "missing"}}}
+		}
+		if err := normalizeDraft(&invalid); err == nil {
+			t.Fatal("草稿边界未拒绝非法分类或版本")
+		}
+		w = callEditor(t, s, "POST", "/api/import", invalid)
+		if w.Code != 400 {
+			t.Fatal(w.Code, w.Body.String())
+		}
+		w = callEditor(t, s, "POST", "/api/project", map[string]any{"name": "organized.json", "project": invalid})
+		if w.Code != 400 {
+			t.Fatal(w.Code, w.Body.String())
+		}
+		after, err := os.ReadFile(filepath.Join(dir, "organized.json"))
+		if err != nil || !bytes.Equal(baseline, after) {
+			t.Fatal("失败保存覆盖了原工程")
+		}
+	}
+}
+
+// TestCatalogImportRequiresArrayAndRoundTrips 验证文件与粘贴共用的数组入口保持精度并拒绝错误载体。
+func TestCatalogImportRequiresArrayAndRoundTrips(t *testing.T) {
+	s, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	definitions := []model.Definition{{ID: "move", Name: "移动", Kind: model.DefinitionAction, GoName: "Move", Params: []model.Parameter{{Name: "Target", Type: bt.UIntType, Default: json.RawMessage("18446744073709551615")}}}}
+	raw, err := model.ExportCatalog(definitions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := callEditor(t, s, "POST", "/api/catalog", json.RawMessage(raw))
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "18446744073709551615") {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	for _, input := range []any{nil, model.Example(), definitions[0], json.RawMessage("null"), json.RawMessage(`[{"id":"move","name":"移动","kind":"action","goName":"Move","params":[]},{"id":"move","name":"重复","kind":"action","goName":"Other","params":[]}]`)} {
+		w = callEditor(t, s, "POST", "/api/catalog", input)
+		if w.Code != 400 {
+			t.Fatal("应拒绝非数组或重复ID", w.Code, w.Body.String())
+		}
+	}
+}
+
 // callEditor 模拟浏览器从同源发起的本地 JSON 请求。
 func callEditor(t *testing.T, s *Server, method, path string, body any) *httptest.ResponseRecorder {
 	t.Helper()
@@ -175,7 +255,7 @@ func TestEditorStrictImport(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	for _, raw := range []string{`{"schemaVersion":1,"unknown":true}`, `{} {}`, `{"schemaVersion":1,"trees":[]}`} {
+	for _, raw := range []string{`{"schemaVersion":2,"unknown":true}`, `{} {}`, `{"schemaVersion":2,"trees":[]}`} {
 		r := httptest.NewRequest("POST", "http://localhost:8791/api/import", strings.NewReader(raw))
 		r.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()

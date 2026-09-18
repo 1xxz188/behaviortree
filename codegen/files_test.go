@@ -139,7 +139,7 @@ func TestUnrelatedTreeChangesKeepSourcesStable(t *testing.T) {
 
 // TestCallerStructureDoesNotRenameSharedInstances 验证调用方普通结构调整保留引用链身份，增加引用只增加新实例。
 func TestCallerStructureDoesNotRenameSharedInstances(t *testing.T) {
-	p := model.Project{SchemaVersion: 1, Name: "引用链", Generation: model.Generation{PackagePath: "generated", ContextType: "any"}, Trees: []model.Tree{
+	p := model.Project{SchemaVersion: model.SchemaVersion, Name: "引用链", Generation: model.Generation{PackagePath: "generated", ContextType: "any"}, Trees: []model.Tree{
 		{ID: "caller", Root: "root", Nodes: []model.Node{{ID: "root", Type: model.NodeSequence, Children: []string{"call", "wait"}}, {ID: "call", Type: model.NodeSubtree, Tree: "shared"}, {ID: "wait", Type: model.NodeWait}}},
 		{ID: "shared", Root: "root", Nodes: []model.Node{{ID: "root", Type: model.NodeWait}}},
 	}}

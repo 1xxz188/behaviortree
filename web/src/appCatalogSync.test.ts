@@ -8,6 +8,7 @@ import type { Definition, Diagnostic } from "./project.ts";
 import { parseJSON, stringifyJSON } from "./json.ts";
 import { GenerationRequests } from "./generation.ts";
 import { synchronizeCatalog } from "./catalogSync.ts";
+import { CatalogOrganizationIndex } from "./catalogOrganization.ts";
 
 // 抽取真实目录提交入口，避免只测试与界面脱节的同步辅助函数。
 const source = readFileSync(new URL("./App.vue", import.meta.url), "utf8").split('<script setup lang="ts">')[1]!.split("</script>")[0]!;
@@ -31,7 +32,8 @@ function editor() {
   project.value.trees[0]!.root = "1";
   const calls: { path: string; body: any }[] = [];
   const context = {
-    Error, clone, parseJSON, stringifyJSON, project, synchronizeCatalog,
+    Error, clone, parseJSON, stringifyJSON, project, synchronizeCatalog, CatalogOrganizationIndex,
+    catalogIndex: { value: new CatalogOrganizationIndex(project.value) }, catalogRevision: { value: 0 },
     node: { value: project.value.trees[0]!.nodes[0]! },
     catalogDialog: { value: {} as unknown }, diagnostics: { value: [] as Diagnostic[] },
     semanticRevision: { value: 0 }, generationRequests: new GenerationRequests(),
@@ -117,4 +119,58 @@ test("不兼容类型重置提示与新 Schema 校验结果一起显示", async 
   await apply([updated]);
   assert.equal(Object.hasOwn(context.node.value.params!, "Target"), false);
   assert.match(context.diagnostics.value[0]!.message, /int64 → bool.*旧绑定不兼容.*未绑定参数/);
+});
+
+// 新定义进入打开导入窗口时捕获的目录，已有定义分类不受当前目标影响。
+test("导入新增定义放入目标目录且不改变已有定义归属", async () => {
+  const { context, apply } = editor();
+  context.catalogIndex.value.addFolder("业务", "", "business");
+  context.catalogDialog.value = { folderId: "business" };
+  const added: Definition = { id: "Move", name: "移动", kind: "action", goName: "Move" };
+  await apply([...context.project.value.catalog, added]);
+  assert.equal(context.catalogIndex.value.assignments.get("Move")!.folderId, "business");
+  assert.deepEqual(context.catalogIndex.value.assignments.get("Move")!.tagIds, []);
+  assert.equal(context.catalogIndex.value.assignments.get("Check")!.folderId, "");
+  assert.equal(context.catalogRevision.value, 1);
+  assert.equal(context.catalogDialog.value, undefined);
+  assert.match(context.message.value, /已应用，请保存工程/);
+});
+
+// 同 ID 替换只更新业务声明，稳定分类、标签和排序不被导入目标覆盖。
+test("同 ID 更新保留目录标签及排序", async () => {
+  const { context, updated, apply } = editor();
+  context.catalogIndex.value.addFolder("原目录", "", "original");
+  context.catalogIndex.value.addFolder("导入目录", "", "destination");
+  context.catalogIndex.value.addTag("共享", "shared");
+  context.catalogIndex.value.move({ kind: "definition", id: "Check" }, "original");
+  context.catalogIndex.value.setTags("Check", ["shared"]);
+  const assignment = stringifyJSON(context.project.value.catalogOrganization!.assignments.Check);
+  context.catalogDialog.value = { folderId: "destination" };
+  await apply([updated]);
+  assert.equal(stringifyJSON(context.project.value.catalogOrganization!.assignments.Check), assignment);
+  assert.equal(context.catalogIndex.value.tagMembers.get("shared")!.has("Check"), true);
+});
+
+// 删除定义应同时清理持久化归属与标签倒排索引，保留画布失效引用供诊断。
+test("删除定义清理分类关联且保留画布引用诊断入口", async () => {
+  const { context, calls, apply } = editor();
+  context.catalogIndex.value.addFolder("业务", "", "business");
+  context.catalogIndex.value.addTag("共享", "shared");
+  context.catalogIndex.value.move({ kind: "definition", id: "Check" }, "business");
+  context.catalogIndex.value.setTags("Check", ["shared"]);
+  await apply([]);
+  assert.equal(Object.hasOwn(context.project.value.catalogOrganization!.assignments, "Check"), false);
+  assert.equal(context.catalogIndex.value.assignments.has("Check"), false);
+  assert.equal(context.catalogIndex.value.tagMembers.get("shared")!.size, 0);
+  assert.equal(context.catalogIndex.value.isFolderEmpty("business"), true);
+  assert.equal(context.node.value.binding, "Check");
+  assert.equal(calls.length, 1);
+});
+
+// 捕获目标被移除时回退根目录，不把定义写入不存在的目录。
+test("目标目录失效时新增定义归根目录", async () => {
+  const { context, apply } = editor();
+  context.catalogDialog.value = { folderId: "removed" };
+  await apply([...context.project.value.catalog, { id: "Move", name: "移动", kind: "action", goName: "Move" }]);
+  assert.equal(context.catalogIndex.value.assignments.get("Move")!.folderId, "");
 });

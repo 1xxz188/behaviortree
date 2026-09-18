@@ -6,21 +6,24 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
+	"strings"
 
 	bt "github.com/1xxz188/behaviortree"
 )
 
 // SchemaVersion 是当前支持的工程格式版本。
-const SchemaVersion = 1
+const SchemaVersion = 2
 
 // Project 是可独立导入、导出的行为树工程；布局不参与运行语义。
 type Project struct {
-	SchemaVersion int          `json:"schemaVersion"` // 格式版本。
-	Name          string       `json:"name"`          // 工程显示名称。
-	Blackboard    []Field      `json:"blackboard"`    // 全工程共享的黑板布局。
-	Catalog       []Definition `json:"catalog"`       // Go 业务节点目录。
-	Trees         []Tree       `json:"trees"`         // 可独立启动或引用的树。
-	Generation    Generation   `json:"generation"`    // Go 生成目标。
+	SchemaVersion       int                  `json:"schemaVersion"`                 // 格式版本。
+	Name                string               `json:"name"`                          // 工程显示名称。
+	Blackboard          []Field              `json:"blackboard"`                    // 全工程共享的黑板布局。
+	Catalog             []Definition         `json:"catalog"`                       // Go 业务节点目录。
+	CatalogOrganization *CatalogOrganization `json:"catalogOrganization,omitempty"` // 仅用于编辑器分类的目录、标签与归属。
+	Trees               []Tree               `json:"trees"`                         // 可独立启动或引用的树。
+	Generation          Generation           `json:"generation"`                    // Go 生成目标。
 }
 
 // Generation 指定手写节点与生成代码所在的同一个 Go 包。
@@ -116,12 +119,26 @@ func Decode(data []byte) (Project, error) {
 	if err := validateDecodedTypes(p); err != nil {
 		return p, err
 	}
+	if p.SchemaVersion != SchemaVersion {
+		return p, fmt.Errorf("不支持 schemaVersion %d，仅支持版本 %d", p.SchemaVersion, SchemaVersion)
+	}
+	if err := ValidateCatalogOrganization(p); err != nil {
+		return p, err
+	}
+	p.CatalogOrganization = NormalizedCatalogOrganization(p.CatalogOrganization)
 	p.Generation.PackagePath = NormalizePackagePath(p.Generation.PackagePath)
 	return WithCodeNames(p), nil
 }
 
 // Encode 保留稳定 ID、显式顺序以及编辑布局。
 func Encode(p Project) ([]byte, error) {
+	if p.SchemaVersion != SchemaVersion {
+		return nil, fmt.Errorf("不支持 schemaVersion %d，仅支持版本 %d", p.SchemaVersion, SchemaVersion)
+	}
+	if err := ValidateCatalogOrganization(p); err != nil {
+		return nil, err
+	}
+	p.CatalogOrganization = NormalizedCatalogOrganization(p.CatalogOrganization)
 	p.Generation.PackagePath = NormalizePackagePath(p.Generation.PackagePath)
 	return json.MarshalIndent(WithCodeNames(p), "", "  ")
 }
@@ -142,4 +159,140 @@ func ExportCatalog(definitions []Definition) ([]byte, error) {
 // Example 创建不依赖业务动作的最小可运行工程。
 func Example() Project {
 	return Project{SchemaVersion: SchemaVersion, Name: "行为树示例", Blackboard: []Field{}, Catalog: []Definition{}, Generation: Generation{PackagePath: "behavior", ContextType: "any"}, Trees: []Tree{{ID: "main", Name: "主行为树", Root: "root", Nodes: []Node{{ID: "root", Type: NodeSequence, Children: []string{"wait", "done"}}, {ID: "wait", Type: NodeWait, DurationMS: 100}, {ID: "done", Type: NodeWait}}, Layout: map[string]Position{"root": {X: 240, Y: 40}, "wait": {X: 120, Y: 180}, "done": {X: 360, Y: 180}}}}}
+}
+
+// CatalogOrganization 保存业务定义的编辑器分类，不参与运行语义。
+type CatalogOrganization struct {
+	Folders     []CatalogFolder              `json:"folders"`     // 可嵌套的目录集合，根目录不入表。
+	Tags        []CatalogTag                 `json:"tags"`        // 工程共享的平铺标签集合。
+	Assignments map[string]CatalogAssignment `json:"assignments"` // 以定义 ID 为键的稀疏归属记录。
+}
+
+// CatalogFolder 使用稳定 ID 表示目录，允许与定义混合同级排序。
+type CatalogFolder struct {
+	ID       string  `json:"id"`       // 稳定目录 ID，不能为空。
+	Name     string  `json:"name"`     // 同级唯一的显示名称。
+	ParentID string  `json:"parentId"` // 父目录 ID，空值表示根目录。
+	Order    float64 `json:"order"`    // 有限的同级排序值。
+}
+
+// CatalogTag 是可供多个业务定义共享的标签。
+type CatalogTag struct {
+	ID   string `json:"id"`   // 稳定标签 ID。
+	Name string `json:"name"` // 工程内唯一的标签名称。
+}
+
+// CatalogAssignment 描述单个定义的目录归属、标签及显示顺序。
+type CatalogAssignment struct {
+	FolderID string   `json:"folderId"` // 所属目录 ID，空值表示根目录。
+	TagIDs   []string `json:"tagIds"`   // 不重复的标签 ID 集合。
+	Order    float64  `json:"order"`    // 有限的同级排序值。
+}
+
+// NormalizedCatalogOrganization 复制名称所在切片后裁剪空白，不修改调用者或补齐稀疏归属。
+func NormalizedCatalogOrganization(org *CatalogOrganization) *CatalogOrganization {
+	if org == nil {
+		return nil
+	}
+	result := *org
+	result.Folders = append([]CatalogFolder{}, org.Folders...)
+	result.Tags = append([]CatalogTag{}, org.Tags...)
+	for i := range result.Folders {
+		result.Folders[i].Name = strings.TrimSpace(result.Folders[i].Name)
+	}
+	for i := range result.Tags {
+		result.Tags[i].Name = strings.TrimSpace(result.Tags[i].Name)
+	}
+	if result.Assignments == nil {
+		result.Assignments = map[string]CatalogAssignment{}
+	}
+	return &result
+}
+
+// ValidateCatalogOrganization 在线性时间内校验分类引用、名称与目录环，允许缺省归属。
+func ValidateCatalogOrganization(p Project) error {
+	definitions := make(map[string]bool, len(p.Catalog))
+	for _, definition := range p.Catalog {
+		if definition.ID == "" || definitions[definition.ID] {
+			return fmt.Errorf("业务定义 ID 为空或重复: %s", definition.ID)
+		}
+		definitions[definition.ID] = true
+	}
+	org := p.CatalogOrganization
+	if org == nil {
+		return nil
+	}
+	folders := make(map[string]CatalogFolder, len(org.Folders))
+	// 二元键避免名称或 ID 包含分隔符时出现组合键碰撞。
+	folderNames := make(map[[2]string]bool, len(org.Folders))
+	for _, folder := range org.Folders {
+		if strings.TrimSpace(folder.ID) == "" {
+			return fmt.Errorf("目录 ID 不能为空")
+		}
+		if _, exists := folders[folder.ID]; exists {
+			return fmt.Errorf("目录 ID 重复: %s", folder.ID)
+		}
+		name := strings.ToLower(strings.TrimSpace(folder.Name))
+		key := [2]string{folder.ParentID, name}
+		if name == "" || folderNames[key] {
+			return fmt.Errorf("同级目录名称为空或重复: %s", folder.Name)
+		}
+		if math.IsInf(folder.Order, 0) || math.IsNaN(folder.Order) {
+			return fmt.Errorf("目录排序值必须有限: %s", folder.ID)
+		}
+		folders[folder.ID], folderNames[key] = folder, true
+	}
+	for _, folder := range org.Folders {
+		if _, exists := folders[folder.ParentID]; folder.ParentID != "" && !exists {
+			return fmt.Errorf("目录 %s 的父目录不存在: %s", folder.ID, folder.ParentID)
+		}
+	}
+	// 迭代三色遍历，每条父边最多访问两次，避免深目录递归及逐目录重复回溯。
+	colors := make(map[string]uint8, len(folders))
+	for _, folder := range org.Folders {
+		id := folder.ID
+		for id != "" && colors[id] == 0 {
+			colors[id] = 1
+			id = folders[id].ParentID
+		}
+		if id != "" && colors[id] == 1 {
+			return fmt.Errorf("目录存在环: %s", id)
+		}
+		id = folder.ID
+		for id != "" && colors[id] == 1 {
+			colors[id] = 2
+			id = folders[id].ParentID
+		}
+	}
+	tags := make(map[string]bool, len(org.Tags))
+	tagNames := make(map[string]bool, len(org.Tags))
+	for _, tag := range org.Tags {
+		if strings.TrimSpace(tag.ID) == "" || tags[tag.ID] {
+			return fmt.Errorf("标签 ID 为空或重复: %s", tag.ID)
+		}
+		name := strings.ToLower(strings.TrimSpace(tag.Name))
+		if name == "" || tagNames[name] {
+			return fmt.Errorf("标签名称为空或重复: %s", tag.Name)
+		}
+		tags[tag.ID], tagNames[name] = true, true
+	}
+	for id, assignment := range org.Assignments {
+		if !definitions[id] {
+			return fmt.Errorf("分类引用不存在的业务定义: %s", id)
+		}
+		if _, exists := folders[assignment.FolderID]; assignment.FolderID != "" && !exists {
+			return fmt.Errorf("业务定义 %s 的目录不存在: %s", id, assignment.FolderID)
+		}
+		if math.IsInf(assignment.Order, 0) || math.IsNaN(assignment.Order) {
+			return fmt.Errorf("业务定义排序值必须有限: %s", id)
+		}
+		seen := make(map[string]bool, len(assignment.TagIDs))
+		for _, tagID := range assignment.TagIDs {
+			if !tags[tagID] || seen[tagID] {
+				return fmt.Errorf("业务定义 %s 的标签不存在或重复: %s", id, tagID)
+			}
+			seen[tagID] = true
+		}
+	}
+	return nil
 }
