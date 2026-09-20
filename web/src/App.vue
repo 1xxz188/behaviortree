@@ -1544,10 +1544,12 @@ onUnmounted(() => toolLifecycle.abort());
       </template>
       <template v-else>
         <div class="panel-heading small-heading">
-          AI 字段 <button class="text-button" @click="addField">＋ 字段</button>
+          AI 黑板字段 <button class="text-button" @click="addField">＋ 字段</button>
         </div>
         <p class="muted empty-note">
-          字段 ID 决定热更时的数据身份。业务对象保留在 Go 上下文中。
+          保存行为树运行期间的决策状态，并可绑定到节点参数。
+          字段值会在兼容热更时按稳定 ID 保留。
+          玩家、NPC、房间、服务等真实业务对象请放在 Go Context 中。
         </p>
         <section
           v-for="(field, i) in project.blackboard"

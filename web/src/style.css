@@ -370,6 +370,8 @@ pre {
 .field-card .mono {
   font-size: 10px;
   color: #637f8f;
+  /* 稳定 ID 保留完整内容，并允许在窄侧栏换行。 */
+  overflow-wrap: anywhere;
 }
 .field-card .text-button {
   text-align: left;

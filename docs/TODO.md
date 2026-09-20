@@ -1,1158 +1,480 @@
-请改造当前行为树编辑器 / Go 代码生成逻辑，目标是简化生成目录结构，并保证：
+任务：优化编辑器「黑板 / Blackboard」页面的定位说明，并完成最终 Go 单二进制打包验证。
 
-“生成包路径”同时决定：
-1. 生成目录
-2. 最终 Go package 名
-3. 目录最后一级名称必须与 Go package 名一致
+这是本地已有仓库，直接基于当前工作目录修改。
+不要 clone 仓库，不要修改 remote，不要切换分支。
 
-请直接修改代码完成，不要只给建议。
+本次是小范围 UI 文案优化，不修改 Blackboard 运行时设计。
 
-====================
-一、最终规则
-====================
+==================================================
+一、目标
+==================================================
 
-当前类似：
+当前黑板页面顶部大致显示：
 
-generated/
-└─ bt_brawl/
-   ├─ glue.gen.go
-   ├─ tree_xxx.gen.go
-   └─ tree_gen.map.json
+AI 字段                         + 字段
 
-这种固定 generated 层级需要取消。
+字段 ID 决定热更时的数据身份。业务对象保留在 Go 上下文中。
 
-以后用户配置：
+希望改成更加明确地说明 Blackboard 与 Go Context 的职责边界。
 
-生成包路径：
-bt_brawl
+最终显示：
 
-则生成：
+AI 黑板字段                         + 字段
 
-<project>/
-└─ bt_brawl/
-   ├─ glue.gen.go
-   ├─ tree_xxx.gen.go
-   └─ tree_gen.map.json
+保存行为树运行期间的决策状态，并可绑定到节点参数。
+字段值会在兼容热更时按稳定 ID 保留。
+玩家、NPC、房间、服务等真实业务对象请放在 Go Context 中。
 
-所有生成的 Go 文件：
+核心含义：
 
-package bt_brawl
+Blackboard = AI / 行为树自己的决策状态
+Go Context = 真实业务对象、世界状态和服务
 
+==================================================
+二、先定位实际源码文件
+==================================================
 
-如果配置：
+不要猜文件路径。
 
-生成包路径：
-ai/brawl
+先在本地仓库的 web/ 前端源码中全文搜索：
 
-则生成：
+AI 字段
 
-<project>/
-└─ ai/
-   └─ brawl/
-      ├─ glue.gen.go
-      ├─ tree_xxx.gen.go
-      └─ tree_gen.map.json
+以及：
 
-所有生成的 Go 文件：
+字段 ID 决定热更时的数据身份
 
-package brawl
+找到实际渲染 Blackboard 面板的 Vue / TypeScript 文件。
 
+例如可以使用：
 
-如果配置：
+rg -n "AI 字段|字段 ID 决定热更时的数据身份" web
 
-game/ai/npc
+如果本机没有 rg，则使用 IDE 全局搜索或 grep。
 
-则生成：
+同时搜索测试中是否存在这些旧文案。
 
-<project>/
-└─ game/
-   └─ ai/
-      └─ npc/
-         ├─ glue.gen.go
-         ├─ tree_xxx.gen.go
-         └─ tree_gen.map.json
+最终只修改实际相关文件，不新建重复的 Blackboard 组件。
 
-package：
+==================================================
+三、修改 Blackboard 页面顶部文案
+==================================================
 
-package npc
+将：
 
+AI 字段
 
-核心规则：
+修改为：
 
-packagePath = "game/ai/npc"
-packageName = path.Base(packagePath)
+AI 黑板字段
 
-outputDir =
-    filepath.Join(
-        projectDir,
-        filepath.FromSlash(packagePath),
-    )
+将原说明：
 
+字段 ID 决定热更时的数据身份。业务对象保留在 Go 上下文中。
 
-====================
-二、配置字段
-====================
+替换为三句：
 
-推荐将原来的：
+保存行为树运行期间的决策状态，并可绑定到节点参数。
+字段值会在兼容热更时按稳定 ID 保留。
+玩家、NPC、房间、服务等真实业务对象请放在 Go Context 中。
 
-package
+如果当前组件方便使用 code 样式，则最后一句中的 Context 可以显示成等宽代码样式：
 
-改成：
+Go `Context`
 
-packagePath
+如果为了这一点需要引入额外组件、Markdown 或富文本实现，则不要引入，直接使用：
 
-例如：
+Go Context
 
-{
-  "generation": {
-    "packagePath": "ai/brawl"
-  }
-}
+即可。
 
-Go 配置结构：
+==================================================
+四、UI 要求
+==================================================
 
-type GenerationConfig struct {
-    PackagePath string `json:"packagePath"`
-}
+保持现有页面结构和视觉风格，不重新设计 Blackboard 面板。
 
-不要再单独保存 packageName。
+大致保持：
 
-packageName 每次根据 PackagePath 自动计算：
+┌──────────────────────────────────┐
+│ AI 黑板字段              + 字段 │
+│                                  │
+│ 保存行为树运行期间的决策状态，   │
+│ 并可绑定到节点参数。             │
+│ 字段值会在兼容热更时按稳定 ID    │
+│ 保留。                           │
+│ 玩家、NPC、房间、服务等真实业务 │
+│ 对象请放在 Go Context 中。       │
+│                                  │
+│ 名称                             │
+│ [HP                           ]  │
+│ 类型                             │
+│ [int64                        ]  │
+│ 默认值                           │
+│ [100                          ]  │
+└──────────────────────────────────┘
 
-packageName := path.Base(packagePath)
+要求：
 
+1. 说明文字沿用当前辅助文字的字号和颜色。
+2. 允许在窄侧栏自然换行。
+3. 不产生水平滚动。
+4. 不使用 Warning / Error 样式。
+5. 不弹窗。
+6. 核心说明必须直接可见，不要藏进 Tooltip。
+7. 不为了换行写大量硬编码 <br>，优先使用正常文本布局/CSS。
+8. 当前「+ 字段」、字段编辑、删除等布局保持不变。
 
-如果为了兼容旧工程，旧 JSON 里可能仍然存在：
+==================================================
+五、Field ID 的现有显示继续保留
+==================================================
 
-{
-  "generation": {
-    "package": "bt_brawl"
-  }
-}
+字段下方目前类似：
 
-则需要兼容读取。
+field_186e283d...
 
-建议兼容逻辑：
+这样的稳定 Field ID 不要删除。
 
-1. 优先读取 packagePath
-2. 如果 packagePath 为空，则读取旧 package
-3. 保存时统一保存 packagePath
-4. 老工程打开并再次保存后自动升级成新格式
+本需求只是改变 Blackboard 顶部的主要说明。
 
-例如：
+顶部现在应该优先回答：
 
-func (c GenerationConfig) EffectivePackagePath() string {
-    if c.PackagePath != "" {
-        return c.PackagePath
-    }
-    return c.Package
-}
+“Blackboard 应该保存什么？”
 
-旧字段可标记 deprecated，但暂时保留反序列化兼容。
+而不是只回答：
 
+“Field ID 有什么作用？”
 
-====================
-三、统一使用 / 保存路径
-====================
+稳定 ID 仍然是热更迁移的重要机制，因此：
 
-配置文件中的 packagePath 必须统一保存为：
+字段值会在兼容热更时按稳定 ID 保留。
 
-ai/brawl
+这句必须保留。
 
-不能保存成：
+==================================================
+六、语义边界
+==================================================
 
-ai\brawl
+文案和实现必须保持以下设计：
 
-即：
+适合放 Blackboard：
 
-配置层统一使用 `/`
+- TargetID
+- CurrentState
+- PatrolIndex
+- SearchCount
+- IsAlert
+- LastEnemyID
+- 当前 AI 目标
+- 行为树节点之间需要共享的决策状态
 
-真正访问文件系统时再：
+不适合放 Blackboard：
 
-filepath.FromSlash(packagePath)
+- *Player
+- *NPC
+- *Room
+- *World
+- 战斗系统
+- 寻路系统
+- 配置管理器
+- 各种业务 Service
+- 真实业务对象的大型 Go struct
 
-Windows：
+这些真实业务对象应该由 Go Context 持有。
 
-ai/brawl
+特别注意：
 
-最终转换为：
+不要因为本次文案修改，新增任何 Blackboard / Context 运行时功能。
 
-ai\brawl
+==================================================
+七、不要修改这些内容
+==================================================
 
-Linux：
+本次不要修改：
 
-ai/brawl
+blackboard.go
+runtime.go
+registry.go
 
-保持不变。
+以及：
 
+- Blackboard 数据结构
+- Field 数据结构
+- ValueType
+- Blackboard getter/setter
+- Field ID 生成规则
+- Blackboard migration
+- 热更兼容性检查
+- dependency / dirty 机制
+- Program
+- 代码生成规则
+- JSON schema
+- schemaVersion
+- Go Context 结构
+- entity 实现
 
-====================
-四、删除 generated 固定目录
-====================
+不要把 Blackboard 改成业务 Go struct。
 
-搜索整个项目，删除所有类似：
+本次本质上只是：
 
-filepath.Join(projectDir, "generated", packageName)
+UI 文案 + 必要的 UI 测试 + 重新生成前端发行资源。
+
+==================================================
+八、更新测试
+==================================================
+
+搜索 Blackboard 面板已有测试。
+
+如果旧测试断言：
+
+AI 字段
 
 或者：
 
-generated/<package>
+字段 ID 决定热更时的数据身份。业务对象保留在 Go 上下文中。
 
-的固定逻辑。
+同步修改。
 
-统一改成：
+至少验证页面存在：
 
-packagePath := generation.PackagePath
+1.
+AI 黑板字段
 
-packageName := path.Base(packagePath)
+2.
+保存行为树运行期间的决策状态，并可绑定到节点参数。
 
-outputDir := filepath.Join(
-    projectDir,
-    filepath.FromSlash(packagePath),
-)
+3.
+字段值会在兼容热更时按稳定 ID 保留。
 
-也就是说：
+4.
+玩家、NPC、房间、服务等真实业务对象请放在 Go Context 中。
 
-packagePath 本身就是相对于工程根目录的最终输出目录。
+并确保原有 Blackboard 功能没有受到影响：
 
-不要再自动追加：
+- 新增字段
+- 修改名称
+- 修改类型
+- 修改默认值
+- 删除字段
 
-generated
+如果当前测试体系适合做组件测试，就在已有测试中增加断言。
 
-也不要再自动追加：
+不要为了这四句文案创建过度复杂的新测试框架。
 
-packageName
+==================================================
+九、前端验证
+==================================================
 
+进入 web 目录。
 
-====================
-五、UI 修改
-====================
+如果需要安装干净依赖：
 
-当前右侧配置如果叫：
+npm ci
 
-包名
+然后执行：
 
-改成：
+npm test
 
-生成包路径
+必须通过。
 
-输入框示例：
+然后执行：
 
-ai/brawl
+npm run build
 
-说明文字改成：
-
-生成目录相对于当前工程目录。
-路径最后一级目录名将作为 Go package 名。
-
-例如：
-
-ai/brawl
-
-生成到：
-
-<工程目录>/ai/brawl/
-
-Go package：
-
-package brawl
-
-
-建议输入框 placeholder：
-
-例如：ai/brawl
-
-
-如果当前 UI 仍然显示：
-
-包名
-
-必须修改，避免用户误以为这里只能填写：
-
-brawl
-
-因为现在允许：
-
-ai/brawl
-
-
-====================
-六、UI 实时提示
-====================
-
-建议在输入框下方实时显示解析结果。
-
-例如用户输入：
-
-ai/brawl
-
-显示：
-
-生成目录：
-ai/brawl
-
-Go package：
-brawl
-
-
-用户输入：
-
-bt_brawl
-
-显示：
-
-生成目录：
-bt_brawl
-
-Go package：
-bt_brawl
-
-
-这样可以让规则一眼可见。
-
-
-====================
-七、合法性校验
-====================
-
-PackagePath 必须做严格校验。
-
-允许：
-
-bt_brawl
-ai/brawl
-game/ai/npc
-server/behavior/brawl
-
-禁止：
-
-空字符串
-
-/
-./brawl
-../brawl
-ai/../brawl
-ai/./brawl
-ai//brawl
-
-绝对路径：
-
-C:/xxx
-C:\xxx
-/var/xxx
-
-以及任何可以逃出工程目录的路径。
-
-
-必须防止目录穿越：
-
-../
-..\
-
-
-最终 outputDir 必须保证仍然位于 projectDir 内。
-
-
-====================
-八、每一级目录名校验
-====================
-
-packagePath：
-
-game/ai/brawl
-
-需要分别检查：
-
-game
-ai
-brawl
-
-不能出现非法目录名。
-
-特别是最后一级：
-
-brawl
-
-必须是合法 Go package 标识符。
-
-
-例如允许：
-
-brawl
-bt_brawl
-npc
-ai2
-
-禁止：
-
-bt-brawl
-123brawl
-brawl.test
-brawl test
-
-
-可使用 Go token / scanner 相关能力校验 identifier。
-
-至少满足：
-
-^[A-Za-z_][A-Za-z0-9_]*$
-
-
-并避免 Go keyword，例如：
-
-type
-func
-package
-var
-const
-map
-range
-
-这些不能作为最终 package 名。
-
-
-====================
-九、package 生成规则
-====================
-
-任何地方需要生成：
-
-package xxx
-
-必须统一使用：
-
-packageName := path.Base(packagePath)
-
-不能直接：
-
-package packagePath
-
-例如：
-
-packagePath:
-
-ai/brawl
-
-错误：
-
-package ai/brawl
-
-正确：
-
-package brawl
-
-
-====================
-十、目录与 package 一致性
-====================
-
-设计原则：
-
-目录最后一级名称 == packageName
-
-因此不允许出现：
-
-目录：
-
-ai/brawl
-
-但配置：
-
-package bt_brawl
-
-这种状态。
-
-不要再设计独立的：
-
-OutputDir
-PackageName
-
-两个可自由配置字段。
-
-统一由：
-
-PackagePath
-
-决定。
-
-
-====================
-十一、CLI 行为同步
-====================
-
-检查当前 bttool generate CLI。
-
-如果目前存在：
-
---out
-
-则需要统一语义。
-
-推荐最终 CLI：
-
-bttool generate \
-  --file brawl-bt.json \
-  --out ai/brawl
-
-含义：
-
---out 是相对于当前工程目录的“生成包路径”。
-
-最终：
-
-./ai/brawl/
-
-package：
-
-brawl
-
-
-如果 CLI 当前还要求额外 package 参数：
-
---package
-
-则考虑移除。
-
-packageName 必须从：
-
-path.Base(out)
-
-自动推导。
-
-
-如果出于兼容性暂时保留 --package：
-
-1. 标记 deprecated
-2. 如果填写 --package，则必须与 path.Base(--out) 相同
-3. 不相同直接报错
-
-例如：
-
---out ai/brawl
---package npc
-
-必须报错：
-
-package name "npc" does not match output directory package "brawl"
-
-
-最终目标是删除独立 package 配置。
-
-
-====================
-十二、生成目录自动创建
-====================
-
-如果：
-
-packagePath = ai/brawl
-
-而：
-
-ai/
-brawl/
-
-均不存在，则自动：
-
-MkdirAll(outputDir)
-
-最终自动创建完整目录。
-
-
-====================
-十三、已有目录 package 冲突检查
-====================
-
-生成前检查目标目录已有的 .go 文件。
-
-例如：
-
-ai/brawl/helper.go
-
-内容：
-
-package npc
-
-但当前 PackagePath：
-
-ai/brawl
-
-推导 package：
-
-brawl
-
-此时必须阻止生成。
-
-报错类似：
-
-目标目录中已存在 Go package "npc"，
-但当前生成包名为 "brawl"。
-
-请调整生成包路径或已有源码的 package。
-
+必须通过。
 
 注意：
 
-忽略：
+npm run build 会重新生成 web/dist。
 
-*_test.go
+不要手工修改 web/dist 中生成的 JS/CSS/HTML。
 
-是否单独处理可以根据现有逻辑判断，但普通 .go 文件必须保证 package 一致。
+必须由正式前端构建生成。
 
+构建后检查：
 
-====================
-十四、生成文件清理安全
-====================
+git status --short
 
-非常重要：
+确认：
 
-以后生成目录可能直接是业务源码目录，例如：
+- 前端源文件发生预期修改
+- 如果仓库跟踪 web/dist，则新的 dist 构建产物也已经更新
+- package.json / package-lock.json 不应因为本需求产生无关改动
 
-internal/ai/brawl/
+==================================================
+十、Go 测试
+==================================================
 
-其中可能同时存在：
+回到仓库根目录执行：
 
-actions.go
-helper.go
-service.go
-glue.gen.go
-tree_npc.gen.go
-tree_gen.map.json
+go test ./...
 
-绝对不能因为重新生成而：
+必须通过。
 
-os.RemoveAll(outputDir)
+本需求不应导致任何 Go 测试回归。
 
-也不能遍历删除所有：
+==================================================
+十一、非常重要：重新构建最终 Go 二进制
+==================================================
 
-*.go
+本项目最终发行的是内嵌 Web 前端的 Go 单二进制。
 
-只能删除生成器自己管理的文件。
+因此：
 
+不能停留在 npm run build。
 
-继续使用：
+必须严格按照：
 
-tree_gen.map.json
+前端源码
+    ↓
+npm run build
+    ↓
+web/dist
+    ↓
+go build
+    ↓
+最终 bttool 二进制
 
-或现有生成清单记录自动生成文件。
+这个顺序执行。
 
+前端构建完成以后，在仓库根目录重新执行：
 
-例如旧清单记录：
+Windows：
 
-glue.gen.go
-tree_old.gen.go
+go build -o ./.build/bttool.exe ./cmd/bttool
 
-新生成只需要：
+Linux/macOS：
 
-glue.gen.go
-tree_new.gen.go
+go build -o ./.build/bttool ./cmd/bttool
 
-则可以删除：
+如果 .build 目录不存在，先创建。
 
-tree_old.gen.go
+禁止先 go build 再 npm run build。
 
-但绝不能删除：
+因为 Go 构建阶段会把当时的 web/dist 打入二进制，
+顺序错误会导致最终 bttool 中仍然是旧页面。
 
-actions.go
-helper.go
-service.go
+==================================================
+十二、最终必须验证“二进制中的页面”
+==================================================
 
+仅验证：
 
-原则：
+npm run dev
 
-只删除明确记录为“生成器拥有”的文件。
+或者：
 
+web/dist
 
-====================
-十五、生成文件标记
-====================
+是不够的。
 
-建议所有自动生成的 Go 文件顶部统一包含：
+必须启动刚刚重新构建出来的 bttool 二进制。
 
-// Code generated by behaviortree. DO NOT EDIT.
+例如 Windows：
 
-例如：
+.\.build\bttool.exe serve --workspace .\.workspace
 
-// Code generated by behaviortree. DO NOT EDIT.
+Linux/macOS：
 
-package brawl
+./.build/bttool serve --workspace ./.workspace
 
-便于开发者快速识别自动生成代码。
+如果 .workspace 不适合测试，可以建立一个临时 workspace，
+但不要修改用户已有工程数据。
 
+然后访问：
 
-====================
-十六、示例工程最终结构
-====================
+http://127.0.0.1:8791
 
-当前：
+注意：
 
-behaviortree_test/
-├─ context/
-├─ generated/
-│  └─ bt_brawl/
-├─ main.go
-├─ brawl-bt.json
-├─ go.mod
-└─ go.sum
+这里必须访问由最终 Go 二进制提供的页面，
+不能访问 Vite dev server。
 
-修改后，如果配置：
+进入「黑板」Tab，实际确认页面显示：
 
-packagePath = brawl
+AI 黑板字段
 
-最终：
+保存行为树运行期间的决策状态，并可绑定到节点参数。
 
-behaviortree_test/
-├─ context/
-├─ brawl/
-│  ├─ actions.go
-│  ├─ glue.gen.go
-│  ├─ tree_npc_troop.gen.go
-│  └─ tree_gen.map.json
-├─ main.go
-├─ brawl-bt.json
-├─ go.mod
-└─ go.sum
+字段值会在兼容热更时按稳定 ID 保留。
 
+玩家、NPC、房间、服务等真实业务对象请放在 Go Context 中。
 
-如果配置：
+并确认：
 
-packagePath = ai/brawl
+- + 字段仍可正常使用
+- 已有字段正常显示
+- 名称输入正常
+- 类型选择正常
+- 默认值正常
+- 删除字段正常
+- 页面无明显布局溢出
 
-最终：
+如果有 Playwright / 浏览器自动化环境，优先用现有工具完成最终 UI 验证。
 
-behaviortree_test/
-├─ context/
-├─ ai/
-│  └─ brawl/
-│     ├─ actions.go
-│     ├─ glue.gen.go
-│     ├─ tree_npc_troop.gen.go
-│     └─ tree_gen.map.json
-├─ main.go
-├─ brawl-bt.json
-├─ go.mod
-└─ go.sum
+如果浏览器缓存导致仍显示旧页面：
 
+Ctrl+F5 强制刷新。
 
-其中所有 ai/brawl/*.go：
+不要因为浏览器还显示旧内容就再次修改源码。
 
-package brawl
+先确认运行的是刚构建的新 bttool 进程。
 
+==================================================
+十三、需要验证“确实来自新 Go 二进制”
+==================================================
 
-====================
-十七、工程文件移动后的处理
-====================
+最终验证必须能证明不是 Vite 开发页面或旧后台进程。
 
-如果用户之前配置：
+建议：
 
-bt_brawl
+1. 停掉旧 bttool 服务。
+2. 完成 npm run build。
+3. 完成 go build。
+4. 启动 .build 下刚生成的 bttool。
+5. 从 127.0.0.1:8791 打开页面。
+6. Ctrl+F5。
+7. 检查新文案。
 
-后来修改为：
+这样才能确认：
 
-ai/brawl
+新的 web/dist
+已经真正打进
+新的 bttool Go 二进制。
 
-不要自动删除整个旧目录：
+==================================================
+十四、README
+==================================================
 
-bt_brawl/
+本次不要求修改 README。
 
-因为其中可能存在用户手写代码。
+因为这是界面解释性文案调整，不需要增加新的用户使用流程。
 
-可以：
+只有在当前 README 已经存在完全相同的旧 Blackboard 定位文案，并且会因此产生明显矛盾时，才同步修改对应一句。
 
-1. 在新目录正常生成
-2. 对旧目录，只根据旧 tree_gen.map.json 清理“生成器拥有”的旧生成文件
-3. 保留所有用户手写文件
-4. 如果清理后旧目录为空，可以安全删除空目录
-5. 如果仍存在手写文件，则保留目录
+不要借此大范围重写 README。
 
+==================================================
+十五、最终汇报
+==================================================
 
-====================
-十八、路径修改后的提示
-====================
+完成后请给出：
 
-如果 UI 检测到 PackagePath 从：
+1. 实际修改的源码文件列表
+2. Blackboard UI 组件的真实路径
+3. 对应测试文件的真实路径
+4. 是否更新了 web/dist
+5. 修改前文案
+6. 修改后文案
+7. npm test 结果
+8. npm run build 结果
+9. go test ./... 结果
+10. 最终 go build 结果
+11. 最终 bttool 二进制输出路径
+12. 是否实际使用最终 bttool 二进制启动并打开 Blackboard 页面验证
+13. 最终页面是否确认显示新文案
+14. git status --short 的改动摘要
+15. 确认没有修改 Blackboard / 热更 / Context 的任何 Go 运行时逻辑
 
-bt_brawl
-
-改为：
-
-ai/brawl
-
-保存或生成时可以提示：
-
-生成包路径已变更：
-
-bt_brawl
-→
-ai/brawl
-
-新代码将生成到：
-
-ai/brawl
-
-旧目录中的自动生成文件将按生成清单安全清理，
-手写文件不会删除。
-
-
-====================
-十九、生成预览
-====================
-
-如果当前有：
-
-预览 Go
-
-功能，也必须使用相同规则。
-
-packagePath：
-
-ai/brawl
-
-预览必须显示：
-
-package brawl
-
-不能显示：
-
-package ai/brawl
-
-也不能显示旧配置 package。
-
-
-====================
-二十、生成按钮行为
-====================
-
-点击：
-
-生成到目录
-
-时：
-
-1. 读取 PackagePath
-2. normalize 为 `/`
-3. 校验 PackagePath
-4. 获取 packageName = path.Base(PackagePath)
-5. 获取 outputDir
-6. 确认 outputDir 未逃出 projectDir
-7. 检查现有 Go package 冲突
-8. 创建目录
-9. 根据旧生成清单安全清理废弃生成文件
-10. 生成新的 .gen.go
-11. 写新的 tree_gen.map.json
-12. UI 刷新工程文件列表
-
-
-====================
-二十一、建议提供统一辅助函数
-====================
-
-不要让 Web、CLI、Preview、Generator 分别自己解析。
-
-新增统一函数，例如：
-
-type ResolvedGoPackage struct {
-    PackagePath string
-    PackageName string
-    OutputDir   string
-}
-
-func ResolveGoPackage(
-    projectDir string,
-    packagePath string,
-) (ResolvedGoPackage, error)
-
-统一负责：
-
-- normalize
-- validate
-- packageName
-- outputDir
-- 防目录穿越
-
-
-伪代码：
-
-func ResolveGoPackage(projectDir, raw string) (ResolvedGoPackage, error) {
-    packagePath := strings.TrimSpace(raw)
-    packagePath = strings.ReplaceAll(packagePath, "\\", "/")
-
-    // 校验空路径、绝对路径、.、..、非法分段等
-
-    packagePath = path.Clean(packagePath)
-
-    if packagePath == "." ||
-       packagePath == "" ||
-       strings.HasPrefix(packagePath, "../") {
-        return ..., err
-    }
-
-    packageName := path.Base(packagePath)
-
-    // 校验 packageName 是合法 Go identifier
-
-    outputDir := filepath.Join(
-        projectDir,
-        filepath.FromSlash(packagePath),
-    )
-
-    // 再校验 outputDir 确实位于 projectDir 内
-
-    return ResolvedGoPackage{
-        PackagePath: packagePath,
-        PackageName: packageName,
-        OutputDir:   outputDir,
-    }, nil
-}
-
-
-Web、CLI、预览、真正生成代码全部调用这一套。
-
-
-====================
-二十二、测试要求
-====================
-
-补充单元测试。
-
-
-Case 1：
-
-packagePath:
-
-brawl
-
-结果：
-
-PackageName = brawl
-
-OutputDir:
-
-<project>/brawl
-
-
-Case 2：
-
-packagePath:
-
-ai/brawl
-
-结果：
-
-PackageName = brawl
-
-OutputDir:
-
-<project>/ai/brawl
-
-
-Case 3：
-
-packagePath:
-
-game/ai/npc
-
-结果：
-
-PackageName = npc
-
-
-Case 4：
-
-packagePath:
-
-../brawl
-
-必须失败。
-
-
-Case 5：
-
-packagePath:
-
-ai/../brawl
-
-必须失败，不要仅 Clean 后接受。
-
-
-Case 6：
-
-packagePath:
-
-C:/temp/brawl
-
-必须失败。
-
-
-Case 7：
-
-packagePath:
-
-/tmp/brawl
-
-必须失败。
-
-
-Case 8：
-
-packagePath:
-
-ai/bt-brawl
-
-必须失败，因为最终 Go package 名非法。
-
-
-Case 9：
-
-packagePath:
-
-ai/type
-
-必须失败，因为最终 package 是 Go keyword。
-
-
-Case 10：
-
-目录：
-
-ai/brawl
-
-已有：
-
-helper.go
-
-内容：
-
-package brawl
-
-允许继续生成。
-
-
-Case 11：
-
-目录：
-
-ai/brawl
-
-已有：
-
-helper.go
-
-内容：
-
-package npc
-
-必须阻止生成。
-
-
-Case 12：
-
-目录内：
-
-actions.go
-glue.gen.go
-tree_old.gen.go
-
-重新生成后：
-
-actions.go 必须保留。
-
-
-====================
-二十三、最终设计原则
-====================
-
-最终只保留一个核心概念：
-
-PackagePath
-
-例如：
-
-ai/brawl
-
-它同时代表：
-
-生成目录：
-
-<project>/ai/brawl
-
-Go package：
-
-brawl
-
-
-必须始终满足：
-
-path.Base(PackagePath) == Go package name
-
-
-不要再固定生成：
-
-generated/<package>
-
-不要再允许：
-
-outputDir
-
-和：
-
-packageName
-
-独立配置造成不一致。
-
-
-====================
-二十四、最终 UI 示例
-====================
-
-Go 生成设置
-
-生成包路径
-┌─────────────────────────┐
-│ ai/brawl                │
-└─────────────────────────┘
-
-生成目录：ai/brawl
-Go package：brawl
-
-说明：
-
-生成包路径相对于当前工程目录。
-路径最后一级目录名将作为 Go package 名。
-例如 ai/brawl 会生成到 ai/brawl/，package 为 brawl。
-
-
-业务上下文导入路径
-┌─────────────────────────┐
-│ bt_test/context         │
-└─────────────────────────┘
-
-上下文类型
-┌─────────────────────────┐
-│ *Context                │
-└─────────────────────────┘
-
-
-====================
-二十五、验收标准
-====================
-
-完成修改后必须满足：
-
-1. 不再自动创建 generated 目录。
-2. packagePath=brawl 时直接生成到 ./brawl。
-3. packagePath=ai/brawl 时生成到 ./ai/brawl。
-4. ai/brawl 下生成的 Go 文件全部为 package brawl。
-5. 目录最后一级始终等于 Go package。
-6. Web、CLI、Go 预览使用完全相同的解析规则。
-7. Windows/Linux 都能正常使用。
-8. JSON 中路径统一保存为 `/`。
-9. 防止 ../ 等路径逃逸。
-10. 不会误删用户手写 Go 文件。
-11. 兼容旧 package 配置并能自动迁移到 packagePath。
-12. 补齐相关测试。
-13. 修改 README / 示例文档中的旧 generated/<package> 说明。
-14. 修改现有示例工程，使其符合新的目录规则。
-15. 执行现有测试、新增测试、go test ./...，确保全部通过。
-
-请先检查当前仓库实际代码结构和现有实现，然后直接完成以上改造；尽量复用现有逻辑，不做无关重构。
+不要只给修改建议。
+直接完成源码修改、前端构建、Go 二进制构建以及最终二进制 UI 验证。
