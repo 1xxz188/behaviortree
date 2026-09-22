@@ -289,6 +289,19 @@ header strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-s
 .comment-close { padding: 0 5px; border: 0; background: transparent; color: inherit; font-size: 20px; line-height: 22px; }
 textarea { display: block; width: 100%; min-height: 0; min-width: 0; box-sizing: border-box; padding: 10px; border: 1px solid #3a555d; border-radius: 7px; background: #13222b; color: #dce6ee; resize: none; overflow: auto; flex: 1 1 auto; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; overscroll-behavior: contain; }
 textarea:focus-visible { outline: 2px solid #7ee4b1; outline-offset: 2px; }
+/* 滚动条沿用注释框的深色配色；标准属性作为非 WebKit 浏览器的回退。 */
+textarea { scrollbar-width: thin; scrollbar-color: #52716f #13222b; }
+/* 支持伪元素时保留细轨道、圆角滑块，并去掉系统默认的上下箭头。 */
+@supports selector(::-webkit-scrollbar) {
+  textarea { scrollbar-width: auto; scrollbar-color: auto; }
+  textarea::-webkit-scrollbar { width: 10px; height: 10px; }
+  textarea::-webkit-scrollbar-track { background: transparent; margin-block: 6px; }
+  textarea::-webkit-scrollbar-thumb { min-height: 32px; border: 2px solid transparent; border-radius: 999px; background: #52716f; background-clip: padding-box; }
+  textarea::-webkit-scrollbar-thumb:hover { background-color: #6b928b; }
+  textarea::-webkit-scrollbar-thumb:active { background-color: #8bc9b6; }
+  textarea::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+  textarea::-webkit-scrollbar-corner { background: transparent; }
+}
 .comment-actions { display: flex; flex: 0 0 auto; justify-content: flex-end; gap: 8px; }
 .comment-resize-handle { position: absolute; right: 1px; bottom: 1px; width: 19px; height: 19px; padding: 0; border: 0; border-radius: 0 0 10px 0; background: transparent; color: #8eaaa9; cursor: nwse-resize; touch-action: none; font-size: 13px; }
 </style>
