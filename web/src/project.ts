@@ -31,6 +31,7 @@ export interface Definition {
 export interface BTNode {
   id: string;
   codeName?: string; // 树内唯一的稳定代码名，与展示名和节点 ID 独立。
+  comment?: string; // 节点实例的多行说明，随工程保存并生成到 Go 节点函数注释。
   type: NodeType;
   name?: string;
   children?: string[];

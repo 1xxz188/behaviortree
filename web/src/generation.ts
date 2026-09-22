@@ -110,6 +110,7 @@ export function semanticSignature(project: Project): string {
     // Go 的 omitempty 会在保存后省略空值，统一表示保证重新打开时签名稳定。
     for (const node of tree.nodes) {
       node.name ??= "";
+      node.comment ??= ""; // 节点注释参与生成，空值与 Go omitempty 保存后的缺省表示一致。
       node.children ??= [];
       node.binding ??= "";
       node.params ??= {};

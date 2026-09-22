@@ -88,6 +88,7 @@ type Node struct {
 	CodeName   string           `json:"codeName,omitempty"`   // 树内唯一的持久化代码名，与显示名称和运行身份独立。
 	Type       NodeType         `json:"type"`                 // 内建节点种类。
 	Name       string           `json:"name,omitempty"`       // 可选显示名。
+	Comment    string           `json:"comment,omitempty"`    // 节点实例的多行注释，供画布悬浮展示并生成到 Go 节点函数。
 	Children   []string         `json:"children,omitempty"`   // 有序子节点 ID。
 	Binding    string           `json:"binding,omitempty"`    // 业务节点目录 ID。
 	Params     map[string]Value `json:"params,omitempty"`     // 参数常量或字段绑定。

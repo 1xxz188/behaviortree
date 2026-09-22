@@ -598,6 +598,9 @@ func (g *generator) emitNode(i int) {
 		d := g.defs[n.node.Binding]
 		g.line("// 业务函数 %s（显示名 %q）。", d.GoName, d.Name)
 	}
+	if comment := strings.TrimSpace(n.node.Comment); comment != "" {
+		writeComment(&g.buf, comment)
+	}
 	g.line("func %s(f *bt.Frame[%s]) bt.Status {", n.function, g.context)
 	g.line("const node = %s", n.symbol)
 	g.line("if cached,run:=f.Enter(node);!run{return cached}")

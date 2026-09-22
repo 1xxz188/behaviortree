@@ -103,7 +103,11 @@ export function validateProjectTypes(value: unknown): void {
     const tree = record(item, path);
     items(tree.nodes, `${path}.nodes`).forEach((item, index) => {
       const nodePath = `${path}.nodes[${index}]`;
-      parseNodeType(record(item, nodePath).type, `${nodePath}.type`);
+      const node = record(item, nodePath);
+      parseNodeType(node.type, `${nodePath}.type`);
+      if (node.comment !== undefined && typeof node.comment !== "string") {
+        throw new Error(`${nodePath}.comment: 应为字符串`);
+      }
     });
   });
 }

@@ -21,6 +21,7 @@ const names = new Set([
   "moveNode", "deleteSelected", "confirmDeleteCanvasNode", "openCanvasNodeMenu", "openCanvasPaneMenu",
   "syncCanvasSelection", "finishCanvasSelection", "selectCanvasNode", "keydown",
   "checkpoint", "mutate", "restore", "undo", "redo", "rebuildIDs",
+  "applyCanvasNodeComment",
 ]);
 const handlers = script.statements.filter(statement => ts.isFunctionDeclaration(statement)
   && names.has(statement.name?.text ?? "")).map(statement => statement.getText(script)).join("\n");
@@ -101,6 +102,7 @@ function session() {
     keydown: (event: unknown) => void; // 全选及文本输入保护。
     undo: () => void; // 真实撤销入口。
     redo: () => void; // 真实重做入口。
+    applyCanvasNodeComment: (value: string) => void; // 向右键捕获目标应用注释草稿。
   };
   return { ...context, app, flowNodes, selectionCalls };
 }
@@ -257,4 +259,104 @@ test("节点右键捕获目标，空白右键切换为工程菜单", () => {
   assert.equal(s.canvasMenu.value?.y, 230);
   assert.equal(prevented, 2);
   assert.equal(s.undoStack.value.length, 0);
+});
+
+// 注释只修改右击目标，每次应用一次历史；撤销重做、脏状态与生成修订一起恢复。
+test("注释填写修改与清空均可撤销重做并保持多选", () => {
+  const s = session();
+  const before = stringifyJSON(s.project.value);
+  s.saveState.reset(before);
+  const open = () => { s.canvasMenu.value = { tree: s.tree.value, node: s.nodeIndex.value.get("2"), x: 0, y: 0 }; };
+  open();
+  s.app.applyCanvasNodeComment("  首行\n第二行  ");
+  assert.equal(s.nodeIndex.value.get("2")!.comment, "首行\n第二行");
+  assert.equal(s.node.value!.comment, undefined);
+  assert.equal(s.undoStack.value.length, 1);
+  assert.equal(s.semanticRevision.value, 1);
+  assert.equal(s.saveState.dirty, true);
+  assert.equal(s.canvasMenu.value, undefined);
+  assert.equal(s.getSelectedNodes.value.length, 2);
+  s.app.undo();
+  assert.equal(stringifyJSON(s.project.value), before);
+  assert.equal(s.saveState.dirty, false);
+  s.app.redo();
+  assert.equal(s.nodeIndex.value.get("2")!.comment, "首行\n第二行");
+  assert.equal(s.saveState.dirty, true);
+  open();
+  s.app.applyCanvasNodeComment("修改后");
+  assert.equal(s.nodeIndex.value.get("2")!.comment, "修改后");
+  open();
+  s.app.applyCanvasNodeComment(" \n ");
+  assert.equal(Object.hasOwn(s.nodeIndex.value.get("2")!, "comment"), false);
+  s.app.undo();
+  assert.equal(s.nodeIndex.value.get("2")!.comment, "修改后");
+  s.app.redo();
+  assert.equal(s.nodeIndex.value.get("2")!.comment, undefined);
+  assert.equal(s.selectionCalls.length, 0);
+});
+
+// 取消、同内容和空白的重复提交不能产生脏状态或令已有生成结果过期。
+test("取消与未变化的注释不生成历史", () => {
+  const s = session();
+  s.node.value!.comment = "已有说明";
+  const before = stringifyJSON(s.project.value);
+  s.canvasMenu.value = { tree: s.tree.value, node: s.node.value, x: 0, y: 0 };
+  s.canvasMenu.value = undefined;
+  s.app.applyCanvasNodeComment("取消后的草稿");
+  s.canvasMenu.value = { tree: s.tree.value, node: s.node.value, x: 0, y: 0 };
+  s.app.applyCanvasNodeComment("  已有说明  ");
+  s.canvasMenu.value = { tree: s.tree.value, node: s.nodeIndex.value.get("2"), x: 0, y: 0 };
+  s.app.applyCanvasNodeComment(" \n ");
+  assert.equal(stringifyJSON(s.project.value), before);
+  assert.equal(s.undoStack.value.length, 0);
+  assert.equal(s.semanticRevision.value, 0);
+});
+
+// 同 ID 的替换对象、已删除目标、另一棵树及工程切换都不能接收过期注释草稿。
+test("注释提交拒绝过期目标及不可编辑工程", () => {
+  for (const stale of ["node", "deleted", "tree", "workspace", "not-ready", "pane"] as const) {
+    const s = session();
+    s.canvasMenu.value = { tree: s.tree.value, node: s.node.value, x: 0, y: 0 };
+    if (stale === "node") s.canvasMenu.value.node = clone(s.node.value!);
+    else if (stale === "deleted") s.nodeIndex.value.delete(s.node.value!.id);
+    else if (stale === "tree") s.canvasMenu.value.tree = clone(s.tree.value);
+    else if (stale === "workspace") s.workspaceChanging.value = true;
+    else if (stale === "not-ready") s.projectReady.value = false;
+    else s.canvasMenu.value.node = undefined;
+    const before = stringifyJSON(s.project.value);
+    s.app.applyCanvasNodeComment("不可提交");
+    assert.equal(stringifyJSON(s.project.value), before);
+    assert.equal(s.undoStack.value.length, 0);
+    assert.equal(s.canvasMenu.value, undefined);
+  }
+});
+
+// 右键平移及缩放动画中经过指针的节点不能重新弹出说明，结束后正常悬浮可恢复。
+test("按键拖动和视口移动期间不打开节点注释", () => {
+  const declaration = script.statements.find(statement => ts.isFunctionDeclaration(statement)
+    && statement.name?.text === "showCanvasNodeComment");
+  assert.ok(declaration);
+  const handler = ts.transpileModule(declaration.getText(script), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  // 仅替换 DOM 边界，目标查询和交互状态判断执行真实应用函数。
+  class CanvasElement {
+    // 模拟事件元素所属的画布节点。
+    closest() { return this; }
+  }
+  const element = new CanvasElement();
+  const target: BTNode = { id: "2", type: "wait", comment: "说明" };
+  const shown: BTNode[] = [];
+  const canvasMoving = ref(false);
+  const show = runInNewContext(`${handler}\nshowCanvasNodeComment;`, {
+    Element: CanvasElement, canvasMoving, nodeIndex: { value: new Map([[target.id, target]]) },
+    nodeCommentTooltip: { value: { show: (node: BTNode) => { shown.push(node); } } },
+  }) as (event: { event: { buttons: number; target: CanvasElement }; node: { id: string } }) => void;
+  for (const buttons of [1, 2, 4]) show({ event: { buttons, target: element }, node: { id: "2" } });
+  canvasMoving.value = true;
+  show({ event: { buttons: 0, target: element }, node: { id: "2" } });
+  assert.equal(shown.length, 0);
+  canvasMoving.value = false;
+  show({ event: { buttons: 0, target: element }, node: { id: "missing" } });
+  assert.equal(shown.length, 0);
+  show({ event: { buttons: 0, target: element }, node: { id: "2" } });
+  assert.deepEqual(shown, [target]);
 });
