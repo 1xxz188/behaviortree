@@ -14,6 +14,8 @@ import ScaffoldOverwriteDialog from "./ScaffoldOverwriteDialog.vue";
 import OperationNotice from "./OperationNotice.vue";
 import TreeContextMenu from "./TreeContextMenu.vue";
 import CatalogContextMenu from "./CatalogContextMenu.vue";
+import ExportMenu from "./ExportMenu.vue";
+import { exportCanvasPNG } from "./canvasExport";
 import { startupProject, rememberProject, selectNativeDirectory } from "./workspace";
 import type { WorkspaceFiles, RecentStorage, ProjectDialogResult } from "./workspace";
 import { ProjectSaveState } from "./saveState";
@@ -23,7 +25,7 @@ import { TreeIdentityIndex, captureSnapshot, restoreSnapshot } from "./treeIdent
 import type { EditorSnapshot } from "./treeIdentity";
 import { NodeIdentityIndex } from "./nodeIdentity";
 import { normalizeCodeNames } from "./codeNames";
-import { VueFlow, Handle, Position, useVueFlow } from "@vue-flow/core";
+import { VueFlow, Handle, Position, useVueFlow, getRectOfNodes } from "@vue-flow/core";
 import type { Connection, NodeDragEvent, NodeMouseEvent } from "@vue-flow/core";
 import { Background } from "@vue-flow/background";
 import { Controls } from "@vue-flow/controls";
@@ -259,7 +261,8 @@ function resizeOutputWithKeyboard(event: KeyboardEvent) {
 const undoStack = ref<EditorSnapshot[]>([]);
 const redoStack = ref<EditorSnapshot[]>([]);
 const importInput = ref<HTMLInputElement>();
-const { fitView, setCenter, screenToFlowCoordinate } = useVueFlow();
+const { fitView, setCenter, screenToFlowCoordinate, getNodes, vueFlowRef } = useVueFlow();
+const pngExportBusy = ref(false); // 图片编码期间禁止重复创建画布副本。
 // 拖拽只保存节点模板，成功落入画布后才写入工程和撤销历史。
 const paletteDrag = ref<{ type: NodeType; binding?: string }>();
 const canvasDragOver = ref(false);
@@ -314,7 +317,8 @@ const graphEdges = computed(() =>
       target: child,
       type: "smoothstep",
       label: String(i + 1),
-      style: { stroke: "#607483", strokeWidth: 1.8 },
+      // SVG 导出脱离页面样式表后仍保持空心连线。
+      style: { stroke: "#607483", strokeWidth: 1.8, fill: "none" },
       labelStyle: { fill: "#c7d5df" },
       labelBgStyle: { fill: "#1e2a35" },
     })),
@@ -1082,7 +1086,11 @@ function locateSource(location: SourceLocation) {
 }
 // 将当前工程或源码交给浏览器下载机制。
 function download(name: string, content: string, mime = "application/json") {
-  const url = URL.createObjectURL(new Blob([content], { type: mime }));
+  downloadBlob(name, new Blob([content], { type: mime }));
+}
+// 文本和图片共用下载生命周期，及时释放临时对象地址。
+function downloadBlob(name: string, content: Blob) {
+  const url = URL.createObjectURL(content);
   const a = document.createElement("a");
   a.href = url;
   a.download = name;
@@ -1090,6 +1098,30 @@ function download(name: string, content: string, mime = "application/json") {
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+// JSON 保留完整工程与无损数值序列化，不受当前所选行为树影响。
+function exportJSON() {
+  if (projectReady.value && ensureIdentityDraftsApplied()) {
+    download(fileName.value || suggestedName.value, stringifyJSON(project.value, 2));
+  }
+}
+// PNG 导出当前行为树全部节点，独立于用户的缩放和滚动位置。
+async function exportPNG() {
+  if (!projectReady.value || pngExportBusy.value || !ensureIdentityDraftsApplied()) return;
+  pngExportBusy.value = true;
+  try {
+    await nextTick();
+    const pane = vueFlowRef.value?.querySelector<HTMLElement>(".vue-flow__transformationpane");
+    if (!pane || !getNodes.value.length) throw new Error("当前画布没有可导出的节点");
+    const name = `${tree.value.name || tree.value.id}`.replace(/[<>:"/\\|?*\x00-\x1f]/g, "_") + ".png";
+    const blob = await exportCanvasPNG(pane, getRectOfNodes(getNodes.value));
+    downloadBlob(name, blob);
+    notice(`已导出 PNG · ${name}`);
+  } catch (cause) {
+    notice(`导出 PNG 失败：${cause instanceof Error ? cause.message : String(cause)}`, true);
+  } finally {
+    pngExportBusy.value = false;
+  }
 }
 // 从本地文件导入草稿，交给 Go 规范化后再替换视图。
 async function importProject(event: Event) {
@@ -1445,9 +1477,7 @@ onUnmounted(() => toolLifecycle.abort());
       <div class="toolbar">
         <button :disabled="busy || !workspace" @click="resetProject()">新建</button
         ><button title="将 JSON 内容读入未保存草稿，不会直接修改源文件；保存时选择目录和文件名，确认覆盖同名文件后才会覆盖。" :disabled="busy || !workspace" @click="importInput?.click()">导入</button>
-        <button :disabled="!projectReady" @click="ensureIdentityDraftsApplied() && download(fileName || suggestedName, stringifyJSON(project, 2))">
-          导出 JSON
-        </button>
+        <ExportMenu :disabled="!projectReady" :png-busy="pngExportBusy" @json="exportJSON" @png="exportPNG" />
         <button :disabled="busy || !projectReady" @click="save()">保存 <kbd>Ctrl S</kbd></button>
         <button title="选择目录和文件名另存为；保存成功后使用目标工作目录" :disabled="busy || !projectReady" @click="save(true)">另存为</button>
         <button :disabled="busy || !projectReady" @click="validate">校验</button>
