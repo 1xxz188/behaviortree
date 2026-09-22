@@ -32,7 +32,8 @@ export function canvasExportOptions(bounds: CanvasBounds) {
     },
     // 排除临时连线与框选层，保留实际节点、连线和顺序标签。
     filter: (element: HTMLElement) => !element.classList?.contains("vue-flow__connectionline")
-      && !element.classList?.contains("vue-flow__nodesselection"),
+      && !element.classList?.contains("vue-flow__nodesselection")
+      && !element.classList?.contains("node-comment-toggle"),
   };
 }
 

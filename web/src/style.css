@@ -423,6 +423,7 @@ pre {
   pointer-events: none;
 }
 .bt-node {
+  position: relative;
   width: 188px;
   padding: 12px 14px;
   border-radius: 7px;
@@ -432,6 +433,16 @@ pre {
   box-shadow: 0 5px 18px #0003;
   color: #dce7e8;
 }
+/* 选中节点上方提供独立气泡入口，不占节点布局，不触发画布拖动。 */
+.node-comment-toggle { position: absolute; top: -34px; right: 4px; width: 28px; height: 28px; padding: 5px; display: grid; place-items: center; border: 1px solid #6d9b91; border-radius: 50%; background: #203c37; color: #9fedd8; box-shadow: 0 3px 10px #0005; }
+.node-comment-toggle svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linejoin: round; stroke-linecap: round; }
+.node-comment-toggle:hover { background: #305b50; }
+/* 会话内悬浮开关沿用工具栏按钮尺寸，不改变工程内容。 */
+.comment-hover-switch { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
+.switch-track { display: inline-flex; align-items: center; width: 25px; height: 14px; padding: 2px; border-radius: 8px; background: #475762; }
+.switch-track > span { width: 10px; height: 10px; border-radius: 50%; background: #c5d4d9; transition: transform 0.15s; }
+.comment-hover-switch[aria-checked="true"] .switch-track { background: #3b9279; }
+.comment-hover-switch[aria-checked="true"] .switch-track > span { transform: translateX(11px); background: #e7fff6; }
 .bt-node.blue {
   border-color: #344f6b;
   border-left-color: #8ebcff;

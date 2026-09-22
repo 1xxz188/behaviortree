@@ -44,7 +44,7 @@ function session(type: NodeType = "action", binding = "move_to") {
   const html = () => renderToString(createSSRApp({
     render,
     components: { Handle: { render: () => null } },
-    setup: () => ({ data: app.graphNodes.value[0]!.data, Position: { Left: "left", Right: "right" } }),
+    setup: () => ({ data: app.graphNodes.value[0]!.data, selected: "", Position: { Left: "left", Right: "right" } }),
   }));
   return { ...app, node, codeNameDraft, codeNameError, html };
 }

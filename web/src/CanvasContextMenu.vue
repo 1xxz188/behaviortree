@@ -14,21 +14,19 @@ const emit = defineEmits<{
   close: []; // 关闭整个菜单或取消确认。
   duplicate: []; // 复制当前右键目标节点。
   delete: []; // 仅在二次确认后提交节点删除。
-  comment: [value: string]; // 应用注释草稿，由父组件校验目标身份并记录历史。
+  comment: []; // 请求父组件打开节点旁的统一注释浮层。
   save: []; // 保存当前工程。
   saveAs: []; // 将当前工程另存为。
   json: []; // 导出工程 JSON。
   png: []; // 导出当前行为树图片。
 }>();
-const mode = ref<"menu" | "delete" | "comment">(props.initialMode ?? "menu"); // 当前交互阶段。
+const mode = ref<"menu" | "delete">(props.initialMode ?? "menu"); // 当前交互阶段。
 const menu = ref<HTMLElement>(); // 一级菜单，用于测量和键盘导航。
 const exportMenu = ref<HTMLElement>(); // 独立固定定位，避免被一级菜单裁剪。
 const exportTrigger = ref<HTMLButtonElement>(); // 收起二级菜单时恢复焦点。
 const dialog = ref<HTMLDialogElement>(); // 原生模态对话框约束删除确认焦点。
 const cancelButton = ref<HTMLButtonElement>(); // 左右键切换时的取消目标。
 const confirmButton = ref<HTMLButtonElement>(); // 删除确认默认聚焦的主要操作。
-const commentInput = ref<HTMLTextAreaElement>(); // 注释窗口打开后聚焦多行输入框。
-const commentDraft = ref(""); // 草稿只在应用时提交，输入与取消均不修改工程。
 const exportOpen = ref(false); // 二级菜单由点击或键盘显式展开。
 const position = ref({ left: props.x, top: props.y }); // 裁剪后的一级菜单坐标。
 const exportPosition = ref({ left: props.x, top: props.y }); // 裁剪后的导出菜单坐标。
@@ -92,20 +90,11 @@ function confirmDelete() {
   if (!props.disabled && props.node) emit("delete");
 }
 
-// 回显右键目标的注释，复用原生模态框隔离画布快捷键。
-async function openComment() {
+// 注释浮层接管焦点，菜单卸载时不再抢回旧焦点。
+function openComment() {
   if (props.disabled || !props.node) return;
-  commentDraft.value = props.node.comment ?? "";
-  mode.value = "comment";
-  exportOpen.value = false;
-  await nextTick();
-  dialog.value?.showModal();
-  commentInput.value?.focus();
-}
-
-// 保留正文换行；空白草稿表示清除注释，身份与历史交由工程入口处理。
-function submitComment() {
-  if (!props.disabled && props.node) emit("comment", commentDraft.value.trim());
+  restoreFocus = false;
+  emit("comment");
 }
 
 // 点击两个菜单以外的区域时关闭浮层，不抢走新目标的焦点。
@@ -203,22 +192,6 @@ onBeforeUnmount(() => {
         <button ref="confirmButton" type="button" autofocus class="canvas-delete-action" :disabled="disabled || !node" @click="confirmDelete">确认删除</button>
       </div>
     </dialog>
-    <dialog v-if="mode === 'comment'" ref="dialog" class="project-dialog canvas-operation-dialog"
-      aria-labelledby="canvas-comment-title" @keydown.stop @cancel.prevent="emit('close')">
-      <h2 id="canvas-comment-title">修改注释</h2>
-      <p>节点：{{ node?.name || node?.id }}</p>
-      <form @submit.prevent="submitComment">
-        <label class="field-label">节点注释
-          <textarea ref="commentInput" v-model="commentDraft" rows="7" autofocus aria-label="节点注释"
-            aria-describedby="canvas-comment-help" :disabled="disabled" />
-        </label>
-        <p id="canvas-comment-help" class="muted">支持多行，清空后应用可删除注释。</p>
-        <div class="dialog-actions">
-          <button type="button" @click="emit('close')">取消</button>
-          <button type="submit" class="primary" :disabled="disabled || !node">应用</button>
-        </div>
-      </form>
-    </dialog>
   </Teleport>
 </template>
 
@@ -232,5 +205,4 @@ onBeforeUnmount(() => {
 .submenu-arrow { float: right; margin-left: 24px; }
 .canvas-delete-action { color: #ffabab; }
 .canvas-operation-dialog p { overflow-wrap: anywhere; }
-.canvas-operation-dialog textarea { width: 100%; box-sizing: border-box; resize: vertical; }
 </style>

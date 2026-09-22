@@ -21,7 +21,7 @@ const names = new Set([
   "moveNode", "deleteSelected", "confirmDeleteCanvasNode", "openCanvasNodeMenu", "openCanvasPaneMenu",
   "syncCanvasSelection", "finishCanvasSelection", "selectCanvasNode", "keydown",
   "checkpoint", "mutate", "restore", "undo", "redo", "rebuildIDs",
-  "applyCanvasNodeComment",
+  "editCanvasMenuComment", "commitNodeComment",
 ]);
 const handlers = script.statements.filter(statement => ts.isFunctionDeclaration(statement)
   && names.has(statement.name?.text ?? "")).map(statement => statement.getText(script)).join("\n");
@@ -38,9 +38,20 @@ interface CanvasNode {
 interface CanvasMenu {
   tree: Tree; // 打开菜单时的实际树。
   node?: BTNode; // 打开菜单时的实际节点。
+  anchor?: CanvasElement; // 右键节点对应的真实 DOM 锚点。
   x: number; // 菜单横坐标。
   y: number; // 菜单纵坐标。
   initialMode?: "menu" | "delete"; // 是否直接进入删除确认。
+}
+
+// 模拟节点 DOM 生命周期，以检验异步打开浮层时仍然使用有效锚点。
+class CanvasElement {
+  isConnected = true; // 节点从画布移除后不再允许打开浮层。
+  // 事件可能来自节点内部，最近节点容器作为浮层定位来源。
+  closest(selector: string) {
+    assert.equal(selector, ".vue-flow__node");
+    return this;
+  }
 }
 
 // 使用真实索引、响应式工程和撤销栈，保证批量移动及删除能跨历史恢复。
@@ -67,8 +78,11 @@ function session() {
   const undoStack = ref<EditorSnapshot[]>([]);
   const redoStack = ref<EditorSnapshot[]>([]);
   const semanticRevision = ref(0);
+  const commentEdits: { node: BTNode; anchor: CanvasElement }[] = [];
   const context = {
     nextTick, reactive, captureSnapshot, restoreSnapshot, semanticSignature,
+    Element: CanvasElement,
+    nodeCommentTooltip: { value: { edit: (node: BTNode, anchor: CanvasElement) => { commentEdits.push({ node, anchor }); } } },
     project, treeID, tree, treeIdentity, nodeIdentity, nodeIndex, selected, node,
     canvasMenu: shallowRef<CanvasMenu>(), workspaceChanging: ref(false), projectReady: ref(true),
     undoStack, redoStack, editRevision: 0, saveState: new ProjectSaveState(), occupiedIDs: new Set<string>(),
@@ -102,9 +116,10 @@ function session() {
     keydown: (event: unknown) => void; // 全选及文本输入保护。
     undo: () => void; // 真实撤销入口。
     redo: () => void; // 真实重做入口。
-    applyCanvasNodeComment: (value: string) => void; // 向右键捕获目标应用注释草稿。
+    editCanvasMenuComment: () => Promise<void>; // 菜单关闭后打开统一注释浮层。
+    commitNodeComment: (tree: Tree, node: BTNode, value: string) => boolean; // 统一提交并核验目标身份。
   };
-  return { ...context, app, flowNodes, selectionCalls };
+  return { ...context, app, flowNodes, selectionCalls, commentEdits };
 }
 
 // 一次拖动保存整组选中位置、保持节点拓扑，撤销和重做均按整组恢复。
@@ -247,9 +262,11 @@ test("节点右键捕获目标，空白右键切换为工程菜单", () => {
   const s = session();
   let prevented = 0;
   let stopped = 0;
-  const event = { clientX: 120, clientY: 230, preventDefault: () => { prevented++; }, stopPropagation: () => { stopped++; } };
+  const anchor = new CanvasElement();
+  const event = { target: anchor, clientX: 120, clientY: 230, preventDefault: () => { prevented++; }, stopPropagation: () => { stopped++; } };
   s.app.openCanvasNodeMenu({ event, node: { id: "2" } });
   assert.equal(s.canvasMenu.value?.node?.id, "2");
+  assert.equal(s.canvasMenu.value?.anchor, anchor);
   assert.equal(s.selected.value, s.tree.value.root);
   assert.equal(s.getSelectedNodes.value.length, 2);
   assert.equal(stopped, 1);
@@ -266,9 +283,8 @@ test("注释填写修改与清空均可撤销重做并保持多选", () => {
   const s = session();
   const before = stringifyJSON(s.project.value);
   s.saveState.reset(before);
-  const open = () => { s.canvasMenu.value = { tree: s.tree.value, node: s.nodeIndex.value.get("2"), x: 0, y: 0 }; };
-  open();
-  s.app.applyCanvasNodeComment("  首行\n第二行  ");
+  const commit = (value: string) => s.app.commitNodeComment(s.tree.value, s.nodeIndex.value.get("2")!, value);
+  assert.equal(commit("  首行\n第二行  "), true);
   assert.equal(s.nodeIndex.value.get("2")!.comment, "首行\n第二行");
   assert.equal(s.node.value!.comment, undefined);
   assert.equal(s.undoStack.value.length, 1);
@@ -282,11 +298,9 @@ test("注释填写修改与清空均可撤销重做并保持多选", () => {
   s.app.redo();
   assert.equal(s.nodeIndex.value.get("2")!.comment, "首行\n第二行");
   assert.equal(s.saveState.dirty, true);
-  open();
-  s.app.applyCanvasNodeComment("修改后");
+  assert.equal(commit("修改后"), true);
   assert.equal(s.nodeIndex.value.get("2")!.comment, "修改后");
-  open();
-  s.app.applyCanvasNodeComment(" \n ");
+  assert.equal(commit(" \n "), true);
   assert.equal(Object.hasOwn(s.nodeIndex.value.get("2")!, "comment"), false);
   s.app.undo();
   assert.equal(s.nodeIndex.value.get("2")!.comment, "修改后");
@@ -296,17 +310,16 @@ test("注释填写修改与清空均可撤销重做并保持多选", () => {
 });
 
 // 取消、同内容和空白的重复提交不能产生脏状态或令已有生成结果过期。
-test("取消与未变化的注释不生成历史", () => {
+test("取消与未变化的注释不生成历史", async () => {
   const s = session();
   s.node.value!.comment = "已有说明";
   const before = stringifyJSON(s.project.value);
   s.canvasMenu.value = { tree: s.tree.value, node: s.node.value, x: 0, y: 0 };
   s.canvasMenu.value = undefined;
-  s.app.applyCanvasNodeComment("取消后的草稿");
-  s.canvasMenu.value = { tree: s.tree.value, node: s.node.value, x: 0, y: 0 };
-  s.app.applyCanvasNodeComment("  已有说明  ");
-  s.canvasMenu.value = { tree: s.tree.value, node: s.nodeIndex.value.get("2"), x: 0, y: 0 };
-  s.app.applyCanvasNodeComment(" \n ");
+  await s.app.editCanvasMenuComment();
+  assert.equal(s.commentEdits.length, 0);
+  assert.equal(s.app.commitNodeComment(s.tree.value, s.node.value!, "  已有说明  "), true);
+  assert.equal(s.app.commitNodeComment(s.tree.value, s.nodeIndex.value.get("2")!, " \n "), true);
   assert.equal(stringifyJSON(s.project.value), before);
   assert.equal(s.undoStack.value.length, 0);
   assert.equal(s.semanticRevision.value, 0);
@@ -314,21 +327,79 @@ test("取消与未变化的注释不生成历史", () => {
 
 // 同 ID 的替换对象、已删除目标、另一棵树及工程切换都不能接收过期注释草稿。
 test("注释提交拒绝过期目标及不可编辑工程", () => {
-  for (const stale of ["node", "deleted", "tree", "workspace", "not-ready", "pane"] as const) {
+  for (const stale of ["node", "deleted", "tree", "workspace", "not-ready"] as const) {
     const s = session();
-    s.canvasMenu.value = { tree: s.tree.value, node: s.node.value, x: 0, y: 0 };
+    const target = stale === "node" ? clone(s.node.value!) : s.node.value!;
+    const targetTree = stale === "tree" ? clone(s.tree.value) : s.tree.value;
+    if (stale === "deleted") s.nodeIndex.value.delete(target.id);
+    else if (stale === "workspace") s.workspaceChanging.value = true;
+    else if (stale === "not-ready") s.projectReady.value = false;
+    const before = stringifyJSON(s.project.value);
+    assert.equal(s.app.commitNodeComment(targetTree, target, "不可提交"), false);
+    assert.equal(stringifyJSON(s.project.value), before);
+    assert.equal(s.undoStack.value.length, 0);
+    assert.equal(s.canvasMenu.value, undefined);
+  }
+});
+
+// 菜单入口只将捕获目标交给统一浮层，不提交内容或改动多选与主节点。
+test("右键修改注释在菜单卸载后打开捕获节点的浮层", async () => {
+  const s = session();
+  const anchor = new CanvasElement();
+  const target = s.nodeIndex.value.get("2")!;
+  const before = stringifyJSON(s.project.value);
+  s.app.openCanvasNodeMenu({ event: { target: anchor, preventDefault() {}, stopPropagation() {} }, node: { id: "2" } });
+  const opening = s.app.editCanvasMenuComment();
+  assert.equal(s.canvasMenu.value, undefined);
+  assert.equal(s.commentEdits.length, 0);
+  await opening;
+  assert.equal(s.commentEdits.length, 1);
+  assert.equal(s.commentEdits[0]!.node, target);
+  assert.equal(s.commentEdits[0]!.anchor, anchor);
+  assert.equal(s.selected.value, s.tree.value.root);
+  assert.equal(s.getSelectedNodes.value.length, 2);
+  assert.equal(s.selectionCalls.length, 0);
+  assert.equal(stringifyJSON(s.project.value), before);
+  assert.equal(s.undoStack.value.length, 0);
+});
+
+// 浮层异步入口拒绝已失效菜单目标和已从画布断开的锚点，避免误编辑当前节点。
+test("右键修改注释拒绝过期目标树及失联锚点", async () => {
+  for (const stale of ["node", "deleted", "tree", "workspace", "not-ready", "pane", "anchor", "detached"] as const) {
+    const s = session();
+    const anchor = new CanvasElement();
+    s.canvasMenu.value = { tree: s.tree.value, node: s.node.value, anchor, x: 0, y: 0 };
     if (stale === "node") s.canvasMenu.value.node = clone(s.node.value!);
     else if (stale === "deleted") s.nodeIndex.value.delete(s.node.value!.id);
     else if (stale === "tree") s.canvasMenu.value.tree = clone(s.tree.value);
     else if (stale === "workspace") s.workspaceChanging.value = true;
     else if (stale === "not-ready") s.projectReady.value = false;
-    else s.canvasMenu.value.node = undefined;
+    else if (stale === "pane") s.canvasMenu.value.node = undefined;
+    else if (stale === "anchor") s.canvasMenu.value.anchor = undefined;
+    else anchor.isConnected = false;
     const before = stringifyJSON(s.project.value);
-    s.app.applyCanvasNodeComment("不可提交");
-    assert.equal(stringifyJSON(s.project.value), before);
-    assert.equal(s.undoStack.value.length, 0);
+    await s.app.editCanvasMenuComment();
+    assert.equal(s.commentEdits.length, 0, stale);
     assert.equal(s.canvasMenu.value, undefined);
+    assert.equal(s.undoStack.value.length, 0);
+    assert.equal(stringifyJSON(s.project.value), before);
   }
+});
+
+// 等待菜单卸载期间切树必须重新核验捕获身份，不能将旧节点带到新画布。
+test("右键修改注释在 nextTick 等待期间切树不打开浮层", async () => {
+  const s = session();
+  s.canvasMenu.value = { tree: s.tree.value, node: s.node.value, anchor: new CanvasElement(), x: 0, y: 0 };
+  const opening = s.app.editCanvasMenuComment();
+  const replacement = clone(s.tree.value);
+  replacement.id = "replacement";
+  s.project.value.trees.push(replacement);
+  s.treeIdentity.value = new TreeIdentityIndex(s.project.value);
+  s.treeID.value = replacement.id;
+  await opening;
+  assert.equal(s.commentEdits.length, 0);
+  assert.equal(s.undoStack.value.length, 0);
+  assert.equal(s.canvasMenu.value, undefined);
 });
 
 // 右键平移及缩放动画中经过指针的节点不能重新弹出说明，结束后正常悬浮可恢复。

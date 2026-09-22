@@ -199,8 +199,10 @@ const canvasMenu = shallowRef<{
   x: number; // 菜单的视口横坐标。
   y: number; // 菜单的视口纵坐标。
   initialMode?: "menu" | "delete"; // 属性面板和删除键直接进入确认。
+  anchor?: HTMLElement; // 右键目标的节点 DOM，直接作为注释浮层锚点。
 }>();
 const nodeCommentTooltip = ref<InstanceType<typeof NodeCommentTooltip>>(); // 全画布共享一个注释浮层。
+const autoOpenComments = ref(true); // 默认开启，仅当前页面会话有效，不持久化。
 const canvasMoving = ref(false); // 视口移动及缩放动画期间禁止新悬浮，结束事件解除。
 // 加载工程时一次建立黑板字段占用集合；树和节点使用各自的递增索引。
 let occupiedIDs = new Set<string>();
@@ -632,7 +634,8 @@ function openCanvasNodeMenu({ event, node: item }: NodeMouseEvent) {
   event.stopPropagation();
   const target = nodeIndex.value.get(item.id);
   if (!target || workspaceChanging.value) return;
-  canvasMenu.value = { tree: tree.value, node: target, x: (event as MouseEvent).clientX, y: (event as MouseEvent).clientY };
+  const anchor = event.target instanceof Element ? event.target.closest<HTMLElement>(".vue-flow__node") ?? undefined : undefined;
+  canvasMenu.value = { tree: tree.value, node: target, anchor, x: (event as MouseEvent).clientX, y: (event as MouseEvent).clientY };
 }
 // Vue Flow 仅在右键未发生平移时派发此事件，拖动画布不会误弹菜单。
 function openCanvasPaneMenu(event: MouseEvent) {
@@ -648,19 +651,34 @@ function showCanvasNodeComment({ event, node: item }: NodeMouseEvent) {
   if (target && element) void nodeCommentTooltip.value?.show(target, element);
 }
 
-// 注释提交固定作用于右键捕获对象；相同内容不污染历史及生成修订。
-function applyCanvasNodeComment(value: string) {
-  const menu = canvasMenu.value;
-  canvasMenu.value = undefined;
-  if (workspaceChanging.value || !projectReady.value || !menu?.node
-    || menu.tree !== tree.value || nodeIndex.value.get(menu.node.id) !== menu.node) return;
+// 气泡独立打开统一注释浮层，不改变选区或触发节点拖动。
+function editCanvasNodeComment(event: MouseEvent, id: string) {
+  const target = nodeIndex.value.get(id);
+  const element = event.currentTarget instanceof Element ? event.currentTarget.closest<HTMLElement>(".vue-flow__node") : null;
+  if (target && element) void nodeCommentTooltip.value?.edit(target, element);
+}
+
+// 两个注释入口共用历史边界，并复核树和节点对象以拒绝过期草稿。
+function commitNodeComment(targetTree: Tree, target: BTNode, value: string): boolean {
+  if (workspaceChanging.value || !projectReady.value
+    || targetTree !== tree.value || nodeIndex.value.get(target.id) !== target) return false;
   const comment = value.trim();
-  if ((menu.node.comment ?? "") === comment) return;
-  const target = menu.node;
+  if ((target.comment ?? "") === comment) return true;
   mutate(() => {
     if (comment) target.comment = comment;
     else delete target.comment;
   });
+  return true;
+}
+
+// 等待菜单卸载解除浮层禁用，再复核捕获对象；不查询或扫描全画布 DOM。
+async function editCanvasMenuComment() {
+  const menu = canvasMenu.value;
+  canvasMenu.value = undefined;
+  await nextTick();
+  if (workspaceChanging.value || !projectReady.value || !menu?.node || !menu.anchor?.isConnected
+    || menu.tree !== tree.value || nodeIndex.value.get(menu.node.id) !== menu.node) return;
+  await nodeCommentTooltip.value?.edit(menu.node, menu.anchor);
 }
 
 // 复制右击目标前核验对象身份，复用节点编号、偏移和撤销逻辑。
@@ -1761,7 +1779,11 @@ onUnmounted(() => toolLifecycle.abort());
           >
             ↷</button
           ><button @click="layout">自动布局</button
-          ><button @click="fitView({ padding: 0.18 })">适应画布</button
+          ><button @click="fitView({ padding: 0.18 })">适应画布</button>
+          <button type="button" role="switch" :aria-checked="autoOpenComments" class="comment-hover-switch"
+            title="关闭后仍可通过节点气泡或右键菜单查看注释" @click="autoOpenComments = !autoOpenComments">
+            <span class="switch-track" aria-hidden="true"><span /></span>悬浮展开注释
+          </button
           ><button class="narrow-only" @click="inspectorOpen = true">
             属性
           </button>
@@ -1787,7 +1809,7 @@ onUnmounted(() => toolLifecycle.abort());
         @selection-end="finishCanvasSelection"
         @node-context-menu="openCanvasNodeMenu"
         @node-mouse-enter="showCanvasNodeComment"
-        @node-mouse-leave="nodeCommentTooltip?.scheduleHide()"
+        @node-mouse-leave="nodeCommentTooltip?.scheduleHide($event.event as MouseEvent)"
         @node-drag-start="nodeCommentTooltip?.hide()"
         @selection-drag-start="nodeCommentTooltip?.hide()"
         @move-start="canvasMoving = true; nodeCommentTooltip?.hide()"
@@ -1809,6 +1831,13 @@ onUnmounted(() => toolLifecycle.abort());
               { invalid: data.invalid },
             ]"
           >
+            <button v-if="selected === data.node.id && !nodeCommentTooltip?.activeNode" type="button" class="node-comment-toggle nodrag nopan"
+              title="编辑注释" aria-label="编辑注释" aria-controls="node-comment-tooltip"
+              :aria-expanded="false"
+              :disabled="busy || workspaceChanging" @pointerdown.stop @mousedown.stop @dblclick.stop @contextmenu.stop.prevent
+              @click.stop="editCanvasNodeComment($event, data.node.id)">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-8l-5 4v-4H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z" /><path d="M7 9h10M7 13h7" /></svg>
+            </button>
             <Handle type="target" :position="Position.Left" />
             <div class="bt-node-top">
               <span>{{ data.kind.icon }}</span
@@ -2218,12 +2247,12 @@ onUnmounted(() => toolLifecycle.abort());
     <ProjectDialog v-if="projectDialog" :kind="projectDialog.kind" :reload="projectDialog.reload" :workspace="workspace" :suggestion="fileName || suggestedName" :files="allFiles" @close="closeProjectDialog" />
     <ImportErrorDialog v-if="importFailure" :name="importFailure.name" :message="importFailure.message" @close="importFailure = undefined" />
     <ScaffoldOverwriteDialog v-if="scaffoldOverwrite" :path="scaffoldOverwrite.path" @close="closeScaffoldOverwrite" />
-    <NodeCommentTooltip ref="nodeCommentTooltip" :tree="tree"
+    <NodeCommentTooltip ref="nodeCommentTooltip" :tree="tree" :commit="commitNodeComment" :auto-open="autoOpenComments"
       :disabled="!projectReady || busy || workspaceChanging || canvasMoving || !!(canvasMenu || treeMenu || catalogMenu || catalogDialog || projectDialog || importFailure || nodeHelp || catalogCopy || scaffoldOverwrite)" />
     <CanvasContextMenu v-if="canvasMenu" :key="`${canvasMenu.node?.id ?? 'pane'}:${canvasMenu.x}:${canvasMenu.y}:${canvasMenu.initialMode ?? 'menu'}`"
       :node="canvasMenu.node" :x="canvasMenu.x" :y="canvasMenu.y" :initial-mode="canvasMenu.initialMode"
       :disabled="!projectReady || busy || workspaceChanging" :png-busy="pngExportBusy"
-      @close="canvasMenu = undefined" @duplicate="duplicateCanvasNode" @delete="confirmDeleteCanvasNode" @comment="applyCanvasNodeComment"
+      @close="canvasMenu = undefined" @duplicate="duplicateCanvasNode" @delete="confirmDeleteCanvasNode" @comment="editCanvasMenuComment"
       @save="canvasMenu = undefined; save()" @save-as="canvasMenu = undefined; save(true)"
       @json="canvasMenu = undefined; exportJSON()" @png="canvasMenu = undefined; exportPNG()" />
     <TreeContextMenu v-if="treeMenu" :key="`${treeMenu.tree.id}:${treeMenu.x}:${treeMenu.y}:${treeMenu.initialMode ?? 'menu'}`"

@@ -26,3 +26,12 @@ test("PNG 拒绝非法画布尺寸", () => {
   assert.throws(() => canvasExportOptions({ x: NaN, y: 0, width: 100, height: 100 }), /画布尺寸无效/);
   assert.throws(() => canvasExportOptions({ x: 0, y: 0, width: Infinity, height: 100 }), /画布尺寸无效/);
 });
+
+// PNG 只保留工程内容，节点气泡与临时框选、连线控件不能混入导出图像。
+test("PNG 排除节点注释气泡而保留节点正文", () => {
+  const options = canvasExportOptions({ x: 0, y: 0, width: 100, height: 100 });
+  for (const name of ["node-comment-toggle", "vue-flow__nodesselection", "vue-flow__connectionline", "bt-node"]) {
+    const element = { classList: { contains: (value: string) => value === name } } as HTMLElement;
+    assert.equal(options.filter(element), name === "bt-node");
+  }
+});
