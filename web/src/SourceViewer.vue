@@ -2,16 +2,21 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { createSourceIndex, sourceNodeKey } from "./generation";
 import type { SourceIndex, SourceLocation } from "./generation";
+import { selectedScaffoldCode } from "./scaffoldNavigation";
 
 // 源码查看器只渲染可见行；大树生成的长文件不会创建同等数量的 DOM。
 const props = defineProps<{
   source: string; // 完整只读源码。
-  sourceIndex?: SourceIndex; // 接收快照时建立的当前文件索引，骨架没有映射。
+  sourceIndex?: SourceIndex; // 接收快照时建立的生成代码或业务骨架索引。
   treeId?: string; // 当前选中树。
   nodeId?: string; // 当前选中节点。
   stale?: boolean; // 过期源码禁止按旧映射跳转当前画布。
+  copySelection?: boolean; // 业务骨架允许复制当前节点对应的完整函数。
 }>();
-const emit = defineEmits<{ locate: [location: SourceLocation] }>();
+const emit = defineEmits<{
+  locate: [location: SourceLocation]; // 将源码行定位回画布节点。
+  copyCode: [source: string]; // 交由外层统一复制并提示结果。
+}>();
 const viewport = ref<HTMLElement>();
 const scrollTop = ref(0);
 const height = ref(240);
@@ -58,6 +63,7 @@ onUnmounted(() => observer?.disconnect());
   <div class="source-viewer">
     <div v-if="locations.length" class="source-locations">
       <span>选中节点 · {{ locations.length }} 个展开位置</span>
+      <button v-if="copySelection && locations[0]" @click="emit('copyCode', selectedScaffoldCode(index, locations[0]))">复制选中代码</button>
       <button v-if="locations.length > pageSize" :disabled="occurrencePage === 0" @click="occurrencePage--">上一页</button>
       <button v-for="location in visibleLocations" :key="location.index" @click="jump(location.line)">
         #{{ location.index }} · 行 {{ location.line }}

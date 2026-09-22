@@ -8,6 +8,7 @@ import { CatalogOrganizationIndex } from "./catalogOrganization";
 import { validatedCatalogJSON } from "./catalogTransfer";
 import { synchronizeCatalog } from "./catalogSync";
 import SourceViewer from "./SourceViewer.vue";
+import { createScaffoldSourceIndex } from "./scaffoldNavigation";
 import ProjectDialog from "./ProjectDialog.vue";
 import ImportErrorDialog from "./ImportErrorDialog.vue";
 import ScaffoldOverwriteDialog from "./ScaffoldOverwriteDialog.vue";
@@ -21,8 +22,8 @@ import { exportCanvasPNG } from "./canvasExport";
 import { startupProject, rememberProject, selectNativeDirectory } from "./workspace";
 import type { WorkspaceFiles, RecentStorage, ProjectDialogResult } from "./workspace";
 import { ProjectSaveState } from "./saveState";
-import { createGeneratedSourceIndex, GenerationRequests, selectGeneratedFile, semanticSignature } from "./generation";
-import type { GeneratedFile, GeneratedSourceIndex, SourceLocation } from "./generation";
+import { createGeneratedSourceIndex, GenerationRequests, selectGeneratedFile, semanticSignature, sourceNodeKey } from "./generation";
+import type { GeneratedFile, GeneratedSourceIndex, SourceIndex, SourceLocation } from "./generation";
 import { TreeIdentityIndex, captureSnapshot, restoreSnapshot } from "./treeIdentity";
 import type { EditorSnapshot } from "./treeIdentity";
 import { NodeIdentityIndex } from "./nodeIdentity";
@@ -137,7 +138,12 @@ const validationResult = shallowRef<{
   count: number; // 本次完成的校验问题数，零表示明确通过。
 }>();
 const codeSnapshot = shallowRef<CodeSnapshot>();
-const scaffoldSnapshot = shallowRef<{ source: string; revision: number; signature: string }>();
+const scaffoldSnapshot = shallowRef<{
+  source: string; // 当前骨架的完整源码。
+  revision: number; // 生成时的工程语义修订。
+  signature: string; // 撤销恢复时用于确认源码仍有效。
+  index: SourceIndex; // 骨架更新时建立，节点切换直接复用。
+}>();
 const scaffoldOverwrite = shallowRef<{
   path: string; // 后端确认的实际目标文件路径。
   resolve: (confirmed: boolean) => void; // 关闭对话框后恢复保存流程。
@@ -1127,7 +1133,8 @@ function previewScaffold() {
   return action(async () => {
     const result = await currentProjectRequest<{ source: string }>("/api/scaffold");
     if (!result) return;
-    scaffoldSnapshot.value = { source: result.data.source, revision: result.revision, signature: result.signature };
+    const index = createScaffoldSourceIndex(result.data.source, project.value);
+    scaffoldSnapshot.value = { source: result.data.source, revision: result.revision, signature: result.signature, index };
     showOutput("scaffold");
     notice("业务骨架已生成，请实现 TODO 后与生成文件一起编译");
   });
@@ -1190,6 +1197,23 @@ async function copySource() {
 function locateSource(location: SourceLocation) {
   if (sourceStale.value) return;
   focusDiagnostic({ treeId: location.treeId, nodeId: location.nodeId, message: "" });
+}
+// 骨架使用独立过期状态；共享函数回跳时优先保留当前选中的引用节点。
+function locateScaffold(location: SourceLocation) {
+  if (scaffoldStale.value) return;
+  const current = scaffoldSnapshot.value?.index.byNode.get(sourceNodeKey(treeID.value, selected.value))?.[0];
+  const target = current?.index === location.index ? current : location;
+  focusDiagnostic({ treeId: target.treeId, nodeId: target.nodeId, message: "" });
+}
+// 复制当前节点的业务函数，沿用整份源码复制的结果提示。
+async function copyScaffoldCode(code: string) {
+  if (scaffoldStale.value || !code) return;
+  try {
+    await navigator.clipboard.writeText(code);
+    notice("已复制选中节点的业务代码");
+  } catch {
+    notice("剪贴板不可用，请手动选择代码复制", true);
+  }
 }
 // 将当前工程或源码交给浏览器下载机制。
 function download(name: string, content: string, mime = "application/json") {
@@ -2208,7 +2232,9 @@ onUnmounted(() => toolLifecycle.abort());
       </div>
       <SourceViewer v-else-if="bottomTab === 'source' && source" :source="source" :source-index="sourceIndex"
         :tree-id="treeID" :node-id="selected" :stale="sourceStale" @locate="locateSource" />
-      <SourceViewer v-else-if="bottomTab === 'scaffold' && scaffoldSnapshot" :source="scaffoldSnapshot.source" />
+      <SourceViewer v-else-if="bottomTab === 'scaffold' && scaffoldSnapshot" :source="scaffoldSnapshot.source"
+        :source-index="scaffoldSnapshot.index" :tree-id="treeID" :node-id="selected"
+        :stale="scaffoldStale" copy-selection @locate="locateScaffold" @copy-code="copyScaffoldCode" />
       <div v-else class="output-empty">
         <strong>{{ bottomTab === 'scaffold' ? '从业务目录创建 Go 函数骨架' : '先预览，再生成到目录' }}</strong>
         <p>{{ bottomTab === 'scaffold' ? '根据动作、条件和上下文生成函数签名及 TODO；可复制或下载为独立手写文件。' : '预览使用当前工程生成完整 Go 源码，不写文件。选中节点可定位对应函数，点击代码行号可返回画布。' }}</p>
