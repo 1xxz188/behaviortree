@@ -5,9 +5,11 @@ const props = defineProps<{
   message: string; // 最近一次操作的完整结果，包含实际保存路径。
   failed: boolean; // 失败时使用醒目的错误样式。
   busy: boolean; // 等待操作完成后再展示结果，避免把旧消息当成新结果。
+  revision: number; // 每次实际发布结果时递增，取消操作不会产生新版本。
 }>();
 const visible = ref(false); // 提示可手动关闭，下次操作完成后重新显示。
-const displayDurationMs = 2000; // 每条提示显示两秒，新结果重新计时。
+const displayDurationMs = 3000; // 每条提示显示三秒，新结果重新计时。
+let displayedRevision = props.revision; // 已消费的结果版本，初始状态不作为操作结果展示。
 let dismissTimer: ReturnType<typeof setTimeout> | undefined; // 仅保留一个单次计时器，不轮询。
 // 手动关闭、开始新操作或组件卸载时取消旧计时，避免旧消息关闭新提示。
 function dismiss() {
@@ -15,10 +17,12 @@ function dismiss() {
   dismissTimer = undefined;
   visible.value = false;
 }
-watch(() => [props.message, props.failed, props.busy], () => {
+watch(() => [props.revision, props.busy], () => {
   dismiss();
-  // 同样的操作结果也会随 busy 结束重新显示，并获得完整的展示时长。
-  visible.value = !props.busy && !!props.message;
+  // 只消费新结果；等待期间保留版本，取消操作结束时不会重放旧消息。
+  if (props.busy || props.revision === displayedRevision) return;
+  displayedRevision = props.revision;
+  visible.value = !!props.message;
   if (visible.value) dismissTimer = setTimeout(dismiss, displayDurationMs);
 });
 onScopeDispose(dismiss);

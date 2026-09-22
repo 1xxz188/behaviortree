@@ -63,6 +63,7 @@ function session(options: SessionOptions = {}) {
   targetProject.name = "目标目录工程";
   let serverWorkspace = "E:/original";
   const context = {
+    noticeRevision: { value: 0 }, // 实际发布操作结果的版本。
     ensureIdentityDraftsApplied: () => true,
     Error, stringifyJSON, parseJSON, project, saveState, TreeIdentityIndex, normalizeCodeNames, validateProjectTypes,
     startupProject, rememberProject,
@@ -114,10 +115,27 @@ function session(options: SessionOptions = {}) {
   return { context, calls, dialogs, records, workflow };
 }
 
+// 取消首次保存或另存为不发请求、不发布新提示，旧状态仅保留在状态栏。
+test("取消保存保留旧状态但不发布新的操作提示", async () => {
+  for (const name of ["", "original.json"]) {
+    const s = session({ name, dirty: true, choices: [undefined] });
+    s.context.message.value = "已打开 room_final_audited.json";
+    await s.workflow.save(!!name);
+    assert.deepEqual(s.dialogs, ["save"]);
+    assert.deepEqual(s.calls, []);
+    assert.equal(s.context.noticeRevision.value, 0);
+    assert.equal(s.context.message.value, "已打开 room_final_audited.json");
+    assert.equal(s.context.fileName.value, name);
+    assert.equal(s.context.dirty.value, true);
+    assert.equal(s.context.busy.value, false);
+  }
+});
+
 // 保存成功后身份与最近工程归属目标目录，后续保存必须携带新的目录身份。
 test("跨目录另存为更新身份与候选列表，清除旧源码并继续保存到新目录", async () => {
   const s = session({ dirty: true, choices: [{ name: "copy.json", directory: "E:/目标 目录", overwrite: true }] });
   await s.workflow.save(true);
+  assert.equal(s.context.noticeRevision.value, 1);
   assert.equal(s.calls[0]!.workspace, "E:/original");
   assert.equal(s.calls[0]!.body.directory, "E:/目标 目录");
   assert.equal(s.calls[0]!.body.overwrite, true);
@@ -130,6 +148,7 @@ test("跨目录另存为更新身份与候选列表，清除旧源码并继续�
   assert.equal(s.context.dirty.value, false);
   assert.equal(s.records.get(recentProjectKey("E:/目标 目录")), "copy.json");
   await s.workflow.save();
+  assert.equal(s.context.noticeRevision.value, 2);
   assert.equal(s.calls[1]!.workspace, "E:/目标 目录");
   assert.equal(s.calls[1]!.body.name, "copy.json");
   assert.deepEqual(s.dialogs, ["save"]);

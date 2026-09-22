@@ -30,6 +30,7 @@ function session() {
   let returnedDiagnostics: Diagnostic[] = [];
   const calls: string[] = [];
   const context = {
+    noticeRevision: { value: 0 }, // 实际发布操作结果的版本。
     Error, clone, stringifyJSON, parseJSON,
     project: ref(blankProject()), workspace: ref("E:/workspace"),
     semanticRevision: ref(1), generationRequests: new GenerationRequests(),

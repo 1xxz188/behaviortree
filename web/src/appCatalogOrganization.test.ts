@@ -33,6 +33,7 @@ function editor() {
   const copies: string[] = [];
   const validated: Definition[][] = [];
   const context = {
+    noticeRevision: { value: 0 }, // 实际发布操作结果的版本。
     Error, clone, captureSnapshot, project, saveState,
     catalogIndex: { value: new CatalogOrganizationIndex(project.value) },
     workspaceChanging: { value: false }, treeID: { value: project.value.trees[0]!.id }, selected: { value: "" },

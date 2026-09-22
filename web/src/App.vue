@@ -123,6 +123,7 @@ const files = ref<string[]>([]);
 const allFiles = ref<string[]>([]); // 保存覆盖确认使用完整候选，不受工程有效性筛选影响。
 const importFailure = shallowRef<{ name: string; message: string }>(); // 导入错误的文件名及具体原因，由模态框展示。
 const message = ref("本地工程 · 修改后请保存");
+const noticeRevision = ref(0); // 仅发布操作结果时递增，区分相同文案的新结果与取消后的旧状态。
 const error = ref(false);
 const busy = ref(false);
 const workspaceChanging = ref(false); // 切换请求期间冻结编辑，避免丢弃响应途中产生的修改。
@@ -329,6 +330,7 @@ const graphEdges = computed(() =>
 function notice(text: string, failed = false) {
   message.value = text;
   error.value = failed;
+  noticeRevision.value++;
 }
 // 保存编辑前快照，使语义和布局都可以撤销。
 function checkpoint() {
@@ -2083,7 +2085,7 @@ onUnmounted(() => toolLifecycle.abort());
         >{{ project.blackboard.length }} 个字段</span
       >
     </footer>
-    <OperationNotice :message="message" :failed="error" :busy="busy" />
+    <OperationNotice :message="message" :failed="error" :busy="busy" :revision="noticeRevision" />
     <input
       ref="importInput"
       type="file"

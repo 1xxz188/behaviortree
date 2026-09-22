@@ -23,6 +23,7 @@ function session(conflict = false, changed = false) {
   const dialogOpened = new Promise<void>(resolve => { opened = resolve; });
   let pending: { path: string; resolve: (confirmed: boolean) => void } | undefined;
   const context = {
+    noticeRevision: { value: 0 }, // 实际发布操作结果的版本。
     Error, clone, parseJSON, stringifyJSON,
     project: { value: blankProject() }, workspace: { value: "E:/workspace" },
     semanticRevision: { value: 1 }, scaffoldSnapshot: { value: { source: "preview" } },

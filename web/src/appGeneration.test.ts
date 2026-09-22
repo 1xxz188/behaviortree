@@ -38,6 +38,7 @@ function editor(options: { dirty?: boolean; name?: string; chosenName?: string; 
   }
   const calls: { path: string; body: any }[] = [];
   const context = {
+    noticeRevision: { value: 0 }, // 实际发布操作结果的版本。
     Error, stringifyJSON, parseJSON, clone, project, saveState,
     ensureIdentityDraftsApplied: () => true,
     projectReady: { value: true },

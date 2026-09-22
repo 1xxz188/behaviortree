@@ -32,6 +32,7 @@ function editor() {
   project.value.trees[0]!.root = "1";
   const calls: { path: string; body: any }[] = [];
   const context = {
+    noticeRevision: { value: 0 }, // 实际发布操作结果的版本。
     Error, clone, parseJSON, stringifyJSON, project, synchronizeCatalog, CatalogOrganizationIndex,
     catalogIndex: { value: new CatalogOrganizationIndex(project.value) }, catalogRevision: { value: 0 },
     node: { value: project.value.trees[0]!.nodes[0]! },
