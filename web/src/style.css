@@ -447,6 +447,8 @@ pre {
 .bt-node.invalid {
   border-color: #ff7d83;
 }
+/* 多选框保留视觉边界，鼠标穿透后可右击节点或在间隙右拖画布。 */
+.vue-flow__nodesselection-rect { pointer-events: none; }
 .vue-flow__node.selected .bt-node {
   box-shadow:
     0 0 0 2px #a3f0d085,

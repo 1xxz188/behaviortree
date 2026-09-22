@@ -41,7 +41,7 @@ function session() {
   const history: string[] = [];
   const context = {
     computed, reactive, ref, shallowRef, watch, NodeIdentityIndex,
-    project, treeID, treeIDDraft, selected, nodeIDDraft,
+    project, treeID, treeIDDraft, selected, nodeIDDraft, canvasMenu: shallowRef(),
     treeIdentity: shallowRef(new TreeIdentityIndex(project.value)), renamingTree: false,
     notice: () => {}, endPaletteDrag: () => {}, fitView: () => {}, closeTreeMenu: () => {}, cancelCodeName: () => {},
     setTimeout: (callback: () => void) => callback(),

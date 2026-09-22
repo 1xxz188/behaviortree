@@ -15,6 +15,7 @@ import OperationNotice from "./OperationNotice.vue";
 import TreeContextMenu from "./TreeContextMenu.vue";
 import CatalogContextMenu from "./CatalogContextMenu.vue";
 import ExportMenu from "./ExportMenu.vue";
+import CanvasContextMenu from "./CanvasContextMenu.vue";
 import { exportCanvasPNG } from "./canvasExport";
 import { startupProject, rememberProject, selectNativeDirectory } from "./workspace";
 import type { WorkspaceFiles, RecentStorage, ProjectDialogResult } from "./workspace";
@@ -25,7 +26,7 @@ import { TreeIdentityIndex, captureSnapshot, restoreSnapshot } from "./treeIdent
 import type { EditorSnapshot } from "./treeIdentity";
 import { NodeIdentityIndex } from "./nodeIdentity";
 import { normalizeCodeNames } from "./codeNames";
-import { VueFlow, Handle, Position, useVueFlow, getRectOfNodes } from "@vue-flow/core";
+import { VueFlow, Handle, Position, SelectionMode, useVueFlow, getRectOfNodes } from "@vue-flow/core";
 import type { Connection, NodeDragEvent, NodeMouseEvent } from "@vue-flow/core";
 import { Background } from "@vue-flow/background";
 import { Controls } from "@vue-flow/controls";
@@ -158,8 +159,19 @@ function followSourceSelection() {
 watch([treeID, selected, sourceStale], followSourceSelection);
 // 再次点击已选节点时仍恢复其源码文件，支持用户先手动查看公共 glue 的场景。
 function selectCanvasNode({ node: item }: NodeMouseEvent) {
-  selected.value = item.id;
+  selected.value = item.selected ? item.id : getSelectedNodes.value[0]?.id ?? "";
   followSourceSelection();
+}
+// 框选完成后仅同步属性面板的主节点，整组选中状态由 Vue Flow 保持。
+function finishCanvasSelection() {
+  selected.value = getSelectedNodes.value[0]?.id ?? "";
+}
+// 程序化定位、新增或恢复节点时同步画布；已处于多选中的主节点不收缩选区。
+async function syncCanvasSelection() {
+  await nextTick();
+  const target = findNode(selected.value);
+  if (target && !target.selected) addSelectedNodes([target]);
+  else if (!selected.value) removeSelectedElements();
 }
 const catalogDialog = ref<{
   mode: "create" | "edit" | "import" | "manage"; // 区分新建、编辑和目录操作。
@@ -178,6 +190,14 @@ const treeMenu = shallowRef<{
   x: number; // 菜单在视口中的横坐标。
   y: number; // 菜单在视口中的纵坐标。
   initialMode?: "menu" | "delete"; // 右侧删除按钮可直接打开同一确认框。
+}>();
+// 捕获树和节点对象，确认时拒绝已切换工程或被替换的目标。
+const canvasMenu = shallowRef<{
+  tree: Tree; // 菜单所属的树，用于排除过期操作。
+  node?: BTNode; // 为空表示画布空白菜单。
+  x: number; // 菜单的视口横坐标。
+  y: number; // 菜单的视口纵坐标。
+  initialMode?: "menu" | "delete"; // 属性面板和删除键直接进入确认。
 }>();
 // 加载工程时一次建立黑板字段占用集合；树和节点使用各自的递增索引。
 let occupiedIDs = new Set<string>();
@@ -262,7 +282,8 @@ function resizeOutputWithKeyboard(event: KeyboardEvent) {
 const undoStack = ref<EditorSnapshot[]>([]);
 const redoStack = ref<EditorSnapshot[]>([]);
 const importInput = ref<HTMLInputElement>();
-const { fitView, setCenter, screenToFlowCoordinate, getNodes, vueFlowRef } = useVueFlow();
+const { fitView, setCenter, screenToFlowCoordinate, getNodes, getSelectedNodes, findNode,
+  addSelectedNodes, removeSelectedElements, vueFlowRef } = useVueFlow();
 const pngExportBusy = ref(false); // 图片编码期间禁止重复创建画布副本。
 // 拖拽只保存节点模板，成功落入画布后才写入工程和撤销历史。
 const paletteDrag = ref<{ type: NodeType; binding?: string }>();
@@ -297,11 +318,11 @@ const graphNodes = computed(() =>
   (tree.value?.nodes ?? []).map((n, i) => ({
     id: n.id,
     type: "behavior",
-    position: tree.value.layout?.[n.id] ?? {
+    position: { ...(tree.value.layout?.[n.id] ?? {
       x: 70 + (i % 3) * 250,
       y: 70 + Math.floor(i / 3) * 120,
-    },
-    selected: n.id === selected.value,
+    }) },
+    // 不下发单选标记，避免布局或属性更新覆盖 Vue Flow 的多选状态。
     data: {
       node: n,
       kind: kinds[n.type],
@@ -580,21 +601,61 @@ function link(connection: Connection) {
     tree.value.root = copy.root;
   });
 }
-// 只更新画布坐标，不调整执行顺序。
-function moveNode({ node: moved }: NodeDragEvent) {
+// 仅访问本次拖动的 k 个节点；整组坐标一次提交，不改变执行顺序。
+function moveNode({ nodes }: NodeDragEvent) {
+  const moved = nodes.filter(item => {
+    const previous = tree.value.layout?.[item.id];
+    return nodeIndex.value.has(item.id) && (!previous || previous.x !== item.position.x || previous.y !== item.position.y);
+  });
+  if (!moved.length) return;
   mutate(() => {
     tree.value.layout ??= {};
-    tree.value.layout[moved.id] = { ...moved.position };
+    for (const item of moved) {
+      // 定义自身属性，兼容 __proto__ 等已有合法节点 ID。
+      Object.defineProperty(tree.value.layout, item.id, {
+        value: { ...item.position }, enumerable: true, configurable: true, writable: true,
+      });
+    }
   }, false);
 }
-// 删除所选节点和相关连接，保留其他草稿节点。
+// 所有删除入口只打开确认框，取消不会修改工程和历史。
 function deleteSelected() {
-  if (node.value)
-    mutate(() => {
-      treeIdentity.value.removeNode(node.value!);
-      nodeIdentity.value.removeNode(node.value!);
-      selected.value = "";
-    });
+  if (!node.value || workspaceChanging.value) return;
+  canvasMenu.value = { tree: tree.value, node: node.value, x: 0, y: 0, initialMode: "delete" };
+}
+// 右击节点仅捕获操作对象，不改变已有多选和属性草稿。
+function openCanvasNodeMenu({ event, node: item }: NodeMouseEvent) {
+  event.preventDefault();
+  event.stopPropagation();
+  const target = nodeIndex.value.get(item.id);
+  if (!target || workspaceChanging.value) return;
+  canvasMenu.value = { tree: tree.value, node: target, x: (event as MouseEvent).clientX, y: (event as MouseEvent).clientY };
+}
+// Vue Flow 仅在右键未发生平移时派发此事件，拖动画布不会误弹菜单。
+function openCanvasPaneMenu(event: MouseEvent) {
+  event.preventDefault();
+  if (workspaceChanging.value || !projectReady.value) return;
+  canvasMenu.value = { tree: tree.value, x: event.clientX, y: event.clientY };
+}
+// 复制右击目标前核验对象身份，复用节点编号、偏移和撤销逻辑。
+function duplicateCanvasNode() {
+  const menu = canvasMenu.value;
+  canvasMenu.value = undefined;
+  if (!menu?.node || menu.tree !== tree.value || nodeIndex.value.get(menu.node.id) !== menu.node) return;
+  selected.value = menu.node.id;
+  duplicate();
+}
+// 二次确认只删除捕获的节点，连线索引和历史在同一修改边界内更新。
+function confirmDeleteCanvasNode() {
+  const menu = canvasMenu.value;
+  canvasMenu.value = undefined;
+  if (!menu?.node || menu.tree !== tree.value || nodeIndex.value.get(menu.node.id) !== menu.node || workspaceChanging.value) return;
+  const target = menu.node;
+  mutate(() => {
+    treeIdentity.value.removeNode(target);
+    nodeIdentity.value.removeNode(target);
+    if (selected.value === target.id) selected.value = "";
+  });
 }
 // 复制单个节点属性，分配新 ID 并断开子节点。
 function duplicate() {
@@ -1333,7 +1394,7 @@ function focusDiagnostic(d: Diagnostic) {
 // 处理保存、撤销和删除快捷键，不干扰文本原生撤销。
 function keydown(e: KeyboardEvent) {
   if (workspaceChanging.value) return;
-  if (catalogDialog.value || projectDialog.value || importFailure.value || treeMenu.value || catalogMenu.value || !projectReady.value) return;
+  if (catalogDialog.value || projectDialog.value || importFailure.value || treeMenu.value || catalogMenu.value || canvasMenu.value || !projectReady.value) return;
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
     e.preventDefault();
     (e.target as HTMLElement)?.blur();
@@ -1346,7 +1407,11 @@ function keydown(e: KeyboardEvent) {
     )
   )
     return;
-  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a" && vueFlowRef.value?.contains(e.target as Node)) {
+    e.preventDefault();
+    addSelectedNodes(getNodes.value);
+    finishCanvasSelection();
+  } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
     e.preventDefault();
     e.shiftKey ? redo() : undo();
   } else if (e.key === "Delete") {
@@ -1360,10 +1425,12 @@ function beforeUnload(e: BeforeUnloadEvent) {
 }
 // 仅在实际树对象替换时重建；普通输入、改号和连线通过增量索引处理。
 watch(tree, (current) => {
+  canvasMenu.value = undefined;
   nodeIdentity.value = reactive(new NodeIdentityIndex(current));
   cancelNodeID();
 }, { flush: "sync" });
 watch(selected, cancelNodeID, { flush: "sync" });
+watch([tree, selected], syncCanvasSelection, { flush: "post" });
 watch(treeID, () => {
   cancelTreeID();
   if (renamingTree) return;
@@ -1681,9 +1748,19 @@ onUnmounted(() => toolLifecycle.abort());
         :min-zoom="0.15"
         :max-zoom="2"
         :delete-key-code="null"
+        :selection-key-code="true"
+        :pan-on-drag="[2]"
+        :pan-activation-key-code="null"
+        :selection-mode="SelectionMode.Partial"
+        :node-drag-threshold="3"
+        :pane-click-distance="3"
         fit-view-on-init
         @connect="link"
         @node-click="selectCanvasNode"
+        @nodes-initialized="syncCanvasSelection"
+        @selection-end="finishCanvasSelection"
+        @node-context-menu="openCanvasNodeMenu"
+        @pane-context-menu="openCanvasPaneMenu"
         @pane-click="selected = ''"
         @node-drag-stop="moveNode"
         @dragover="dragOverCanvas"
@@ -1736,7 +1813,7 @@ onUnmounted(() => toolLifecycle.abort());
           </div>
         </template>
       </VueFlow>
-      <div class="canvas-hint">从节点库拖入画布添加 · 拖动节点端点连接 · 子节点顺序在右侧调整</div>
+      <div class="canvas-hint">左键框选 / 拖动选中节点批量移动 · 空白处右键拖动画布 · 右键打开菜单 · Ctrl+A 全选</div>
     </main>
 
     <aside v-show="projectReady" :class="['inspector', { opened: inspectorOpen }]">
@@ -2109,6 +2186,12 @@ onUnmounted(() => toolLifecycle.abort());
     <ProjectDialog v-if="projectDialog" :kind="projectDialog.kind" :reload="projectDialog.reload" :workspace="workspace" :suggestion="fileName || suggestedName" :files="allFiles" @close="closeProjectDialog" />
     <ImportErrorDialog v-if="importFailure" :name="importFailure.name" :message="importFailure.message" @close="importFailure = undefined" />
     <ScaffoldOverwriteDialog v-if="scaffoldOverwrite" :path="scaffoldOverwrite.path" @close="closeScaffoldOverwrite" />
+    <CanvasContextMenu v-if="canvasMenu" :key="`${canvasMenu.node?.id ?? 'pane'}:${canvasMenu.x}:${canvasMenu.y}:${canvasMenu.initialMode ?? 'menu'}`"
+      :node="canvasMenu.node" :x="canvasMenu.x" :y="canvasMenu.y" :initial-mode="canvasMenu.initialMode"
+      :disabled="!projectReady || busy || workspaceChanging" :png-busy="pngExportBusy"
+      @close="canvasMenu = undefined" @duplicate="duplicateCanvasNode" @delete="confirmDeleteCanvasNode"
+      @save="canvasMenu = undefined; save()" @save-as="canvasMenu = undefined; save(true)"
+      @json="canvasMenu = undefined; exportJSON()" @png="canvasMenu = undefined; exportPNG()" />
     <TreeContextMenu v-if="treeMenu" :key="`${treeMenu.tree.id}:${treeMenu.x}:${treeMenu.y}:${treeMenu.initialMode ?? 'menu'}`"
       :tree="treeMenu.tree" :x="treeMenu.x" :y="treeMenu.y"
       :initial-mode="treeMenu.initialMode" :can-delete="project.trees.length > 1"

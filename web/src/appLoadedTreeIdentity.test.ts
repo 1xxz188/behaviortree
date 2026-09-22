@@ -48,7 +48,7 @@ function session() {
     project, treeID, treeIDDraft: ref(treeID.value), selected: ref(""), nodeIDDraft: ref(""),
     codeNameDraft: ref(""), codeNameError: ref(""),
     treeIdentity: shallowRef(new TreeIdentityIndex(project.value)), renamingTree: false,
-    treeMenu: shallowRef(), catalogMenu: shallowRef(), catalogDialog: shallowRef(), editRevision: 0, occupiedIDs: new Set<string>(),
+    treeMenu: shallowRef(), catalogMenu: shallowRef(), catalogDialog: shallowRef(), canvasMenu: shallowRef(), editRevision: 0, occupiedIDs: new Set<string>(),
     codeSnapshot: shallowRef(), scaffoldSnapshot: shallowRef(), semanticRevision: ref(0),
     generationRequests: new GenerationRequests(), diagnostics: ref([]),
     fileName: ref(""), suggestedName: ref(""), workspace: ref("E:/fixture"), files: ref<string[]>([]), allFiles: ref<string[]>([]),
