@@ -82,7 +82,7 @@ interface Popover {
   size: Ref<{ width: number; height: number }>; // 用户拖动后的浮层尺寸。
   position: Ref<{ left: number; top: number }>; // 计算可用视口空间的浮层起点。
   maximized: Ref<boolean>; // 当前是否使用视口内的最大尺寸。
-  show(node: object, element: TestElement): Promise<void>; // 被动悬浮入口。
+  show(node: object, element: TestElement, explicit?: boolean): Promise<void>; // 被动悬浮或显式信息入口。
   edit(node: object, element: TestElement): Promise<void>; // 显式编辑只打开并聚焦，不反向关闭。
   hide(): void; // 暂时关闭并保留草稿。
   reset(): void; // 树替换时清理旧草稿。
@@ -343,6 +343,33 @@ test("关闭自动悬浮后仍可手动打开且重复编辑不收起", async t 
   assert.equal(s.app.draft.value, "手动输入草稿");
   assert.equal(s.document.activeElement, s.input);
   assert.equal(s.commits.length, 0);
+});
+
+// 事件信息图标属于显式入口，关闭列表悬浮后仍可展示空注释供阅读和编辑。
+test("关闭自动悬浮后显式信息入口仍可展示注释", async t => {
+  const s = session(t);
+  s.props.autoOpen = false;
+  s.props.allowEmptyOnHover = true;
+  delete s.first.comment;
+  await s.app.show(s.first, s.anchor);
+  assert.equal(s.app.activeTarget.value, undefined);
+  await s.app.show(s.first, s.anchor, true);
+  assert.equal(s.app.activeTarget.value, s.first);
+  assert.equal(s.app.pinned.value, false);
+  assert.equal(s.app.draft.value, "");
+});
+
+// 禁用的事件行悬浮不应取消信息图标已安排的关闭任务。
+test("关闭自动悬浮后事件行不会延长旧浮层显示", async t => {
+  const s = session(t);
+  s.props.autoOpen = false;
+  await s.app.show(s.first, s.anchor, true);
+  s.app.scheduleHide();
+  assert.equal(s.timers.size, 1);
+  await s.app.show(s.second, s.anchor);
+  assert.equal(s.timers.size, 1);
+  await s.expire();
+  assert.equal(s.app.activeTarget.value, undefined);
 });
 
 // 被动展示同样报告活动节点，标题使用节点自定义名称或内置类型名称。

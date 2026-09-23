@@ -1854,7 +1854,7 @@ onUnmounted(() => toolLifecycle.abort());
           ><button type="button" @click="eventManagerOpen = true">事件</button
           ><button @click="fitView({ padding: 0.18 })">适应画布</button>
           <button type="button" role="switch" :aria-checked="autoOpenComments" class="comment-hover-switch"
-            title="关闭后仍可通过节点气泡或右键菜单查看注释" @click="autoOpenComments = !autoOpenComments">
+            title="关闭后仍可通过节点气泡、事件信息图标或右键菜单查看注释" @click="autoOpenComments = !autoOpenComments">
             <span class="switch-track" aria-hidden="true"><span /></span>悬浮展开注释
           </button
           ><button class="narrow-only" @click="inspectorOpen = true">
@@ -1948,7 +1948,7 @@ onUnmounted(() => toolLifecycle.abort());
           </div>
         </template>
       </VueFlow>
-      <EventOverlay :project="project" :events="project.events" :enum-description="project.eventEnumDescription" :highlighted-i-ds="highlightedEventIDs" :blocked="eventManagerOpen || !!catalogDialog || !!projectDialog" :commit="commitEventComment" @manage="eventManagerOpen = true" @highlight="toggleEventHighlight" @clear-highlight="highlightedEventIDs = new Set()" />
+      <EventOverlay :project="project" :events="project.events" :enum-description="project.eventEnumDescription" :highlighted-i-ds="highlightedEventIDs" :auto-open-comments="autoOpenComments" :blocked="eventManagerOpen || !!catalogDialog || !!projectDialog" :commit="commitEventComment" @manage="eventManagerOpen = true" @highlight="toggleEventHighlight" @clear-highlight="highlightedEventIDs = new Set()" />
       <div class="canvas-hint">左键框选 / 拖动选中节点批量移动 · 空白处右键拖动画布 · 右键打开菜单 · Ctrl+A 全选</div>
     </main>
 

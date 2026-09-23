@@ -119,10 +119,10 @@ async function open(node: CommentTarget, element: HTMLElement, pin: boolean) {
   }
 }
 
-// 被动悬浮不能覆盖正在编辑或显式固定的目标，也不因再次进入而重置草稿。
-function show(node: CommentTarget, element: HTMLElement) {
+// 被动悬浮遵循开关；显式信息入口可忽略开关，但不能覆盖正在编辑的目标。
+function show(node: CommentTarget, element: HTMLElement, explicit = false) {
+  if (props.disabled || (!props.autoOpen && !explicit)) return;
   retain();
-  if (props.disabled || !props.autoOpen) return;
   if (visible.value && (pinned.value || dirty.value || tooltip.value?.contains(document.activeElement))) return;
   if (!props.allowEmptyOnHover && !props.getComment(node)?.trim()) return hide();
   return open(node, element, false);
