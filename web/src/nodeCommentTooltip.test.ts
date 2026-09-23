@@ -10,12 +10,13 @@ import type { BTNode, Tree } from "./project.ts";
 import { kinds } from "./project.ts";
 
 // 执行真实组件脚本，只替换浏览器与计时边界，不复制浮层状态实现。
-const source = readFileSync(new URL("./NodeCommentTooltip.vue", import.meta.url), "utf8")
+const source = readFileSync(new URL("./CommentTooltip.vue", import.meta.url), "utf8")
   .split('<script setup lang="ts">')[1]!.split("</script>")[0]!;
-const parsed = ts.createSourceFile("NodeCommentTooltip.ts", source, ts.ScriptTarget.Latest, true);
+const parsed = ts.createSourceFile("CommentTooltip.ts", source, ts.ScriptTarget.Latest, true);
 const script = parsed.statements.filter(statement => !ts.isImportDeclaration(statement))
   .map(statement => statement.getText(parsed)).join("\n");
-const js = ts.transpileModule(script, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+const js = ts.transpileModule(script, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
+  .replace(/export\s*\{\s*\};?/g, "");
 
 // DOM 替身只提供组件读取的元素关系、悬浮状态、焦点和边界。
 class TestElement {
@@ -69,19 +70,20 @@ interface ResizeEvent {
 
 // 组件状态只供断言读取，交互通过真实事件处理函数发起。
 interface Popover {
-  target: Ref<BTNode | undefined>; // 当前编辑目标。
+  target: Ref<object | undefined>; // 当前编辑目标。
   tooltip: Ref<TestElement | undefined>; // 浮层 DOM 引用。
   commentInput: Ref<TestElement | undefined>; // 文本输入 DOM 引用。
   draft: Ref<string>; // 不直接写回工程的注释草稿。
+  error: Ref<string>; // 提交校验错误。
   dirty: Ref<boolean>; // 应用和取消按钮的展示条件。
   pinned: Ref<boolean>; // 顶部按钮显式展开状态。
-  activeNode: Ref<BTNode | undefined>; // 任意方式展开时用于隐藏重复编辑气泡的目标。
+  activeTarget: Ref<object | undefined>; // 任意方式展开时用于隐藏重复编辑气泡的目标。
   title: Ref<string>; // 与节点画布展示规则一致的浮层标题。
   size: Ref<{ width: number; height: number }>; // 用户拖动后的浮层尺寸。
   position: Ref<{ left: number; top: number }>; // 计算可用视口空间的浮层起点。
   maximized: Ref<boolean>; // 当前是否使用视口内的最大尺寸。
-  show(node: BTNode, element: TestElement): Promise<void>; // 被动悬浮入口。
-  edit(node: BTNode, element: TestElement): Promise<void>; // 显式编辑只打开并聚焦，不反向关闭。
+  show(node: object, element: TestElement): Promise<void>; // 被动悬浮入口。
+  edit(node: object, element: TestElement): Promise<void>; // 显式编辑只打开并聚焦，不反向关闭。
   hide(): void; // 暂时关闭并保留草稿。
   reset(): void; // 树替换时清理旧草稿。
   scheduleHide(event?: { relatedTarget?: TestElement }): void; // 节点或浮层离开事件。
@@ -103,11 +105,20 @@ function session(t: TestContext) {
   const tree: Tree = { id: "tree", name: "测试树", root: first.id, nodes: [first, second] };
   const commits: Array<{ tree: Tree; node: BTNode; value: string }> = [];
   let accepted = true;
+  let failure = "";
   const props = reactive({
-    tree, disabled: false, autoOpen: true,
+    context: tree as object, disabled: false, autoOpen: true, allowEmptyOnHover: false,
+    getComment: (target: object) => (target as BTNode).comment,
+    getTitle: (target: object) => {
+      const node = target as BTNode;
+      return node.name || kinds[node.type]?.label || node.id;
+    },
+    label: "节点注释", tooltipId: "node-comment-tooltip",
     // 模拟父组件校验和提交，更新真实目标后返回是否接受。
-    commit(tree: Tree, node: BTNode, value: string) {
-      commits.push({ tree, node, value });
+    commit(target: object, value: string) {
+      const node = target as BTNode;
+      commits.push({ tree: this.context as Tree, node, value });
+      if (failure) throw new Error(failure);
       if (!accepted) return false;
       if (value) node.comment = value;
       else delete node.comment;
@@ -120,10 +131,10 @@ function session(t: TestContext) {
   const unmounted: Array<() => void> = [];
   const document = { activeElement: undefined as TestElement | undefined, addEventListener() {}, removeEventListener() {} };
   const scope = effectScope();
-  const names = "target, tooltip, commentInput, draft, dirty, pinned, activeNode, title, size, position, maximized, show, edit, hide, reset, scheduleHide, retain, cancel, apply, onPointerDown, onKeydown, startResize, resize, stopResize, toggleMaximized";
+  const names = "target, tooltip, commentInput, draft, error, dirty, pinned, activeTarget, title, size, position, maximized, show, edit, hide, reset, scheduleHide, retain, cancel, apply, onPointerDown, onKeydown, startResize, resize, stopResize, toggleMaximized";
   const app = scope.run(() => runInNewContext(`${js}\n({ ${names} });`, {
     computed, nextTick, reactive, ref, shallowRef, watch, kinds,
-    defineProps: () => props, defineExpose: () => {},
+    defineProps: () => props, withDefaults: (value: object) => value, defineExpose: () => {},
     onMounted: (callback: () => void) => mounted.push(callback),
     onBeforeUnmount: (callback: () => void) => unmounted.push(callback),
     document, window: { innerWidth: 1024, innerHeight: 768, addEventListener() {}, removeEventListener() {} },
@@ -142,8 +153,9 @@ function session(t: TestContext) {
   t.after(() => { for (const callback of unmounted) callback(); scope.stop(); });
   return {
     app, props, anchor, panel, input, document, commits, timers,
-    first: props.tree.nodes[0]!, second: props.tree.nodes[1]!,
+    first: (props.context as Tree).nodes[0]!, second: (props.context as Tree).nodes[1]!,
     rejectCommit: () => { accepted = false; },
+    failCommit: (message: string) => { failure = message; },
     // 只执行当次已排入的任务，模拟一次宽限到期，不进行轮询。
     expire: async () => { const pending = [...timers.values()]; timers.clear(); for (const callback of pending) callback(); await nextTick(); },
   };
@@ -193,7 +205,7 @@ test("浮层草稿支持取消、应用及清空且提交前不修改节点", as
   assert.equal(s.first.comment, "第一行\n第二行");
   assert.equal(s.app.dirty.value, false);
   assert.equal(s.commits.length, 1);
-  assert.equal(s.commits[0]!.tree, s.props.tree);
+  assert.equal(s.commits[0]!.tree, s.props.context);
   assert.equal(s.commits[0]!.node, s.first);
   s.app.draft.value = " \n ";
   s.app.apply();
@@ -237,11 +249,11 @@ test("顶部按钮支持空注释编辑且关闭后重新打开保留草稿", as
   button.toggle = true;
   s.app.onPointerDown({ target: button });
   await s.app.edit(s.first, s.anchor);
-  assert.equal(s.app.activeNode.value, s.first);
+  assert.equal(s.app.activeTarget.value, s.first);
   s.app.draft.value = "暂存说明";
   s.app.hide();
   assert.equal(s.app.target.value, undefined);
-  assert.equal(s.app.activeNode.value, undefined);
+  assert.equal(s.app.activeTarget.value, undefined);
   assert.equal(s.first.comment, undefined);
   await s.app.edit(s.first, s.anchor);
   assert.equal(s.app.draft.value, "暂存说明");
@@ -268,7 +280,7 @@ test("树重置清除草稿并正确处理父级拒绝提交", async t => {
   await s.app.show(s.first, s.anchor);
   s.app.draft.value = "旧工程草稿";
   s.app.hide();
-  s.props.tree = { ...s.props.tree, id: "new-tree" };
+  s.props.context = { ...s.props.context, id: "new-tree" };
   await s.app.show(s.first, s.anchor);
   assert.equal(s.app.draft.value, "原始说明");
   s.rejectCommit();
@@ -321,7 +333,7 @@ test("关闭自动悬浮后仍可手动打开且重复编辑不收起", async t 
   delete s.first.comment;
   await s.app.edit(s.first, s.anchor);
   assert.equal(s.app.target.value, s.first);
-  assert.equal(s.app.activeNode.value, s.first);
+  assert.equal(s.app.activeTarget.value, s.first);
   assert.equal(s.app.pinned.value, true);
   assert.equal(s.document.activeElement, s.input);
   s.app.draft.value = "手动输入草稿";
@@ -338,13 +350,13 @@ test("悬浮报告活动节点并使用与画布一致的节点标题", async t 
   const s = session(t);
   s.first.name = "自定义等待节点";
   await s.app.show(s.first, s.anchor);
-  assert.equal(s.app.activeNode.value, s.first);
+  assert.equal(s.app.activeTarget.value, s.first);
   assert.equal(s.app.pinned.value, false);
   assert.equal(s.app.title.value, "自定义等待节点");
   s.first.name = "";
   assert.equal(s.app.title.value, kinds.wait.label);
   s.app.hide();
-  assert.equal(s.app.activeNode.value, undefined);
+  assert.equal(s.app.activeTarget.value, undefined);
 });
 
 // 尺寸拖动只认捕获指针，依据初始测量计算增量，并限制最小尺寸和视口边界。
@@ -395,7 +407,7 @@ test("尺寸拖动拒绝非法起点且浮层关闭释放捕获", async t => {
   assert.equal(handle.hasPointerCapture(3), true);
   s.app.hide();
   assert.equal(handle.hasPointerCapture(3), false);
-  assert.equal(s.app.activeNode.value, undefined);
+  assert.equal(s.app.activeTarget.value, undefined);
 });
 
 // 全屏只是临时改变展示范围，普通尺寸、待应用文字和工程内容均保持不变。
@@ -441,4 +453,47 @@ test("Escape 先还原全屏不取消草稿且关闭重置全屏状态", async t
   await s.app.edit(s.first, s.anchor);
   assert.equal(s.app.maximized.value, false);
   assert.equal(s.app.draft.value, "需要保留的文字");
+});
+
+// 事件注释字段由调用方读取，空内容仍可悬停进入编辑；节点默认行为保持不变。
+test("通用浮层允许事件空注释悬停并按调用方字段提交", async t => {
+  const s = session(t);
+  const event = reactive({ id: "7", name: "测试事件", description: "" });
+  s.props.getComment = target => (target as typeof event).description;
+  s.props.getTitle = target => (target as typeof event).name;
+  s.props.allowEmptyOnHover = true;
+  s.props.commit = (target, value) => { (target as typeof event).description = value; return true; };
+  await s.app.show(event, s.anchor);
+  assert.equal(s.app.target.value, event);
+  assert.equal(s.app.title.value, "测试事件");
+  s.app.draft.value = "新的事件说明";
+  s.app.apply();
+  await nextTick();
+  assert.equal(event.description, "新的事件说明");
+  assert.equal(s.app.dirty.value, false);
+});
+
+// 提交校验异常应留在当前浮层提示，不能丢弃用户的未保存正文。
+test("通用浮层提交失败显示错误并保留可修正草稿", async t => {
+  const s = session(t);
+  await s.app.edit(s.first, s.anchor);
+  s.app.draft.value = "超过限制的注释";
+  s.failCommit("注释超过长度限制");
+  s.app.apply();
+  assert.equal(s.app.target.value, s.first);
+  assert.equal(s.app.draft.value, "超过限制的注释");
+  assert.equal(s.app.error.value, "注释超过长度限制");
+  assert.equal(s.first.comment, "原始说明");
+  s.app.cancel();
+  assert.equal(s.app.error.value, "");
+  assert.equal(s.app.draft.value, "原始说明");
+});
+
+// 节点包装器必须保持画布旧入口，并将节点字段与树身份交给通用浮层。
+test("节点包装器保持原有入口并委托通用浮层", () => {
+  const wrapper = readFileSync(new URL("./NodeCommentTooltip.vue", import.meta.url), "utf8");
+  assert.match(wrapper, /defineExpose\(\{ show, edit, hide, scheduleHide, activeNode \}\)/);
+  assert.match(wrapper, /props\.commit\(props\.tree, target as BTNode, value\)/);
+  assert.match(wrapper, /:context="tree"/);
+  assert.match(wrapper, /tooltip-id="node-comment-tooltip"/);
 });

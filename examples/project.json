@@ -1,6 +1,16 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 4,
   "name": "Go 原生插件示例",
+  "eventEnumDescription": "宿主先更新权威业务状态，再用枚举通知需要重新评估的节点。",
+  "events": [
+    {
+      "id": "1",
+      "name": "宿主状态变化",
+      "codeName": "HostStateChanged",
+      "description": "宿主状态更新后通知；示例未配置监听节点，用于展示合法的无引用事件。"
+    }
+  ],
+  "nextEventId": "2",
   "blackboard": [
     {
       "id": "message",

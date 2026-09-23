@@ -25,6 +25,14 @@ const (
 // btNodeNoParent 表示独立树入口没有父节点。
 const btNodeNoParent = -1
 
+// 工程事件枚举：以下常量用于宿主通知当前工程的行为树。
+// 宿主先更新权威业务状态，再用枚举通知需要重新评估的节点。
+const (
+	// EventHostStateChanged 表示"宿主状态变化"。
+	// 宿主状态更新后通知；示例未配置监听节点，用于展示合法的无引用事件。
+	EventHostStateChanged bt.EventID = 1
+)
+
 // GateParams 是业务函数 Gate（显示名 "等待宿主异步完成"）的强类型参数。
 type GateParams struct {
 }
@@ -44,7 +52,7 @@ func SetMessage(f *bt.Frame[*ctxpkg.Context], value string) { f.Board.SetString(
 // NewProgram 创建本版本共享的不可变程序，空版本名使用内容摘要。
 func NewProgram(version string) *bt.Program[*ctxpkg.Context] {
 	if version == "" {
-		version = "c9b6402a5f6ea1300d02016bdb3fffd6"
+		version = "6d0cbb97dab0e7efac9c73ce3b7cdaf6"
 	}
 	return &bt.Program[*ctxpkg.Context]{Version: version, Roots: map[string]int{
 		"main": nodeMainRoot,
@@ -54,9 +62,11 @@ func NewProgram(version string) *bt.Program[*ctxpkg.Context] {
 		{ID: "record", TreeID: "main", Parent: nodeMainRoot, End: btNodeCount},
 	}, Fields: []bt.Field{
 		{ID: "message", Name: "Message", Type: bt.StringType, Default: bt.Value{String: "completed"}, Enum: []string{}},
-	}, Dependencies: map[string][]int{
-		"field:message": []int{nodeMainRecord},
-	}, Step: btStep, Abort: btAbort}
+	}, EventEnumDescription: "宿主先更新权威业务状态，再用枚举通知需要重新评估的节点。", Events: []bt.EventDefinition{
+		{ID: EventHostStateChanged, Name: "宿主状态变化", CodeName: "HostStateChanged", Description: "宿主状态更新后通知；示例未配置监听节点，用于展示合法的无引用事件。"},
+	}, FieldDependencies: map[string][]int{
+		"message": []int{nodeMainRecord},
+	}, EventDependencies: map[bt.EventID][]int{}, Step: btStep, Abort: btAbort}
 }
 
 // btStep 通过整数槽位分派到编译后的节点函数。

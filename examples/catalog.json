@@ -1,22 +1,28 @@
-[
-  {
-    "id": "gate",
-    "name": "等待宿主异步完成",
-    "kind": "action",
-    "goName": "Gate",
-    "params": []
-  },
-  {
-    "id": "record",
-    "name": "记录业务事件",
-    "kind": "action",
-    "goName": "Record",
-    "params": [
-      {
-        "name": "Message",
-        "type": "string",
-        "default": "completed"
-      }
-    ]
-  }
-]
+{
+  "kind": "behaviortree.catalog",
+  "schemaVersion": 4,
+  "eventEnumDescription": "宿主先更新权威业务状态，再用枚举通知需要重新评估的节点。",
+  "events": [],
+  "catalog": [
+    {
+      "id": "gate",
+      "name": "等待宿主异步完成",
+      "kind": "action",
+      "goName": "Gate",
+      "params": []
+    },
+    {
+      "id": "record",
+      "name": "记录业务事件",
+      "kind": "action",
+      "goName": "Record",
+      "params": [
+        {
+          "name": "Message",
+          "type": "string",
+          "default": "completed"
+        }
+      ]
+    }
+  ]
+}

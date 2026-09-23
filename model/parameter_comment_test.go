@@ -24,7 +24,7 @@ func TestParameterCommentRoundTrip(t *testing.T) {
 			if got := decoded.Catalog[0].Params[0].Comment; got != comment {
 				t.Fatalf("工程往返丢失注释：%q", got)
 			}
-			catalog, err := ExportCatalog(decoded.Catalog)
+			catalog, err := ExportCatalog(decoded)
 			if err != nil {
 				t.Fatal(err)
 			}

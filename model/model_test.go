@@ -43,7 +43,7 @@ func TestCatalogOrganizationRoundTrip(t *testing.T) {
 	if diagnostics := Validate(decoded); len(diagnostics) != 0 {
 		t.Fatal(diagnostics)
 	}
-	catalog, err := ExportCatalog(decoded.Catalog)
+	catalog, err := ExportCatalog(decoded)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,11 +235,11 @@ func TestLiteralTypes(t *testing.T) {
 // TestTypedCatalog 验证 Go 声明可导出并严格校验字段绑定类型。
 func TestTypedCatalog(t *testing.T) {
 	d := []Definition{{ID: "move", Name: "移动", Kind: DefinitionAction, GoName: "Move", Params: []Parameter{{Name: "Speed", Type: bt.FloatType, Default: json.RawMessage("1.5")}}}}
-	if _, err := ExportCatalog(d); err != nil {
-		t.Fatal(err)
-	}
 	p := Example()
 	p.Catalog = d
+	if _, err := ExportCatalog(p); err != nil {
+		t.Fatal(err)
+	}
 	p.Blackboard = []Field{{ID: "speed", Name: "Speed", Type: bt.IntType}}
 	p.Trees[0].Nodes[1] = Node{ID: "wait", Type: NodeAction, Binding: "move", Params: map[string]Value{"Speed": {Field: "speed"}}}
 	if len(Validate(p)) == 0 {

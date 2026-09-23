@@ -12,6 +12,8 @@ import type { EditorSnapshot } from "./treeIdentity.ts";
 import { ProjectSaveState } from "./saveState.ts";
 import { semanticSignature } from "./generation.ts";
 import { stringifyJSON } from "./json.ts";
+import { pruneHighlightedEvents } from "./eventHighlight.ts";
+import { EventRegistryIndex } from "./eventRegistry.ts";
 
 // 运行真实画布处理和历史恢复函数，仅替换 Vue Flow 与浏览器事件边界。
 const source = readFileSync(new URL("./App.vue", import.meta.url), "utf8")
@@ -88,6 +90,8 @@ function session() {
     undoStack, redoStack, editRevision: 0, saveState: new ProjectSaveState(), occupiedIDs: new Set<string>(),
     semanticRevision, invalidateCode: () => { semanticRevision.value++; },
     catalogMenu: shallowRef(), catalogDialog: shallowRef(), treeMenu: shallowRef(),
+    eventManagerOpen: ref(false), highlightedEventIDs: shallowRef(new Set<string>()),
+    eventIndex: computed(() => new EventRegistryIndex(project.value)), pruneHighlightedEvents,
     projectDialog: shallowRef(), importFailure: shallowRef(),
     codeSnapshot: shallowRef(), scaffoldSnapshot: shallowRef(),
     cancelTreeID: () => {}, cancelNodeID: () => {}, followSourceSelection: () => {},

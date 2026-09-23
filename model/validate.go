@@ -145,6 +145,7 @@ func Validate(p Project) []Diagnostic {
 	if err := ValidateCatalogOrganization(p); err != nil {
 		add("", "", "catalogOrganization", err.Error())
 	}
+	out = append(out, ValidateEvents(p)...)
 	if _, err := ResolveGoPackage("", p.Generation.PackagePath); err != nil {
 		add("", "", "generation.packagePath", err.Error())
 	}
@@ -203,6 +204,10 @@ func Validate(p Project) []Diagnostic {
 			add("", "", "blackboard", fmt.Sprintf("字段 %s: %v", f.ID, err))
 		}
 	}
+	// 枚举常量占用最终 Go 包名称，后续目录声明不得与之冲突。
+	for _, event := range p.Events {
+		symbols["Event"+event.CodeName] = true
+	}
 	defs := map[string]Definition{}
 	goNames := map[string]bool{}
 	for _, d := range p.Catalog {
@@ -234,11 +239,6 @@ func Validate(p Project) []Diagnostic {
 				if _, err := Literal(param.Type, param.Default, param.Enum); err != nil {
 					add("", "", "catalog", fmt.Sprintf("参数 %s: %v", param.Name, err))
 				}
-			}
-		}
-		for _, event := range d.Events {
-			if event == "" {
-				add("", "", "catalog", "事件名不能为空")
 			}
 		}
 	}

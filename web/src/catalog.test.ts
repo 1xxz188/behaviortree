@@ -61,7 +61,7 @@ test("独立业务定义拒绝未知字段及组织字段", () => {
 // 键排列和省略空集合不会改变业务定义，避免导出后回导出现伪冲突。
 test("定义相同比较忽略键序和可选空字段", () => {
   const current = [action("A")];
-  const incoming: Definition[] = [{ goName: "A", kind: "action", name: "A", id: "A", events: [] }];
+  const incoming: Definition[] = [{ goName: "A", kind: "action", name: "A", id: "A", eventIds: [] }];
   assert.equal(catalogConflicts(current, incoming).length, 0);
   assert.deepEqual(mergeCatalog(current, incoming), current);
 });

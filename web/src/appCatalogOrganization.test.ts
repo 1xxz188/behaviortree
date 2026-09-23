@@ -7,7 +7,7 @@ import { CatalogOrganizationIndex } from "./catalogOrganization.ts";
 import { GenerationRequests, semanticSignature } from "./generation.ts";
 import { parseJSON, stringifyJSON } from "./json.ts";
 import { blankProject, clone } from "./project.ts";
-import type { Definition } from "./project.ts";
+import type { Definition, Project } from "./project.ts";
 import { ProjectSaveState } from "./saveState.ts";
 import { captureSnapshot } from "./treeIdentity.ts";
 import type { EditorSnapshot } from "./treeIdentity.ts";
@@ -42,7 +42,7 @@ function editor() {
     message: { value: "" }, error: { value: false }, catalogMenu: { value: {} as unknown },
     catalogTransferBusy: { value: false }, catalogCopy: { value: undefined as string | undefined },
     definitionIndex: { value: new Map(project.value.catalog.map(item => [item.id, item])) },
-    validatedCatalogJSON: async (definitions: Definition[]) => { validated.push(definitions); return stringifyJSON(definitions, 2); },
+    validatedCatalogJSON: async (_project: Project, definitions: Definition[]) => { validated.push(definitions); return stringifyJSON({ kind: "behaviortree.catalog", schemaVersion: 4, events: [], catalog: definitions }, 2); },
     download: (name: string, content: string) => downloads.push({ name, content }),
     navigator: { clipboard: { writeText: async (content: string) => { copies.push(content); } } },
   };
@@ -113,8 +113,8 @@ test("单条和全部下载使用明确文件名且不修改工程", async () =>
   await transferCatalog("download");
   await transferCatalog("download", context.project.value.catalog[1]);
   assert.deepEqual(downloads.map(item => item.name), ["business-definitions.json", "business-definition.json"]);
-  assert.deepEqual(parseJSON<Definition[]>(downloads[0]!.content).map(item => item.id), ["Z", "A"]);
-  assert.deepEqual(parseJSON<Definition[]>(downloads[1]!.content).map(item => item.id), ["A"]);
+  assert.deepEqual(parseJSON<{ catalog: Definition[] }>(downloads[0]!.content).catalog.map(item => item.id), ["Z", "A"]);
+  assert.deepEqual(parseJSON<{ catalog: Definition[] }>(downloads[1]!.content).catalog.map(item => item.id), ["A"]);
   assert.match(downloads[0]!.content, /18446744073709551615/);
   assert.doesNotMatch(downloads[0]!.content, /catalogOrganization|folderId/);
   assert.notEqual(validated[0], context.project.value.catalog);
@@ -130,7 +130,7 @@ test("单条全部复制以及剪贴板失败的手动回退", async () => {
   const before = stringifyJSON(context.project.value);
   await transferCatalog("copy", context.project.value.catalog[0]);
   await transferCatalog("copy");
-  assert.deepEqual(copies.map(content => parseJSON<Definition[]>(content).length), [1, 2]);
+  assert.deepEqual(copies.map(content => parseJSON<{ catalog: Definition[] }>(content).catalog.length), [1, 2]);
   assert.equal(context.catalogCopy.value, undefined);
   assert.match(context.message.value, /已复制 2 个业务定义 JSON/);
   context.navigator.clipboard.writeText = async () => { throw new Error("无剪贴板权限"); };

@@ -57,6 +57,8 @@ func staticDemo() {
 	must(err)
 	defer instance.Close()
 	ensure(instance.Start() == bt.Running, "action should wait for host completion")
+	// 无监听者的已声明事件是合法空操作，调用方直接使用生成常量。
+	ensure(instance.Notify(behavior.EventHostStateChanged) == bt.Running, "unused declared event changed running action")
 	ensure(instance.Complete(context.Token, bt.Success), "completion should be accepted")
 	queue.drain()
 	ensure(instance.Status() == bt.Success, "round should finish")

@@ -23,7 +23,7 @@ func main() {
 	data, err := model.Encode(project)
 	check(err)
 	write(filepath.Join(*root, "examples", "project.json"), data)
-	catalog, err := model.ExportCatalog(definition.Catalog())
+	catalog, err := model.ExportCatalog(project)
 	check(err)
 	write(filepath.Join(*root, "examples", "catalog.json"), catalog)
 	projectDir := filepath.Join(*root, "examples")

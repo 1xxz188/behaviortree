@@ -1,6 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, shallowRef, watch } from "vue";
 import CatalogManager from "./CatalogManager.vue";
+import EventManager from "./EventManager.vue";
+import EventOverlay from "./EventOverlay.vue";
+import { EventRegistryIndex, normalizeEventDescription, validateEventRegistry, validateNextEventID } from "./eventRegistry";
+import { matchedEventNodes, pruneHighlightedEvents, toggleHighlightedEvent } from "./eventHighlight";
 import CatalogBrowser from "./CatalogBrowser.vue";
 import NodeHelpDialog from "./NodeHelpDialog.vue";
 import CatalogCopyDialog from "./CatalogCopyDialog.vue";
@@ -44,6 +48,7 @@ import {
 import type {
   BTNode,
   Definition,
+  EventDefinition,
   Diagnostic,
   Field,
   Position as NodePosition,
@@ -89,6 +94,9 @@ const catalogBrowser = ref<InstanceType<typeof CatalogBrowser>>(); // 菜单到�
 const catalogManager = ref<InstanceType<typeof CatalogManager>>(); // 管理窗口中的编辑与分类表单入口。
 const catalogCopy = ref<string>(); // 剪贴板不可用时展示可手动复制的文本。
 const catalogTransferBusy = ref(false); // 防止重复发起复制或下载校验。
+const eventManagerOpen = ref(false); // 事件管理独立于业务定义与工程视图状态。
+const highlightedEventIDs = shallowRef<Set<string>>(new Set()); // 多事件高亮只保存会话状态，不使用 Vue Flow selected。
+const eventIndex = computed(() => new EventRegistryIndex(project.value)); // 依赖拓扑变化时重建，注释/布局变更不读取。
 // 工程替换和撤销只重建一次组织索引，不深度监听每次属性编辑。
 watch(project, () => {
   catalogIndex.value = new CatalogOrganizationIndex(project.value);
@@ -320,6 +328,7 @@ const definitionIndex = computed(() => new Map(project.value.catalog.map((d) => 
 const definition = computed(() => definitionIndex.value.get(node.value?.binding ?? ""));
 const bindingOptions = computed(() => project.value.catalog.filter((d) => d.kind === node.value?.type));
 const invalidNodes = computed(() => new Set(diagnostics.value.filter((d) => d.treeId === tree.value.id).map((d) => d.nodeId)));
+const eventMatchedNodes = computed(() => matchedEventNodes(highlightedEventIDs.value, eventIndex.value, treeID.value));
 const availableKinds = computed(() =>
   nodeTypes.map((type) => ({ type, info: kinds[type] })).filter(({ type, info }) =>
     `${info.label} ${type}`.toLowerCase().includes(search.value.toLowerCase()),
@@ -339,6 +348,7 @@ const graphNodes = computed(() =>
       kind: kinds[n.type],
       root: n.id === tree.value.root,
       invalid: invalidNodes.value.has(n.id),
+      eventMatched: eventMatchedNodes.value.has(n.id),
     },
   })),
 );
@@ -392,6 +402,8 @@ function rebuildIDs() {
 function resetResults() {
   catalogMenu.value = undefined;
   catalogDialog.value = undefined;
+  eventManagerOpen.value = false;
+  highlightedEventIDs.value = new Set();
   treeMenu.value = undefined;
   editRevision++;
   invalidateCode();
@@ -412,6 +424,7 @@ function restore(snapshot: EditorSnapshot) {
   const signature = semanticSignature(restored);
   if (signature !== semanticSignature(project.value)) invalidateCode();
   project.value = restored;
+  highlightedEventIDs.value = pruneHighlightedEvents(highlightedEventIDs.value, eventIndex.value.eventByID);
   treeIdentity.value = index;
   rebuildIDs();
   treeID.value = treeIdentity.value.byID.has(snapshot.treeID)
@@ -1279,6 +1292,34 @@ function manageCatalog(mode: "create" | "import" | "manage", forNode = false, fo
   const kind = forNode && (node.value?.type === "action" || node.value?.type === "condition") ? node.value.type : undefined;
   catalogDialog.value = { mode, kind, folderId };
 }
+// 事件整体注释、成员编辑和级联删除都经同一快照边界提交。
+function commitEventChange(change: () => void): void {
+  if (!projectReady.value || workspaceChanging.value) return;
+  mutate(() => {
+    change();
+    validateEventRegistry(project.value.events, project.value.catalog, project.value.eventEnumDescription);
+  });
+  highlightedEventIDs.value = pruneHighlightedEvents(highlightedEventIDs.value, eventIndex.value.eventByID);
+  notice("事件已更新，请保存工程");
+}
+// 悬停浮层只提交当前工程中仍有效的目标，沿用事件事务与注释校验。
+function commitEventComment(sourceProject: Project, target: EventDefinition | null, value: string): boolean {
+  if (!projectReady.value || workspaceChanging.value || sourceProject !== project.value
+    || (target && eventIndex.value.eventByID.get(target.id) !== target)) return false;
+  const normalized = normalizeEventDescription(value, target ? "事件项注释" : "事件功能注释");
+  const current = target ? target.description ?? "" : project.value.eventEnumDescription ?? "";
+  if (normalized === current) return true;
+  commitEventChange(() => {
+    if (target) target.description = normalized;
+    else project.value.eventEnumDescription = normalized;
+  });
+  return (target ? target.description ?? "" : project.value.eventEnumDescription ?? "") === normalized;
+}
+// 同一事件行再次勾选则取消；高亮始终只是编辑器视图状态。
+function toggleEventHighlight(id: string): void {
+  if (!eventIndex.value.eventByID.has(id)) return;
+  highlightedEventIDs.value = toggleHighlightedEvent(highlightedEventIDs.value, id);
+}
 // 分类变更成功后才登记历史；校验失败保留原工程与当前表单。
 function commitCatalogOrganization(change: () => void): boolean {
   if (workspaceChanging.value) return false;
@@ -1316,7 +1357,7 @@ async function transferCatalog(operation: "copy" | "download", target?: Definiti
   const owner = project.value;
   catalogTransferBusy.value = true;
   try {
-    const content = await validatedCatalogJSON(clone(definitions));
+    const content = await validatedCatalogJSON(clone(project.value), clone(definitions));
     if (project.value !== owner || workspaceChanging.value) return;
     if (operation === "download") {
       download(target ? "business-definition.json" : "business-definitions.json", content);
@@ -1361,12 +1402,17 @@ async function confirmDeleteDefinition() {
   await applyCatalog(project.value.catalog.filter(item => item !== target));
 }
 // 目录与所有节点参数在同一撤销边界内同步，随后立即用同一快照校验整个工程。
-async function applyCatalog(catalog: Definition[], bindID?: string) {
+async function applyCatalog(catalog: Definition[], bindID?: string, events?: EventDefinition[], enumDescription?: string, nextEventId?: string) {
+  validateEventRegistry(events ?? project.value.events, catalog, enumDescription ?? project.value.eventEnumDescription);
+  validateNextEventID(nextEventId ?? project.value.nextEventId, events ?? project.value.events);
   let resets: Diagnostic[] = [];
   const previousIDs = new Set(project.value.catalog.map(item => item.id));
   const nextIDs = new Set(catalog.map(item => item.id));
   const folder = catalogDialog.value?.folderId ?? "";
   mutate(() => {
+    if (events) project.value.events = events;
+    if (nextEventId !== undefined) project.value.nextEventId = nextEventId;
+    if (enumDescription !== undefined) project.value.eventEnumDescription = enumDescription;
     for (const id of previousIDs) if (!nextIDs.has(id)) catalogIndex.value.removeDefinition(id);
     if (bindID && node.value) {
       node.value.binding = bindID;
@@ -1462,7 +1508,7 @@ function focusDiagnostic(d: Diagnostic) {
 // 处理保存、撤销和删除快捷键，不干扰文本原生撤销。
 function keydown(e: KeyboardEvent) {
   if (workspaceChanging.value) return;
-  if (catalogDialog.value || projectDialog.value || importFailure.value || treeMenu.value || catalogMenu.value || canvasMenu.value || !projectReady.value) return;
+  if (catalogDialog.value || eventManagerOpen.value || projectDialog.value || importFailure.value || treeMenu.value || catalogMenu.value || canvasMenu.value || !projectReady.value) return;
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
     e.preventDefault();
     (e.target as HTMLElement)?.blur();
@@ -1475,7 +1521,9 @@ function keydown(e: KeyboardEvent) {
     )
   )
     return;
-  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a" && vueFlowRef.value?.contains(e.target as Node)) {
+  if (e.key === "Escape" && highlightedEventIDs.value.size) {
+    highlightedEventIDs.value = new Set();
+  } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a" && vueFlowRef.value?.contains(e.target as Node)) {
     e.preventDefault();
     addSelectedNodes(getNodes.value);
     finishCanvasSelection();
@@ -1669,7 +1717,7 @@ onUnmounted(() => toolLifecycle.abort());
           节点库</button
         ><button :class="{ active: tab === 'board' }" @click="tab = 'board'">
           黑板
-        </button>
+        </button><button type="button" @click="eventManagerOpen = true">事件</button>
       </div>
       <template v-if="tab === 'nodes'">
         <input
@@ -1803,6 +1851,7 @@ onUnmounted(() => toolLifecycle.abort());
           >
             ↷</button
           ><button @click="layout">自动布局</button
+          ><button type="button" @click="eventManagerOpen = true">事件</button
           ><button @click="fitView({ padding: 0.18 })">适应画布</button>
           <button type="button" role="switch" :aria-checked="autoOpenComments" class="comment-hover-switch"
             title="关闭后仍可通过节点气泡或右键菜单查看注释" @click="autoOpenComments = !autoOpenComments">
@@ -1853,6 +1902,7 @@ onUnmounted(() => toolLifecycle.abort());
               'bt-node',
               data.kind.color,
               { invalid: data.invalid },
+              { 'event-match': data.eventMatched },
             ]"
           >
             <button v-if="selected === data.node.id && !nodeCommentTooltip?.activeNode" type="button" class="node-comment-toggle nodrag nopan"
@@ -1898,6 +1948,7 @@ onUnmounted(() => toolLifecycle.abort());
           </div>
         </template>
       </VueFlow>
+      <EventOverlay :project="project" :events="project.events" :enum-description="project.eventEnumDescription" :highlighted-i-ds="highlightedEventIDs" :blocked="eventManagerOpen || !!catalogDialog || !!projectDialog" :commit="commitEventComment" @manage="eventManagerOpen = true" @highlight="toggleEventHighlight" @clear-highlight="highlightedEventIDs = new Set()" />
       <div class="canvas-hint">左键框选 / 拖动选中节点批量移动 · 空白处右键拖动画布 · 右键打开菜单 · Ctrl+A 全选</div>
     </main>
 
@@ -2055,8 +2106,8 @@ onUnmounted(() => toolLifecycle.abort());
               @input="setParam(p.name, p.type, $event)"
             />
           </div>
-          <p v-if="definition?.events?.length" class="muted empty-note">
-            依赖事件：{{ definition.events.join("、") }}
+          <p v-if="definition?.eventIds?.length" class="muted empty-note">
+            依赖事件：{{ definition.eventIds.map(id => eventIndex.eventByID.get(id)).filter(Boolean).map(event => `${event!.name}（Event${event!.codeName}）`).join('、') }} <button type="button" class="text-button" @click="editCatalogDefinition(definition!)">编辑业务定义</button>
           </p>
         </template>
         <section class="children-order">
@@ -2258,12 +2309,13 @@ onUnmounted(() => toolLifecycle.abort());
       @change="importProject"
     />
     <NodeHelpDialog v-if="nodeHelp" :type="nodeHelp" @close="nodeHelp = undefined" />
-    <CatalogManager v-if="catalogDialog" ref="catalogManager" :catalog="project.catalog" :initial-mode="catalogDialog.mode" :initial-kind="catalogDialog.kind"
+    <EventManager v-if="eventManagerOpen" :project="project" :index="eventIndex" :revision="editRevision" :commit="commitEventChange" @close="eventManagerOpen = false" />
+    <CatalogManager v-if="catalogDialog" ref="catalogManager" :catalog="project.catalog" :project="project" :project-revision="editRevision" :initial-mode="catalogDialog.mode" :initial-kind="catalogDialog.kind"
       :initial-definition="catalogDialog.definition" :initial-folder="catalogDialog.folderId"
       :index="catalogIndex" :revision="catalogRevision" :disabled="workspaceChanging" :commit="commitCatalogOrganization"
       :failure-message="error ? message : ''" :transfer-busy="catalogTransferBusy"
       @select="catalogDialog.folderId = $event" @transfer="transferCatalog($event)" @menu="openCatalogMenu"
-      @apply="applyCatalog" @close="catalogDialog = undefined" />
+      @apply="applyCatalog" @manage-events="catalogDialog = undefined; eventManagerOpen = true" @close="catalogDialog = undefined" />
     <CatalogContextMenu v-if="catalogMenu" :key="`${catalogMenu.definition.id}:${catalogMenu.x}:${catalogMenu.y}`"
       :definition="catalogMenu.definition" :x="catalogMenu.x" :y="catalogMenu.y"
       @close="catalogMenu = undefined" @edit="editCatalogDefinition(catalogMenu.definition)" @delete="confirmDeleteDefinition"

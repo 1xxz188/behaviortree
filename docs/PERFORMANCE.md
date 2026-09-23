@@ -34,7 +34,7 @@ go test -run '^$' -bench 'Benchmark(Create|VersionSwitch)' -benchtime=10x -bench
 
 ## 真实生成的优先级续跑
 
-另在 `codegen.TestGeneratedRuntime` 内生成独立临时 Go 包，使用 10 / 1000 个为假的高优先级守卫，以及一个正在 Running 且订阅 `resume` 事件的低优先级动作，分别对应 32 / 3002 个静态节点。只有一个实例，初始化不计时，无日志、无计时器，每次操作为 `Notify("resume")`。
+另在 `codegen.TestGeneratedRuntime` 内生成独立临时 Go 包，使用 10 / 1000 个为假的高优先级守卫，以及一个正在 Running 且订阅事件的低优先级动作，分别对应 32 / 3002 个静态节点。旧采样使用字符串 `Notify`；当前接口已改为生成常量 `Notify(EventResume)`，下列旧数字仅作历史记录，需重新采样后才能用于现版性能判断。
 
 最终采样分别为 **96.49 / 115.5 ns/op**，均 **0 B/op、0 allocs/op**。源码约束测试检查直接续跑路径没有逐个调用静态候选，语义测试检查 100 次低分支事件只执行 200 个节点步骤。前一轮采样为 49.90 / 49.84 ns/op，说明桌面并发工作会显著影响短微基准的绝对耗时。这组单实例结果不能直接与上表的万 AI 轮转矩阵比较。
 

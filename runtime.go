@@ -153,12 +153,18 @@ func (i *Instance[C]) run() (status Status) {
 }
 
 // Notify 通知显式声明的宿主事件；只检查受影响的节点。
-func (i *Instance[C]) Notify(event string) Status {
+func (i *Instance[C]) Notify(event EventID) Status {
 	if i.closed || i.status != Running {
 		return i.status
 	}
 	if group, exists := i.dependencies.events[event]; exists {
 		i.observe(group)
+	} else if _, declared := i.program.eventByID[event]; declared {
+		return i.status
+	} else {
+		// 非法通知不写入 i.err，也不推进已有脏路径或异步结果。
+		i.log(LogError, -1, i.status, i.status, fmt.Sprintf("unknown event ID %d", event))
+		return i.status
 	}
 	if !i.busy {
 		return i.Tick()

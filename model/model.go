@@ -13,17 +13,20 @@ import (
 )
 
 // SchemaVersion 是当前支持的工程格式版本。
-const SchemaVersion = 2
+const SchemaVersion = 4
 
 // Project 是可独立导入、导出的行为树工程；布局不参与运行语义。
 type Project struct {
-	SchemaVersion       int                  `json:"schemaVersion"`                 // 格式版本。
-	Name                string               `json:"name"`                          // 工程显示名称。
-	Blackboard          []Field              `json:"blackboard"`                    // 全工程共享的黑板布局。
-	Catalog             []Definition         `json:"catalog"`                       // Go 业务节点目录。
-	CatalogOrganization *CatalogOrganization `json:"catalogOrganization,omitempty"` // 仅用于编辑器分类的目录、标签与归属。
-	Trees               []Tree               `json:"trees"`                         // 可独立启动或引用的树。
-	Generation          Generation           `json:"generation"`                    // Go 生成目标。
+	SchemaVersion        int                  `json:"schemaVersion"`                  // 格式版本。
+	Name                 string               `json:"name"`                           // 工程显示名称。
+	EventEnumDescription string               `json:"eventEnumDescription,omitempty"` // 整个事件枚举的功能注释。
+	Events               []EventDefinition    `json:"events"`                         // 稳定 ID 的事件枚举成员。
+	NextEventID          string               `json:"nextEventId"`                    // 下一次分配的十进制事件 ID，耗尽时为 2^64。
+	Blackboard           []Field              `json:"blackboard"`                     // 全工程共享的黑板布局。
+	Catalog              []Definition         `json:"catalog"`                        // Go 业务节点目录。
+	CatalogOrganization  *CatalogOrganization `json:"catalogOrganization,omitempty"`  // 仅用于编辑器分类的目录、标签与归属。
+	Trees                []Tree               `json:"trees"`                          // 可独立启动或引用的树。
+	Generation           Generation           `json:"generation"`                     // Go 生成目标。
 }
 
 // Generation 指定手写节点与生成代码所在的同一个 Go 包。
@@ -44,12 +47,12 @@ type Field struct {
 
 // Definition 是由程序员用 Go 声明的业务节点目录项。
 type Definition struct {
-	ID     string         `json:"id"`               // 编辑器绑定使用的稳定 ID。
-	Name   string         `json:"name"`             // 节点面板显示名称。
-	Kind   DefinitionKind `json:"kind"`             // action 或 condition。
-	GoName string         `json:"goName"`           // 同包手写函数名称。
-	Params []Parameter    `json:"params"`           // 强类型参数声明。
-	Events []string       `json:"events,omitempty"` // 需要唤醒或重新求值的宿主事件。
+	ID       string         `json:"id"`                 // 编辑器绑定使用的稳定 ID。
+	Name     string         `json:"name"`               // 节点面板显示名称。
+	Kind     DefinitionKind `json:"kind"`               // action 或 condition。
+	GoName   string         `json:"goName"`             // 同包手写函数名称。
+	Params   []Parameter    `json:"params"`             // 强类型参数声明。
+	EventIDs []string       `json:"eventIds,omitempty"` // 需要唤醒或重新求值的事件 ID。
 }
 
 // Parameter 定义生成的 <GoName>Params 结构体成员。
@@ -108,6 +111,9 @@ type Diagnostic struct {
 // Decode 严格读取单个工程，防止拼错的属性被静默丢弃。
 func Decode(data []byte) (Project, error) {
 	var p Project
+	if err := checkEventJSONShape(data); err != nil {
+		return p, err
+	}
 	d := json.NewDecoder(bytes.NewReader(data))
 	d.DisallowUnknownFields()
 	if err := d.Decode(&p); err != nil {
@@ -126,6 +132,14 @@ func Decode(data []byte) (Project, error) {
 	if err := ValidateCatalogOrganization(p); err != nil {
 		return p, err
 	}
+	if diagnostics := ValidateEvents(p); len(diagnostics) != 0 {
+		return p, fmt.Errorf("%s: %s", diagnostics[0].Field, diagnostics[0].Message)
+	}
+	var err error
+	p, err = normalizeEvents(p)
+	if err != nil {
+		return p, err
+	}
 	p.CatalogOrganization = NormalizedCatalogOrganization(p.CatalogOrganization)
 	p.Generation.PackagePath = NormalizePackagePath(p.Generation.PackagePath)
 	return WithCodeNames(p), nil
@@ -139,27 +153,69 @@ func Encode(p Project) ([]byte, error) {
 	if err := ValidateCatalogOrganization(p); err != nil {
 		return nil, err
 	}
+	if diagnostics := ValidateEvents(p); len(diagnostics) != 0 {
+		return nil, fmt.Errorf("%s: %s", diagnostics[0].Field, diagnostics[0].Message)
+	}
+	var err error
+	p, err = normalizeEvents(p)
+	if err != nil {
+		return nil, err
+	}
 	p.CatalogOrganization = NormalizedCatalogOrganization(p.CatalogOrganization)
 	p.Generation.PackagePath = NormalizePackagePath(p.Generation.PackagePath)
 	return json.MarshalIndent(WithCodeNames(p), "", "  ")
 }
 
-// ExportCatalog 将手写 Go 声明导出为 Web 可读取的节点目录。
-func ExportCatalog(definitions []Definition) ([]byte, error) {
-	p := Example()
-	p.Catalog = definitions
-	if err := validateDecodedTypes(p); err != nil {
+// ExportCatalog 导出带实际引用事件的自包含目录，不要求草稿树已完成。
+func ExportCatalog(p Project) ([]byte, error) {
+	if err := validateCatalogExchangeProject(p); err != nil {
 		return nil, err
 	}
-	if diagnostics := Validate(p); len(diagnostics) != 0 {
-		return nil, fmt.Errorf("节点目录无效: %s", diagnostics[0].Message)
+	used := make(map[string]bool)
+	for _, definition := range p.Catalog {
+		for _, id := range definition.EventIDs {
+			used[id] = true
+		}
 	}
-	return json.MarshalIndent(definitions, "", "  ")
+	exchange := CatalogExchange{Kind: "behaviortree.catalog", SchemaVersion: SchemaVersion, Events: []EventDefinition{}, Catalog: append([]Definition{}, p.Catalog...)}
+	var err error
+	exchange.EventEnumDescription, err = NormalizeEventDescription(p.EventEnumDescription)
+	if err != nil {
+		return nil, fmt.Errorf("eventEnumDescription: %w", err)
+	}
+	for _, event := range p.Events {
+		if used[event.ID] {
+			event.Name = strings.TrimSpace(event.Name)
+			event.Description, _ = NormalizeEventDescription(event.Description)
+			exchange.Events = append(exchange.Events, event)
+		}
+	}
+	return json.MarshalIndent(exchange, "", "  ")
+}
+
+// validateCatalogExchangeProject 仅校验目录和事件，允许未完成的画布树。
+func validateCatalogExchangeProject(p Project) error {
+	if p.SchemaVersion != SchemaVersion {
+		return fmt.Errorf("不支持 schemaVersion %d", p.SchemaVersion)
+	}
+	if err := validateDecodedTypes(p); err != nil {
+		return err
+	}
+	if diagnostics := ValidateEvents(p); len(diagnostics) != 0 {
+		return fmt.Errorf("%s: %s", diagnostics[0].Field, diagnostics[0].Message)
+	}
+	probe := Example()
+	probe.Events, probe.EventEnumDescription, probe.Catalog = p.Events, p.EventEnumDescription, p.Catalog
+	probe.NextEventID = p.NextEventID
+	if diagnostics := Validate(probe); len(diagnostics) != 0 {
+		return fmt.Errorf("节点目录无效: %s: %s", diagnostics[0].Field, diagnostics[0].Message)
+	}
+	return nil
 }
 
 // Example 创建不依赖业务动作的最小可运行工程。
 func Example() Project {
-	return Project{SchemaVersion: SchemaVersion, Name: "行为树示例", Blackboard: []Field{}, Catalog: []Definition{}, Generation: Generation{PackagePath: "behavior", ContextType: "any"}, Trees: []Tree{{ID: "main", Name: "主行为树", Root: "root", Nodes: []Node{{ID: "root", Type: NodeSequence, Children: []string{"wait", "done"}}, {ID: "wait", Type: NodeWait, DurationMS: 100}, {ID: "done", Type: NodeWait}}, Layout: map[string]Position{"root": {X: 240, Y: 40}, "wait": {X: 120, Y: 180}, "done": {X: 360, Y: 180}}}}}
+	return Project{SchemaVersion: SchemaVersion, Name: "行为树示例", Events: []EventDefinition{}, NextEventID: "1", Blackboard: []Field{}, Catalog: []Definition{}, Generation: Generation{PackagePath: "behavior", ContextType: "any"}, Trees: []Tree{{ID: "main", Name: "主行为树", Root: "root", Nodes: []Node{{ID: "root", Type: NodeSequence, Children: []string{"wait", "done"}}, {ID: "wait", Type: NodeWait, DurationMS: 100}, {ID: "done", Type: NodeWait}}, Layout: map[string]Position{"root": {X: 240, Y: 40}, "wait": {X: 120, Y: 180}, "done": {X: 360, Y: 180}}}}}
 }
 
 // CatalogOrganization 保存业务定义的编辑器分类，不参与运行语义。

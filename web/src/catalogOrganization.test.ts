@@ -144,8 +144,8 @@ test("组织校验拒绝重复身份、循环、悬空关联和非法字段", ()
   ];
   for (const corrupt of corruptions) { const organization = clone(valid); corrupt(organization); assert.throws(() => validateCatalogOrganization(project.catalog, organization)); }
   assert.throws(() => validateCatalogOrganization(project.catalog, []), /对象/);
-  assert.throws(() => validateProjectTypes({ ...project, schemaVersion: 1 }), /版本 2/);
-  assert.throws(() => validateProjectTypes({ ...project, schemaVersion: undefined }), /版本 2/);
+  assert.throws(() => validateProjectTypes({ ...project, schemaVersion: 1 }), /版本 4/);
+  assert.throws(() => validateProjectTypes({ ...project, schemaVersion: undefined }), /版本 4/);
 });
 
 // 两千定义常见负载与两万级深链验证不使用递归，也不为分类访问行为树。

@@ -71,15 +71,17 @@ func TestCatalogOrganizationBoundaries(t *testing.T) {
 	}
 }
 
-// TestCatalogImportRequiresArrayAndRoundTrips 验证文件与粘贴共用的数组入口保持精度并拒绝错误载体。
-func TestCatalogImportRequiresArrayAndRoundTrips(t *testing.T) {
+// TestCatalogImportRequiresObjectAndRoundTrips 验证目录对象保持精度并拒绝旧数组载体。
+func TestCatalogImportRequiresObjectAndRoundTrips(t *testing.T) {
 	s, err := New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s.Close()
 	definitions := []model.Definition{{ID: "move", Name: "移动", Kind: model.DefinitionAction, GoName: "Move", Params: []model.Parameter{{Name: "Target", Type: bt.UIntType, Default: json.RawMessage("18446744073709551615")}}}}
-	raw, err := model.ExportCatalog(definitions)
+	p := model.Example()
+	p.Catalog = definitions
+	raw, err := model.ExportCatalog(p)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +92,7 @@ func TestCatalogImportRequiresArrayAndRoundTrips(t *testing.T) {
 	for _, input := range []any{nil, model.Example(), definitions[0], json.RawMessage("null"), json.RawMessage(`[{"id":"move","name":"移动","kind":"action","goName":"Move","params":[]},{"id":"move","name":"重复","kind":"action","goName":"Other","params":[]}]`)} {
 		w = callEditor(t, s, "POST", "/api/catalog", input)
 		if w.Code != 400 {
-			t.Fatal("应拒绝非数组或重复ID", w.Code, w.Body.String())
+			t.Fatal("应拒绝旧数组或错误目录对象", w.Code, w.Body.String())
 		}
 	}
 }

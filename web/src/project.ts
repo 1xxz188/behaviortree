@@ -26,7 +26,14 @@ export interface Definition {
   kind: DefinitionKind;
   goName: string;
   params?: Parameter[];
-  events?: string[];
+  eventIds?: string[]; // 引用工程事件注册表的稳定 ID。
+}
+// EventDefinition 是工程内唯一的事件声明，ID 创建后不可在表单中修改。
+export interface EventDefinition {
+  id: string; // 非零 uint64 的规范十进制字符串，创建后不变。
+  name: string; // 面向编辑器的显示名称。
+  codeName: string; // 生成 Event 前缀常量的代码名。
+  description?: string; // 单个枚举成员的字段注释。
 }
 export interface BTNode {
   id: string;
@@ -57,6 +64,9 @@ export interface Project {
   schemaVersion: number;
   name: string;
   blackboard: Field[];
+  events: EventDefinition[]; // 所有树与业务定义共享的事件注册表。
+  nextEventId: string; // 下一个事件 ID 的持久游标；删除事件不会回退。
+  eventEnumDescription?: string; // 整个事件枚举的功能注释。
   catalog: Definition[];
   catalogOrganization?: CatalogOrganization; // 业务定义目录、标签和排序，仅属于工程编辑元数据。
   trees: Tree[];
@@ -263,9 +273,11 @@ export function autoLayout(tree: Tree): void {
 // 新建工程只包含一个可编辑的根节点，示例由用户单独选择。
 export function blankProject(): Project {
   return {
-    schemaVersion: 2,
+    schemaVersion: 4,
     name: "未命名工程",
     blackboard: [],
+    events: [],
+    nextEventId: "1",
     catalog: [],
     trees: [{ id: "1", name: "主行为树", root: "1", nodes: [
       { id: "1", codeName: "Root", type: "sequence", name: "根节点", children: [] },
@@ -302,9 +314,11 @@ export function emptyProject(): Project {
   };
   autoLayout(tree);
   return {
-    schemaVersion: 2,
+    schemaVersion: 4,
     name: "巡逻行为",
     blackboard: [],
+    events: [],
+    nextEventId: "1",
     catalog: [],
     trees: [tree],
     generation: { packagePath: "patrol", contextImport: "", contextType: "any" },

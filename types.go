@@ -45,16 +45,33 @@ type Node struct {
 	End    int    // End 是该节点子树的排他上界。
 }
 
+// EventID 标识工程显式声明的宿主事件，不承载展示名称。
+type EventID uint64
+
+// InvalidEventID 不代表任何业务事件。
+const InvalidEventID EventID = 0
+
+// EventDefinition 保存发布版本中的事件描述，通知调度仅使用 ID。
+type EventDefinition struct {
+	ID          EventID // ID 是稳定事件身份。
+	Name        string  // Name 是诊断与界面使用的展示名称。
+	CodeName    string  // CodeName 是生成的枚举成员代码名。
+	Description string  // Description 是事件项的字段注释。
+}
+
 // Program 是完整不可变版本，树、动作及子树必须一起发布。
 // NewRegistry/NewInstance 会复制描述数据；函数闭包引用的数据仍须由调用方保持不可变。
 type Program[C any] struct {
-	Version      string                      // Version 是唯一发布版本。
-	Roots        map[string]int              // Roots 将树 ID 映射到生成代码入口。
-	Nodes        []Node                      // Nodes 使用先序连续索引。
-	Fields       []Field                     // Fields 描述强类型黑板布局。
-	Dependencies map[string][]int            // Dependencies 使用 field:<ID> 或 event:<名称> 作为键。
-	Step         func(*Frame[C], int) Status // Step 分发到生成的原生 Go 节点函数。
-	Abort        func(*Frame[C], int)        // Abort 只取消给定动作，不递归取消子节点。
+	Version              string                      // Version 是唯一发布版本。
+	Roots                map[string]int              // Roots 将树 ID 映射到生成代码入口。
+	Nodes                []Node                      // Nodes 使用先序连续索引。
+	Fields               []Field                     // Fields 描述强类型黑板布局。
+	EventEnumDescription string                      // EventEnumDescription 是整个事件枚举的功能注释。
+	Events               []EventDefinition           // Events 是当前版本允许通知的完整事件集合。
+	FieldDependencies    map[string][]int            // FieldDependencies 以黑板字段稳定 ID 为键。
+	EventDependencies    map[EventID][]int           // EventDependencies 以已声明事件 ID 为键。
+	Step                 func(*Frame[C], int) Status // Step 分发到生成的原生 Go 节点函数。
+	Abort                func(*Frame[C], int)        // Abort 只取消给定动作，不递归取消子节点。
 }
 
 // NodeState 保存一个调用位置的独立执行状态。

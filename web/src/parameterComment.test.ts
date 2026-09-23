@@ -21,11 +21,11 @@ const js = ts.transpileModule(workflow, { compilerOptions: { target: ts.ScriptTa
 // 用可序列化上下文复用真实表单函数，无需复制参数转换实现。
 function form() {
   const context = {
-    parseJSON, stringifyJSON, props: {}, busy: { value: false }, mode: { value: "create" },
-    incoming: { value: [] }, choices: { value: {} }, acknowledged: { value: false },
+    parseJSON, stringifyJSON, props: { projectRevision: 0 }, busy: { value: false }, mode: { value: "create" }, draftRevision: { value: 0 },
+    incoming: { value: [] }, incomingPackage: { value: null }, choices: { value: {} }, eventChoices: { value: {} }, eventMappings: { value: {} }, eventRenames: { value: {} }, importEnumDescription: { value: false }, acknowledged: { value: false },
     error: { value: "" }, editingID: { value: "" }, fileLabel: { value: "" }, bindNew: { value: false },
     importSource: { value: "paste" }, importText: { value: "" }, previewReady: { value: false }, previewValidated: { value: false },
-    draft: { value: { id: "Move", name: "移动", kind: "action", goName: "Move", events: "" } },
+    draft: { value: { id: "Move", name: "移动", kind: "action", goName: "Move", eventIds: [] } },
     parameters: { value: [] as { name: string; comment: string }[] },
   };
   const actions = runInNewContext(`let parameterKey = 0;\n${js}\n({ editDefinition, addParameter, draftDefinition });`, context) as {
@@ -50,7 +50,7 @@ test("目录与工程导入拒绝非字符串参数注释", () => {
   for (const comment of [null, false, 123, {}, []]) {
     const catalog = [{ id: "Move", name: "移动", kind: "action", goName: "Move", params: [{ name: "Target", type: "entity", comment }] }];
     assert.throws(() => parseCatalog(catalog), /catalog\[0\].params\[0\].comment.*字符串/);
-    assert.throws(() => validateProjectTypes({ schemaVersion: 2, catalog }), /catalog\[0\].params\[0\].comment.*字符串/);
+    assert.throws(() => validateProjectTypes({ schemaVersion: 4, nextEventId: "1", events: [], catalog }), /catalog\[0\].params\[0\].comment.*字符串/);
   }
 });
 

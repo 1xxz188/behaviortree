@@ -9,6 +9,7 @@ import { parseJSON, stringifyJSON } from "./json.ts";
 import { GenerationRequests } from "./generation.ts";
 import { synchronizeCatalog } from "./catalogSync.ts";
 import { CatalogOrganizationIndex } from "./catalogOrganization.ts";
+import { validateEventRegistry, validateNextEventID } from "./eventRegistry.ts";
 
 // 抽取真实目录提交入口，避免只测试与界面脱节的同步辅助函数。
 const source = readFileSync(new URL("./App.vue", import.meta.url), "utf8").split('<script setup lang="ts">')[1]!.split("</script>")[0]!;
@@ -33,7 +34,7 @@ function editor() {
   const calls: { path: string; body: any }[] = [];
   const context = {
     noticeRevision: { value: 0 }, // 实际发布操作结果的版本。
-    Error, clone, parseJSON, stringifyJSON, project, synchronizeCatalog, CatalogOrganizationIndex,
+    Error, clone, parseJSON, stringifyJSON, project, synchronizeCatalog, CatalogOrganizationIndex, validateEventRegistry, validateNextEventID,
     catalogIndex: { value: new CatalogOrganizationIndex(project.value) }, catalogRevision: { value: 0 },
     node: { value: project.value.trees[0]!.nodes[0]! },
     catalogDialog: { value: {} as unknown }, diagnostics: { value: [] as Diagnostic[] },

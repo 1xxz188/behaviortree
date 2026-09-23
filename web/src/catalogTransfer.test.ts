@@ -1,179 +1,75 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { runInNewContext } from "node:vm";
-import ts from "typescript";
-import { computed, ref, watch } from "vue";
-import { catalogConflicts, mergeCatalog, parseCatalog } from "./catalog.ts";
-import { validateCatalog, validatedCatalogJSON } from "./catalogTransfer.ts";
+import { exportCatalogPackage, mergeCatalogPackage, parseCatalogPackage } from "./catalog.ts";
+import { validatedCatalogJSON } from "./catalogTransfer.ts";
 import { parseJSON, stringifyJSON } from "./json.ts";
-import type { Definition } from "./project.ts";
+import { blankProject } from "./project.ts";
 
-// 创建最小动作定义，便于把断言集中在导入导出边界。
-function action(id: string): Definition {
-  return { id, name: id, kind: "action", goName: id };
-}
+const event = { id: "1", name: "命令变化", codeName: "CommandChanged", description: "先更新状态\n再通知" };
+const definition = { id: "Move", name: "移动", kind: "action" as const, goName: "Move", eventIds: [event.id] };
 
-// 模拟 Go 校验接口时，仍然检查网络传输内容而不替换无损序列化路径。
-function validResponse(_input: unknown, options?: RequestInit): Promise<Response> {
-  return Promise.resolve(new Response(String(options?.body), { status: 200 }));
-}
-
-// 单条与全部导出必须保持数组、顺序、中文和大整数，同时不修改源定义。
-test("复制与导出共用无损 JSON 并可直接回导", async (t) => {
-  const calls: string[] = [];
-  t.mock.method(globalThis, "fetch", async (_input: unknown, options?: RequestInit) => {
-    calls.push(String(options?.body));
-    return validResponse(_input, options);
-  });
-  const definitions = parseCatalog(parseJSON('[{"id":"Z","name":"读取","kind":"action","goName":"Read","params":[{"name":"Value","type":"uint64","default":18446744073709551615}]},{"id":"A","name":"动作","kind":"action","goName":"Act"}]'));
-  const original = stringifyJSON(definitions);
-  const all = await validatedCatalogJSON(definitions);
-  assert.match(all, /\n  \{/);
-  assert.match(all, /18446744073709551615/);
-  assert.deepEqual(parseCatalog(parseJSON(all)).map(item => item.id), ["Z", "A"]);
-  assert.equal(stringifyJSON(mergeCatalog([], parseCatalog(parseJSON(all)))), original);
-  const one = await validatedCatalogJSON([definitions[0]!]);
-  assert.equal(parseCatalog(parseJSON(one)).length, 1);
-  assert.equal(stringifyJSON(definitions), original);
-  assert.equal(calls.length, 2);
-  assert.match(calls[0]!, /18446744073709551615/);
+// 目录交换只携带实际依赖的事件，保留两类注释与十进制 ID。
+test("Schema 4 目录交换保留事件和双层注释", async (t) => {
+  t.mock.method(globalThis, "fetch", async (_input: unknown, options?: RequestInit) => new Response(String(options?.body), { status: 200 }));
+  const project = blankProject();
+  project.events = [event, { id: "2", name: "其他", codeName: "Other" }];
+  project.nextEventId = "3";
+  project.catalog = [definition];
+  project.eventEnumDescription = "工程约定\r\n先更新状态";
+  const content = await validatedCatalogJSON(project, project.catalog);
+  const parsed = parseCatalogPackage(parseJSON(content));
+  assert.deepEqual(parsed.events.map(item => item.id), [event.id]);
+  assert.equal(parsed.eventEnumDescription, "工程约定\n先更新状态");
+  assert.equal(parsed.events[0]!.description, event.description);
+  assert.match(content, /"id": "1"/);
 });
 
-// Go 参数约束、离线错误和无效响应都不得输出可能无法回导的文件。
-test("导出前校验失败阻止生成 JSON 并保留输入", async (t) => {
-  const definitions = [action("Move")];
-  const before = stringifyJSON(definitions);
-  const fetch = t.mock.method(globalThis, "fetch", async () => new Response('{"error":"参数 Speed 的默认值无效"}', { status: 400 }));
-  await assert.rejects(validatedCatalogJSON(definitions), /参数 Speed/);
-  fetch.mock.mockImplementation(async () => { throw new Error("连接失败"); });
-  await assert.rejects(validatedCatalogJSON(definitions), /连接失败/);
-  fetch.mock.mockImplementation(async () => new Response("<html>offline</html>", { status: 502 }));
-  await assert.rejects(validatedCatalogJSON(definitions), /无效 JSON.*502/);
-  assert.equal(stringifyJSON(definitions), before);
+// 旧数组、旧字符串字段与悬空 ID 必须在网络请求前拒绝。
+test("目录导入严格拒绝旧格式和未知事件", () => {
+  assert.throws(() => parseCatalogPackage([definition]), /旧数组/);
+  assert.throws(() => parseCatalogPackage({ kind: "behaviortree.catalog", schemaVersion: 4, events: [], catalog: [{ ...definition, events: ["command"] }] }), /旧字符串事件/);
+  assert.throws(() => parseCatalogPackage({ kind: "behaviortree.catalog", schemaVersion: 4, events: [], catalog: [definition] }), /未定义事件/);
 });
 
-// 定义携带组织数据或重复 ID 时本地拒绝，不能依赖 Go 的未知字段忽略行为。
-test("非法定义在网络请求前拒绝", async (t) => {
-  const fetch = t.mock.method(globalThis, "fetch", validResponse);
-  await assert.rejects(validatedCatalogJSON([{ ...action("Move"), folderID: "private" } as Definition]), /folderID/);
-  await assert.rejects(validatedCatalogJSON([action("Move"), action("Move")]), /重复 ID/);
-  assert.equal(fetch.mock.callCount(), 0);
+// 同号但不同的导入事件自动分配新 ID，并同步业务定义引用。
+test("成员 ID 冲突自动重映射且保留源工程", () => {
+  const project = blankProject();
+  project.events = [event];
+  project.nextEventId = "2";
+  const imported = { ...event, name: "采集", codeName: "PickUp" };
+  const importedDefinition = { ...definition, id: "PickUp", eventIds: [imported.id] };
+  const incoming = parseCatalogPackage({ kind: "behaviortree.catalog", schemaVersion: 4, events: [imported], catalog: [importedDefinition] });
+  const merged = mergeCatalogPackage(project, incoming, new Map());
+  assert.deepEqual(merged.events.map(item => item.id), ["1", "2"]);
+  assert.deepEqual(merged.catalog[0]!.eventIds, ["2"]);
+  assert.equal(merged.nextEventId, "3");
+  assert.deepEqual(project.events.map(item => item.id), ["1"]);
+  assert.deepEqual(incoming.catalog[0]!.eventIds, ["1"]);
 });
 
-// 提取实际组件的导入函数，避免测试重新实现输入失效、确认和异步提交逻辑。
-const componentSource = readFileSync(new URL("./CatalogManager.vue", import.meta.url), "utf8").split('<script setup lang="ts">')[1]!.split("</script>")[0]!;
-const script = ts.createSourceFile("CatalogManager.ts", componentSource, ts.ScriptTarget.Latest, true);
-const functionNames = new Set(["resetPreview", "readCatalog", "fillExample", "previewCatalog", "validatePreviewMerged", "changeChoice", "applyCatalog"]);
-const workflow = script.statements.filter(statement => ts.isFunctionDeclaration(statement) && functionNames.has(statement.name?.text ?? ""))
-  .map(statement => statement.getText(script)).join("\n");
-const js = ts.transpileModule(workflow, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-
-// 使用 Vue 响应式对象执行组件原函数，覆盖编辑文本到发出 apply 事件的流程。
-function importer(catalog: Definition[]) {
-  const incoming = ref<Definition[]>([]);
-  const choices = ref<Record<string, "keep" | "replace">>({});
-  const conflictRows = computed(() => catalogConflicts(catalog, incoming.value));
-  const emissions: Definition[][] = [];
-  const context = {
-    parseJSON, stringifyJSON, parseCatalog, mergeCatalog, catalogConflicts, validateCatalog,
-    props: { catalog }, incoming, choices, conflictRows,
-    pendingChoices: computed(() => conflictRows.value.some(row => !choices.value[row.id])),
-    updatesExisting: computed(() => conflictRows.value.some(row => choices.value[row.id] === "replace")),
-    mode: ref("import"), importText: ref(""), fileLabel: ref(""), acknowledged: ref(false),
-    previewReady: ref(false), previewValidated: ref(false), importRevision: ref(0), busy: ref(false), error: ref(""),
-    emit: (_name: string, value: Definition[]) => emissions.push(value),
-  };
-  const methods = runInNewContext(`${js}\n({ resetPreview, readCatalog, fillExample, previewCatalog, changeChoice, applyCatalog });`, context) as {
-    resetPreview(): void;
-    readCatalog(event: Event): Promise<void>;
-    fillExample(): void;
-    previewCatalog(): Promise<void>;
-    changeChoice(): Promise<void>;
-    applyCatalog(): Promise<void>;
-  };
-  const stop = watch(context.importText, methods.resetPreview, { flush: "sync" });
-  return { ...context, ...methods, emissions, stop };
-}
-
-// 粘贴后须显式预览；文本再次编辑会立即清除预览、冲突选择与确认。
-test("粘贴导入只在预览且最终校验通过后应用", async (t) => {
-  t.mock.method(globalThis, "fetch", validResponse);
-  const editor = importer([action("Old")]);
-  t.after(editor.stop);
-  editor.importText.value = stringifyJSON([action("New")]);
-  await editor.applyCatalog();
-  assert.equal(editor.emissions.length, 0);
-  await editor.previewCatalog();
-  assert.equal(editor.previewValidated.value, true);
-  assert.equal(editor.emissions.length, 0);
-  await editor.applyCatalog();
-  assert.deepEqual(editor.emissions[0]!.map(item => item.id), ["Old", "New"]);
-  editor.choices.value.New = "replace";
-  editor.acknowledged.value = true;
-  editor.importText.value += " ";
-  assert.equal(editor.previewReady.value, false);
-  assert.equal(editor.previewValidated.value, false);
-  assert.equal(editor.acknowledged.value, false);
-  assert.equal(Object.keys(editor.choices.value).length, 0);
+// 不同 ID 的相同代码名必须显式映射或重命名。
+test("目录事件代码名冲突可映射或重命名", () => {
+  const project = blankProject();
+  project.events = [event];
+  project.nextEventId = "2";
+  const incomingEvent = { ...event, id: "2" };
+  const incoming = parseCatalogPackage({ kind: "behaviortree.catalog", schemaVersion: 4, events: [incomingEvent], catalog: [{ ...definition, eventIds: [incomingEvent.id] }] });
+  assert.throws(() => mergeCatalogPackage(project, incoming, new Map()), /重复代码名|冲突/);
+  const mapped = mergeCatalogPackage(project, incoming, new Map(), new Map([[incomingEvent.id, event.id]]));
+  assert.equal(mapped.events.length, 1);
+  assert.deepEqual(mapped.catalog[0]!.eventIds, [event.id]);
+  const renamed = mergeCatalogPackage(project, incoming, new Map(), new Map(), new Map([[incomingEvent.id, "OtherChanged"]]));
+  assert.equal(renamed.events[1]!.codeName, "OtherChanged");
 });
 
-// 冲突必须先选择处理方式，替换还须确认影响；网络失败不产生 apply 事件。
-test("冲突选择、影响确认和失败请求共同保护当前工程", async (t) => {
-  const fetch = t.mock.method(globalThis, "fetch", validResponse);
-  const catalog = [action("Move")];
-  const editor = importer(catalog);
-  t.after(editor.stop);
-  editor.importText.value = stringifyJSON([{ ...action("Move"), name: "新移动" }]);
-  await editor.previewCatalog();
-  assert.equal(editor.pendingChoices.value, true);
-  await editor.applyCatalog();
-  assert.equal(editor.emissions.length, 0);
-  editor.choices.value.Move = "replace";
-  await editor.changeChoice();
-  await editor.applyCatalog();
-  assert.equal(editor.emissions.length, 0);
-  editor.acknowledged.value = true;
-  fetch.mock.mockImplementation(async () => new Response('{"error":"服务校验失败"}', { status: 400 }));
-  await editor.applyCatalog();
-  assert.match(editor.error.value, /服务校验失败/);
-  assert.equal(editor.previewValidated.value, false);
-  assert.equal(editor.emissions.length, 0);
-  assert.equal(catalog[0]!.name, "Move");
-});
-
-// 文件选择只填入文本，示例不覆盖已有内容；跨 ID Go 名冲突停留在错误预览。
-test("文件需再次解析且最终 Go 名冲突禁止应用", async (t) => {
-  t.mock.method(globalThis, "fetch", validResponse);
-  const editor = importer([action("Move")]);
-  t.after(editor.stop);
-  const raw = stringifyJSON([{ ...action("Other"), goName: "Move" }]);
-  const input = { files: [{ name: "definitions.json", text: async () => raw }], value: "file" };
-  await editor.readCatalog({ target: input } as unknown as Event);
-  assert.equal(editor.importText.value, raw);
-  assert.equal(editor.previewReady.value, false);
-  editor.fillExample();
-  assert.equal(editor.importText.value, raw);
-  await editor.previewCatalog();
-  assert.match(editor.error.value, /Go 函数名 Move/);
-  assert.equal(editor.previewValidated.value, false);
-  await editor.applyCatalog();
-  assert.equal(editor.emissions.length, 0);
-});
-
-// 请求进行中切换工程或重置输入时，晚到的响应不能恢复旧预览或应用旧定义。
-test("异步预览失效后丢弃服务端响应", async (t) => {
-  let complete!: (response: Response) => void;
-  t.mock.method(globalThis, "fetch", () => new Promise<Response>(resolve => { complete = resolve; }));
-  const editor = importer([]);
-  t.after(editor.stop);
-  editor.importText.value = stringifyJSON([action("Move")]);
-  const pending = editor.previewCatalog();
-  editor.resetPreview();
-  complete(new Response(stringifyJSON([action("Move")]), { status: 200 }));
-  await pending;
-  assert.equal(editor.previewReady.value, false);
-  assert.equal(editor.previewValidated.value, false);
-  assert.equal(editor.incoming.value.length, 0);
-  assert.equal(editor.emissions.length, 0);
+// 空注释可省略，导出过程不改变传入工程。
+test("目录导出不变更原模型", () => {
+  const project = blankProject();
+  project.events = [{ ...event, description: " \n " }];
+  project.nextEventId = "2";
+  project.catalog = [definition];
+  const before = stringifyJSON(project);
+  const exported = exportCatalogPackage(project, project.catalog);
+  assert.equal(exported.events[0]!.description, "");
+  assert.equal(stringifyJSON(project), before);
 });

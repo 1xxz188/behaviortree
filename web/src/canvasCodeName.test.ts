@@ -34,7 +34,7 @@ function session(type: NodeType = "action", binding = "move_to") {
   const codeNameError = ref("");
   const app = runInNewContext(`${js}\n({ graphNodes, applyCodeName, cancelCodeName });`, {
     computed, tree, selected, node, nodeIdentity, codeNameDraft, codeNameError, kinds,
-    invalidNodes: ref(new Set()), mutate: (fn: () => void) => fn(), notice: () => {},
+    invalidNodes: ref(new Set()), eventMatchedNodes: ref(new Set()), mutate: (fn: () => void) => fn(), notice: () => {},
   }) as {
     graphNodes: { readonly value: { data: unknown }[] }; // 真实画布节点投影。
     applyCodeName: () => void; // 应用属性面板中的代码名草稿。

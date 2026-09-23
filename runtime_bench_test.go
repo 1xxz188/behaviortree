@@ -2,28 +2,27 @@ package behaviortree
 
 import (
 	"fmt"
-	"strings"
 	"testing"
 	"unsafe"
 )
 
-// BenchmarkNotifyEventName 比较短事件、长事件和未知事件的通知成本，隔离事件名处理产生的分配。
-func BenchmarkNotifyEventName(b *testing.B) {
-	for _, name := range []string{"short", "long", "unknown"} {
+// BenchmarkNotifyEventID 比较已监听、未监听和未知数值事件的通知成本。
+func BenchmarkNotifyEventID(b *testing.B) {
+	for _, name := range []string{"observed", "unobserved", "unknown"} {
 		b.Run(name, func(b *testing.B) {
-			event := "ready"
-			if name != "short" {
-				event = strings.Repeat("event-name-", 16)
-			}
+			event := EventID(1)
 			p := benchmarkProgram(10, false, true)
-			p.Dependencies = map[string][]int{"event:" + event: {1}}
+			p.Events = append(p.Events, EventDefinition{ID: 2, Name: "未监听", CodeName: "Unobserved"})
 			i, err := NewInstance(p, "event-name", "main", 0, Options{Post: func(func()) { b.Fatal("unexpected yield") }, Logger: func(LogRecord) {}})
 			if err != nil {
 				b.Fatal(err)
 			}
 			i.Start()
+			if name == "unobserved" {
+				event = 2
+			}
 			if name == "unknown" {
-				event += "unknown"
+				event = 3
 			}
 			b.ReportAllocs()
 			for b.Loop() {
@@ -36,7 +35,7 @@ func BenchmarkNotifyEventName(b *testing.B) {
 
 // benchmarkProgram 模拟生成器的整数索引控制流，业务动作只读状态，不混入业务成本。
 func benchmarkProgram(nodes int, parallel, wait bool) *Program[int] {
-	p := &Program[int]{Version: "benchmark", Roots: map[string]int{"main": 0}, Nodes: make([]Node, nodes), Dependencies: map[string][]int{"event:ready": {1}}}
+	p := &Program[int]{Version: "benchmark", Roots: map[string]int{"main": 0}, Nodes: make([]Node, nodes), Events: []EventDefinition{{ID: 1, Name: "就绪", CodeName: "Ready"}}, EventDependencies: map[EventID][]int{1: {1}}}
 	p.Nodes[0] = Node{"root", "main", -1, nodes}
 	for n := 1; n < nodes; n++ {
 		p.Nodes[n] = Node{fmt.Sprint(n), "main", 0, n + 1}
@@ -129,7 +128,7 @@ func BenchmarkMatrix(b *testing.B) {
 						case "round", "trace":
 							i.Start()
 						default:
-							i.Notify("ready")
+							i.Notify(1)
 						}
 					}
 					after := uint64(0)

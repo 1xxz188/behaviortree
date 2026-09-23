@@ -57,7 +57,7 @@ type probe struct {
 
 // gateProgram 创建两步串行动作，验证生成代码与运行时的最小契约。
 func gateProgram(version string) *Program[*probe] {
-	p := &Program[*probe]{Version: version, Roots: map[string]int{"main": 0}, Nodes: []Node{{"root", "main", -1, 3}, {"first", "main", 0, 2}, {"second", "main", 0, 3}}, Dependencies: map[string][]int{"event:wake": {1}}}
+	p := &Program[*probe]{Version: version, Roots: map[string]int{"main": 0}, Nodes: []Node{{"root", "main", -1, 3}, {"first", "main", 0, 2}, {"second", "main", 0, 3}}, Events: []EventDefinition{{ID: 1, Name: "唤醒", CodeName: "Wake"}}, EventDependencies: map[EventID][]int{1: {1}}}
 	var step func(*Frame[*probe], int) Status
 	step = func(f *Frame[*probe], n int) Status {
 		if cached, execute := f.Enter(n); !execute {
@@ -149,12 +149,12 @@ func TestEventAndIdleWork(t *testing.T) {
 	steps := i.Steps()
 	for range 1000 {
 		i.Tick()
-		i.Notify("irrelevant")
+		i.Notify(2)
 	}
 	if i.Steps() != steps {
 		t.Fatal("idle instance executed nodes")
 	}
-	i.Notify("wake")
+	i.Notify(1)
 	if context.resumes[0] != 1 || context.starts[1] != 1 {
 		t.Fatal("event did not resume dependent action")
 	}
@@ -239,7 +239,7 @@ func TestGuardBeforeParentTouch(t *testing.T) {
 	q, context := &testQueue{}, &probe{}
 	p := gateProgram("v1")
 	p.Nodes = []Node{{"root", "main", -1, 4}, {"sequence", "main", 0, 4}, {"guard", "main", 1, 3}, {"action", "main", 1, 4}}
-	p.Dependencies = nil
+	p.EventDependencies = nil
 	p.Step = func(f *Frame[*probe], n int) Status {
 		f.Enter(0)
 		f.Enter(2)
@@ -277,7 +277,7 @@ func TestBlackboardNotificationsAndMigration(t *testing.T) {
 	fields := []Field{{ID: "enabled", Name: "Enabled", Type: BoolType}, {ID: "score", Name: "Score", Type: IntType, Default: Value{Int: 7}}}
 	p := gateProgram("v1")
 	p.Fields = fields
-	p.Dependencies["field:enabled"] = []int{1}
+	p.FieldDependencies = map[string][]int{"enabled": {1}}
 	r, _ := NewRegistry(p)
 	q, context := &testQueue{}, &probe{}
 	i, _ := r.NewInstance("one", "main", context, q.opts())

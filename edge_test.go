@@ -1,13 +1,12 @@
 package behaviortree
 
 import (
-	"strings"
 	"testing"
 )
 
 // TestMultipleRootStateIsolation 验证每个实例只分配入口树范围，绝对节点索引和事件不会串到其他入口。
 func TestMultipleRootStateIsolation(t *testing.T) {
-	p := &Program[int]{Version: "v1", Roots: map[string]int{"a": 0, "b": 2}, Nodes: []Node{{"a", "a", -1, 2}, {"action", "a", 0, 2}, {"b", "b", -1, 4}, {"action", "b", 2, 4}}, Dependencies: map[string][]int{"event:a": {1}, "event:b": {3}}}
+	p := &Program[int]{Version: "v1", Roots: map[string]int{"a": 0, "b": 2}, Nodes: []Node{{"a", "a", -1, 2}, {"action", "a", 0, 2}, {"b", "b", -1, 4}, {"action", "b", 2, 4}}, Events: []EventDefinition{{ID: 1, Name: "A", CodeName: "A"}, {ID: 2, Name: "B", CodeName: "B"}, {ID: 3, Name: "共享", CodeName: "Shared"}}, EventDependencies: map[EventID][]int{1: {1}, 2: {3}}}
 	var step func(*Frame[int], int) Status
 	step = func(f *Frame[int], n int) Status {
 		if cached, run := f.Enter(n); !run {
@@ -24,7 +23,7 @@ func TestMultipleRootStateIsolation(t *testing.T) {
 		return f.Exit(n, Running)
 	}
 	p.Step = step
-	p.Dependencies["event:shared"] = []int{3, 1}
+	p.EventDependencies[3] = []int{3, 1}
 	q := &testQueue{}
 	i, err := NewInstance(p, "second tree", "b", 0, q.opts())
 	if err != nil {
@@ -33,39 +32,34 @@ func TestMultipleRootStateIsolation(t *testing.T) {
 	if len(i.states) != 2 {
 		t.Fatal("allocated state for unrelated roots")
 	}
-	group := i.dependencies.events["shared"]
+	group := i.dependencies.events[3]
 	if len(i.dependencies.groups[group]) != 1 || i.dependencies.groups[group][0] != 3 {
 		t.Fatal("current root retained unrelated tree observers")
 	}
 	i.Start()
 	before := i.Steps()
-	i.Notify("a")
+	i.Notify(1)
 	if i.Steps() != before {
 		t.Fatal("other root event executed current tree")
 	}
-	i.Notify("b")
+	i.Notify(2)
 	if i.Steps() != before+2 {
 		t.Fatal("absolute offset dispatch failed")
 	}
-	i.Notify("shared")
+	i.Notify(3)
 	if i.Steps() != before+4 {
 		t.Fatal("shared event crossed root boundary or failed to dispatch")
 	}
 	i.Close()
 }
 
-// TestNotifyExactNamesAndAllocations 验证移除内部协议前缀后事件仍精确匹配、隔离字段通知，长事件稳态零分配。
-func TestNotifyExactNamesAndAllocations(t *testing.T) {
-	longEvent := strings.Repeat("event-name-", 16)
+// TestNotifyEventIDsAndAllocations 验证数值事件与字段依赖隔离，合法无监听事件为空操作，热路径零分配。
+func TestNotifyEventIDsAndAllocations(t *testing.T) {
 	p := benchmarkProgram(4, true, true)
 	p.Fields = []Field{{ID: "flag", Name: "Flag", Type: BoolType}}
-	p.Dependencies = map[string][]int{
-		"event:ready":        {1},
-		"event:event:ready":  {2},
-		"event:field:flag":   {3},
-		"event:" + longEvent: {2},
-		"field:flag":         {1},
-	}
+	p.Events = []EventDefinition{{ID: 1, Name: "就绪", CodeName: "Ready"}, {ID: 2, Name: "切换", CodeName: "Changed"}, {ID: 3, Name: "完成", CodeName: "Completed"}, {ID: 4, Name: "未引用", CodeName: "Unused"}}
+	p.EventDependencies = map[EventID][]int{1: {1}, 2: {2}, 3: {3}}
+	p.FieldDependencies = map[string][]int{"flag": {1}}
 	visits := [4]int{}
 	var step func(*Frame[int], int) Status
 	step = func(f *Frame[int], node int) Status {
@@ -87,15 +81,18 @@ func TestNotifyExactNamesAndAllocations(t *testing.T) {
 	}
 	p.Step = step
 	q := &testQueue{}
-	i, err := NewInstance(p, "exact-event", "main", 0, q.opts())
+	var records []LogRecord
+	opts := q.opts()
+	opts.Logger = func(record LogRecord) { records = append(records, record) }
+	i, err := NewInstance(p, "exact-event", "main", 0, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
 	i.Start()
 	for _, tc := range []struct {
-		event string // event 是宿主发送的原始事件名称。
-		node  int    // node 是唯一预期重评的叶子，零表示没有观察者。
-	}{{"ready", 1}, {"event:ready", 2}, {"field:flag", 3}, {longEvent, 2}, {"unknown", 0}, {longEvent + "unknown", 0}, {"", 0}} {
+		event EventID // event 是宿主发送的稳定事件 ID。
+		node  int     // node 是唯一预期重评的叶子，零表示没有观察者。
+	}{{1, 1}, {2, 2}, {3, 3}, {4, 0}, {5, 0}, {0, 0}} {
 		before := visits
 		i.Notify(tc.event)
 		for node := 1; node < len(visits); node++ {
@@ -104,19 +101,22 @@ func TestNotifyExactNamesAndAllocations(t *testing.T) {
 				want++
 			}
 			if visits[node] != want {
-				t.Fatalf("event %q woke unexpected leaf %d: got %d want %d", tc.event, node, visits[node], want)
+				t.Fatalf("event %d woke unexpected leaf %d: got %d want %d", tc.event, node, visits[node], want)
 			}
 		}
+	}
+	if len(records) != 2 || records[0].Kind != LogError || records[0].Reason != "unknown event ID 5" || records[0].Version != "benchmark" || records[0].InstanceID != "exact-event" || i.Error() != nil {
+		t.Fatalf("unknown event diagnostics changed lifecycle: records=%+v error=%v", records, i.Error())
 	}
 	before := visits
 	i.Blackboard().SetBool(0, true)
 	q.drain(t)
 	if visits[1] != before[1]+1 || visits[2] != before[2] || visits[3] != before[3] {
-		t.Fatal("field notification mixed with an event using the field prefix")
+		t.Fatal("field notification mixed with numeric event dependency")
 	}
-	for _, event := range []string{"ready", longEvent, longEvent + "unknown"} {
+	for _, event := range []EventID{1, 2, 3, 4} {
 		if allocations := testing.AllocsPerRun(1000, func() { i.Notify(event) }); allocations != 0 {
-			t.Errorf("event %q allocated %.1f objects", event, allocations)
+			t.Errorf("event %d allocated %.1f objects", event, allocations)
 		}
 	}
 	if len(q.items) != 0 {
@@ -168,7 +168,7 @@ func TestStaleForceDoesNotRestartNewerRound(t *testing.T) {
 
 // TestSelfNotificationIsDeferred 验证动作首次执行修改依赖字段时通知保留，且下一次宿主调度才 Resume。
 func TestSelfNotificationIsDeferred(t *testing.T) {
-	p := &Program[int]{Version: "v1", Roots: map[string]int{"main": 0}, Nodes: []Node{{"action", "main", -1, 1}}, Fields: []Field{{ID: "flag", Name: "Flag", Type: BoolType}}, Dependencies: map[string][]int{"field:flag": {0}}}
+	p := &Program[int]{Version: "v1", Roots: map[string]int{"main": 0}, Nodes: []Node{{"action", "main", -1, 1}}, Fields: []Field{{ID: "flag", Name: "Flag", Type: BoolType}}, FieldDependencies: map[string][]int{"flag": {0}}}
 	starts, resumes := 0, 0
 	p.Step = func(f *Frame[int], n int) Status {
 		if cached, run := f.Enter(n); !run {
@@ -215,11 +215,11 @@ func TestDirtyParallelConstantWork(t *testing.T) {
 	i.Start()
 	q.drain(t)
 	before := i.Steps()
-	i.Notify("ready")
+	i.Notify(1)
 	if i.Steps() != before+2 {
 		t.Fatal("unrelated parallel children executed")
 	}
-	allocations := testing.AllocsPerRun(1000, func() { i.Notify("ready") })
+	allocations := testing.AllocsPerRun(1000, func() { i.Notify(1) })
 	if allocations != 0 {
 		t.Fatalf("steady notification allocated %.1f objects", allocations)
 	}

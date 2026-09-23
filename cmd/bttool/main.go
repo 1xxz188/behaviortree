@@ -78,7 +78,7 @@ func run(args []string) error {
 			return err
 		}
 		if args[0] == "catalog" {
-			data, err = model.ExportCatalog(p.Catalog)
+			data, err = model.ExportCatalog(p)
 			if err == nil {
 				_, err = os.Stdout.Write(append(data, '\n'))
 			}

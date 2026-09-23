@@ -102,12 +102,12 @@ test("工程与目录解析定位非法类型并允许未连完草稿", () => {
   draft.trees[0]!.root = "";
   draft.trees[0]!.nodes[0]!.children = [];
   assert.doesNotThrow(() => validateProjectTypes(parseJSON(stringifyJSON(draft))));
-  assert.throws(() => validateProjectTypes({ schemaVersion: 2, trees: [{ nodes: [{ type: "bogus" }] }] }), /trees\[0\].nodes\[0\].type.*bogus/);
-  assert.throws(() => validateProjectTypes({ schemaVersion: 2, trees: [{ nodes: [{}] }] }), /trees\[0\].nodes\[0\].type.*undefined/);
-  assert.throws(() => validateProjectTypes({ schemaVersion: 2, blackboard: [{ type: null }] }), /blackboard\[0\].type.*null/);
+  assert.throws(() => validateProjectTypes({ schemaVersion: 4, nextEventId: "1", events: [], catalog: [], trees: [{ nodes: [{ type: "bogus" }] }] }), /trees\[0\].nodes\[0\].type.*bogus/);
+  assert.throws(() => validateProjectTypes({ schemaVersion: 4, nextEventId: "1", events: [], catalog: [], trees: [{ nodes: [{}] }] }), /trees\[0\].nodes\[0\].type.*undefined/);
+  assert.throws(() => validateProjectTypes({ schemaVersion: 4, nextEventId: "1", events: [], catalog: [], blackboard: [{ type: null }] }), /blackboard\[0\].type.*null/);
   assert.throws(() => validateCatalogTypes([{ kind: "sequence" }]), /catalog\[0\].kind.*sequence/);
   assert.throws(() => validateCatalogTypes([{ kind: "action", params: [{ type: 1 }] }]), /catalog\[0\].params\[0\].type.*1/);
-  assert.throws(() => validateProjectTypes({ schemaVersion: 2, trees: {} }), /trees.*数组/);
+  assert.throws(() => validateProjectTypes({ schemaVersion: 4, nextEventId: "1", events: [], catalog: [], trees: {} }), /trees.*数组/);
 });
 
 // 枚举标签收紧不改变用户业务枚举、实体 ID 及 duration 的无损值表示。

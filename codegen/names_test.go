@@ -18,7 +18,7 @@ import (
 
 // TestSemanticNamesCompile 验证特殊身份、转换冲突和重复子树的名字稳定且真实可编译。
 func TestSemanticNamesCompile(t *testing.T) {
-	p := model.Project{SchemaVersion: model.SchemaVersion, Name: "命名测试", Generation: model.Generation{PackagePath: "generated", ContextType: "any"}}
+	p := model.Project{SchemaVersion: model.SchemaVersion, NextEventID: "1", Name: "命名测试", Generation: model.Generation{PackagePath: "generated", ContextType: "any"}}
 	leaf := func(tree, id string) model.Tree {
 		return model.Tree{ID: tree, Name: "显示树", Root: id, Nodes: []model.Node{{ID: id, Name: "攻击目标\nfunc injected() {}\r\u2028", Type: model.NodeWait}}}
 	}
@@ -98,7 +98,7 @@ func TestSemanticNamesCompile(t *testing.T) {
 func TestContextNameCollisions(t *testing.T) {
 	for _, name := range []string{"btNodeMainWait1", "nodeMainWait1", "btNodeCount", "btNodeNoParent"} {
 		t.Run(name, func(t *testing.T) {
-			p := model.Project{SchemaVersion: model.SchemaVersion, Name: "上下文冲突", Generation: model.Generation{PackagePath: "generated", ContextType: "*" + name}, Trees: []model.Tree{{ID: "main", Name: "主树", Root: "root", Nodes: []model.Node{{ID: "root", Type: model.NodeWait}}}}}
+			p := model.Project{SchemaVersion: model.SchemaVersion, NextEventID: "1", Name: "上下文冲突", Generation: model.Generation{PackagePath: "generated", ContextType: "*" + name}, Trees: []model.Tree{{ID: "main", Name: "主树", Root: "root", Nodes: []model.Node{{ID: "root", Type: model.NodeWait}}}}}
 			r, err := Generate(p)
 			if err != nil {
 				t.Fatal(err)

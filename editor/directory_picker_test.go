@@ -16,7 +16,7 @@ func TestDirectoryPickerSelectsWithoutMutation(t *testing.T) {
 	original, target := t.TempDir(), t.TempDir()
 	s := workspaceTestServer(t, original)
 	source := filepath.Join(target, "工程.json")
-	data := []byte(`{"schemaVersion":2,"trees":[{"id":"main","nodes":[]}]}`)
+	data := []byte(`{"schemaVersion":4,"nextEventId":"1","events":[],"trees":[{"id":"main","nodes":[]}]}`)
 	if err := os.WriteFile(source, data, 0644); err != nil {
 		t.Fatal(err)
 	}

@@ -1,4 +1,6 @@
 import { validateCatalogOrganization } from "./catalogOrganization.ts";
+import { validateEventRegistry, validateNextEventID } from "./eventRegistry.ts";
+import type { EventDefinition } from "./project.ts";
 
 // 枚举名称与 Go 的 JSON 表示一致；联合类型不生成数值反向映射。
 export const nodeTypes = [
@@ -86,7 +88,9 @@ export function validateCatalogTypes(value: unknown, path = "catalog"): void {
 // 验证工程内所有枚举字段；不妨碍根节点或连线尚未完成的草稿。
 export function validateProjectTypes(value: unknown): void {
   const project = record(value, "project");
-  if (project.schemaVersion !== 2) throw new Error("schemaVersion: 仅支持版本 2，请新建工程；旧版工程不兼容");
+  if (project.schemaVersion !== 4) throw new Error("schemaVersion: 仅支持版本 4；旧事件工程不兼容");
+  validateEventRegistry(project.events, project.catalog, project.eventEnumDescription);
+  validateNextEventID(project.nextEventId, project.events as EventDefinition[]);
   items(project.blackboard, "blackboard").forEach((item, index) => {
     const path = `blackboard[${index}]`;
     parseValueType(record(item, path).type, `${path}.type`);

@@ -1,18 +1,22 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
-import type { Definition, Parameter } from "./project";
+import type { Definition, Parameter, EventDefinition, Project } from "./project";
 import type { DefinitionKind, ValueType } from "./enums";
 import { valueTypes } from "./enums";
 import { PARAM_TYPE_META, parameterTypeTooltip } from "./parameterTypeMeta";
 import { parseJSON, stringifyJSON } from "./json";
-import { catalogConflicts, mergeCatalog, parseCatalog } from "./catalog";
-import type { CatalogChoice } from "./catalog";
+import { catalogConflicts, eventConflicts, exportCatalogPackage, mergeCatalog, mergeCatalogPackage, parseCatalog, parseCatalogPackage, prepareImportedEvents } from "./catalog";
+import type { CatalogChoice, CatalogPackage } from "./catalog";
 import { validateCatalog } from "./catalogTransfer";
+import { normalizeEventDescription, validateEventRegistry } from "./eventRegistry";
+import EventMultiSelect from "./EventMultiSelect.vue";
 import CatalogBrowser from "./CatalogBrowser.vue";
 import type { CatalogOrganizationIndex } from "./catalogOrganization";
 
 const props = withDefaults(defineProps<{
   catalog: Definition[]; // 当前工程目录；提交成功前不修改。
+  project: Project; // 事件交换和依赖选择使用工程统一注册表。
+  projectRevision: number; // 任意工程事务均使旧草稿与导入预览失效。
   initialKind?: DefinitionKind; // 从节点属性打开时，预选种类并允许绑定。
   initialMode?: "create" | "edit" | "import" | "manage"; // 新建与编辑使用独立工作页。
   initialDefinition?: Definition; // 右键入口指定的已有定义，表单只编辑其副本。
@@ -25,7 +29,8 @@ const props = withDefaults(defineProps<{
   transferBusy?: boolean; // 导出进行中禁用重复提交。
 }>(), { initialMode: "manage" });
 const emit = defineEmits<{
-  apply: [catalog: Definition[], bindID?: string];
+  apply: [catalog: Definition[], bindID?: string, events?: EventDefinition[], enumDescription?: string, nextEventId?: string];
+  manageEvents: [];
   close: [];
   select: [folderId: string];
   transfer: [operation: "copy" | "download"];
@@ -84,10 +89,15 @@ function transfer(operation: "copy" | "download") {
   emit("transfer", operation);
 }
 const editingID = ref("");
-const draft = ref({ id: "", name: "", kind: props.initialKind ?? "action", goName: "", events: "" });
+const draft = ref({ id: "", name: "", kind: props.initialKind ?? "action", goName: "", eventIds: [] as string[] });
+const draftRevision = ref(props.projectRevision); // 提交时拒绝工程或注册表变化后的旧表单。
 const parameters = ref<ParameterDraft[]>([]);
 let parameterKey = 0;
 const incoming = ref<Definition[]>([]);
+const incomingPackage = ref<CatalogPackage | null>(null);
+const eventMappings = ref<Record<string, string>>(Object.create(null));
+const eventRenames = ref<Record<string, string>>(Object.create(null));
+const importEnumDescription = ref(false);
 const choices = ref<Record<string, CatalogChoice | "">>(Object.create(null));
 const acknowledged = ref(false);
 const bindNew = ref(Boolean(props.initialKind));
@@ -102,7 +112,24 @@ const importRevision = ref(0); // 工程或输入更新后丢弃已过期的异�
 const dialog = ref<HTMLElement>();
 // 页面切换销毁触发按钮后，将焦点带回标题区域，避免落入背景画布。
 watch(mode, async () => { await nextTick(); dialog.value?.focus(); });
-const conflictRows = computed(() => catalogConflicts(props.catalog, incoming.value));
+const preparedEvents = computed(() => {
+  if (!incomingPackage.value) return null;
+  try { return prepareImportedEvents(props.project, incomingPackage.value,
+    new Map(Object.entries(eventMappings.value).filter(([, id]) => id)),
+    new Map(Object.entries(eventRenames.value).filter(([, name]) => name))); }
+  catch { return null; }
+});
+const mappedIncoming = computed(() => preparedEvents.value?.definitions ?? incoming.value);
+const conflictRows = computed(() => catalogConflicts(props.catalog, mappedIncoming.value));
+const eventConflictRows = computed(() => eventConflicts(props.project.events, incomingPackage.value?.events ?? []));
+const enumDescriptionConflict = computed(() => normalizeEventDescription(incomingPackage.value?.eventEnumDescription, "eventEnumDescription") !== normalizeEventDescription(props.project.eventEnumDescription, "eventEnumDescription"));
+const codeNameCollisionRows = computed(() => {
+  const current = new Map(props.project.events.map(item => [item.codeName.toLowerCase(), item]));
+  return (incomingPackage.value?.events ?? []).filter(item => {
+    const sameID = props.project.events.find(other => other.id === item.id);
+    return current.has(item.codeName.toLowerCase()) && (!sameID || eventConflicts([sameID], [item]).length > 0);
+  });
+});
 const previewRows = computed(() => {
   const existing = new Set(props.catalog.map(item => item.id));
   const conflicts = new Set(conflictRows.value.map(item => item.id));
@@ -113,7 +140,7 @@ const previewCounts = computed(() => {
   for (const row of previewRows.value) counts[row.status === "新增" ? "added" : row.status === "相同" ? "same" : "conflict"]++;
   return counts;
 });
-const pendingChoices = computed(() => conflictRows.value.some(row => !choices.value[row.id]));
+const pendingChoices = computed(() => conflictRows.value.some(row => !choices.value[row.id]) || codeNameCollisionRows.value.some(row => !eventMappings.value[row.id] && !eventRenames.value[row.id]));
 const updatesExisting = computed(() => conflictRows.value.some((row) => choices.value[row.id] === "replace"));
 const dialogTitle = computed(() => mode.value === "edit" ? `编辑业务定义：${draft.value.name || editingID.value}`
   : mode.value === "create" ? "新建业务定义" : mode.value === "import" ? "导入业务定义" : "业务节点管理"); // 标题明确区分修改已有定义和新增定义。
@@ -121,12 +148,17 @@ const dialogTitle = computed(() => mode.value === "edit" ? `编辑业务定义�
 // 修改输入立即作废旧预览及确认；同步监听防止同一事件内误提交旧数据。
 watch(importText, resetPreview, { flush: "sync" });
 watch(() => props.catalog, resetPreview);
+watch(() => props.projectRevision, resetPreview);
 
 // 输入或工程发生变化后，必须重新解析而不能沿用旧冲突选择。
 function resetPreview() {
   importRevision.value++;
   incoming.value = [];
+  incomingPackage.value = null;
   choices.value = Object.create(null);
+  eventMappings.value = Object.create(null);
+  eventRenames.value = Object.create(null);
+  importEnumDescription.value = false;
   acknowledged.value = false;
   previewReady.value = false;
   previewValidated.value = false;
@@ -142,7 +174,8 @@ function changeMode(next: "create" | "edit" | "import" | "manage") {
   acknowledged.value = false;
   error.value = "";
   editingID.value = "";
-  draft.value = { id: "", name: "", kind: props.initialKind ?? "action", goName: "", events: "" };
+  draft.value = { id: "", name: "", kind: props.initialKind ?? "action", goName: "", eventIds: [] };
+  draftRevision.value = props.projectRevision;
   parameters.value = [];
   fileLabel.value = "";
   importSource.value = "paste";
@@ -157,7 +190,8 @@ function editDefinition(item: Definition) {
   if (busy.value || props.disabled) return;
   changeMode("edit");
   editingID.value = item.id;
-  draft.value = { id: item.id, name: item.name, kind: item.kind, goName: item.goName, events: (item.events ?? []).join("\n") };
+  draft.value = { id: item.id, name: item.name, kind: item.kind, goName: item.goName, eventIds: [...(item.eventIds ?? [])] };
+  draftRevision.value = props.projectRevision;
   parameters.value = (item.params ?? []).map((parameter) => ({
     key: parameterKey++, name: parameter.name, type: parameter.type, comment: parameter.comment ?? "",
     defaultText: parameter.default === undefined ? "" : stringifyJSON(parameter.default),
@@ -178,7 +212,7 @@ function addParameter() {
   parameters.value.push({ key: parameterKey++, name: "", type: "string", comment: "", defaultText: "", enumText: "" });
 }
 
-// 逐行处理枚举和事件列表，空行用于表单排版而不生成空值。
+// 逐行处理参数枚举，空行仅用于表单排版。
 function lines(value: string): string[] {
   return value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
 }
@@ -187,7 +221,7 @@ function lines(value: string): string[] {
 function draftDefinition(): Definition {
   return {
     id: draft.value.id.trim(), name: draft.value.name.trim(), kind: draft.value.kind,
-    goName: draft.value.goName.trim(), events: lines(draft.value.events),
+    goName: draft.value.goName.trim(), eventIds: [...draft.value.eventIds],
     params: parameters.value.map((parameter): Parameter => ({
       name: parameter.name.trim(), type: parameter.type,
       ...(parameter.comment.trim() ? { comment: parameter.comment.trim() } : {}),
@@ -220,7 +254,7 @@ async function readCatalog(event: Event) {
 // 已有输入时禁用示例按钮，避免无提示地覆盖用户尚未解析的 JSON。
 function fillExample() {
   if (busy.value || importText.value.trim()) return;
-  importText.value = stringifyJSON([{ id: "move_to", name: "移动到目标", kind: "action", goName: "MoveTo", params: [{ name: "Speed", type: "float64", default: 1.5, comment: "移动速度" }] }], 2);
+  importText.value = stringifyJSON({ kind: "behaviortree.catalog", schemaVersion: 4, events: [], catalog: [{ id: "move_to", name: "移动到目标", kind: "action", goName: "MoveTo", params: [{ name: "Speed", type: "float64", default: 1.5, comment: "移动速度" }] }] }, 2);
 }
 
 // 显式解析并验证待导入数组，成功后才展示新增、相同和冲突列表。
@@ -230,9 +264,10 @@ async function previewCatalog() {
   const revision = importRevision.value;
   busy.value = true;
   try {
-    const validated = await validateCatalog(parseCatalog(parseJSON(importText.value)));
+    const validated = await validateCatalog(parseCatalogPackage(parseJSON(importText.value)));
     if (revision !== importRevision.value) return;
-    incoming.value = validated;
+    incomingPackage.value = validated;
+    incoming.value = validated.catalog;
     previewReady.value = true;
     if (!pendingChoices.value) await validatePreviewMerged();
   } catch (cause) {
@@ -248,7 +283,12 @@ async function validatePreviewMerged() {
   const revision = importRevision.value;
   const decisions = new Map<string, CatalogChoice>();
   for (const [id, choice] of Object.entries(choices.value)) if (choice) decisions.set(id, choice);
-  await validateCatalog(mergeCatalog(props.catalog, incoming.value, decisions));
+  if (!incomingPackage.value) return;
+  const merged = mergeCatalogPackage(props.project, incomingPackage.value, decisions,
+    new Map(Object.entries(eventMappings.value).filter(([, id]) => id)), new Map(Object.entries(eventRenames.value).filter(([, name]) => name)), importEnumDescription.value);
+  const contentChanged = stringifyJSON(merged.catalog) !== stringifyJSON(props.project.catalog) || stringifyJSON(merged.events) !== stringifyJSON(props.project.events);
+  if (!contentChanged) throw new Error("没有采纳任何定义或事件变更；如需单独修改整体注释，请使用事件枚举管理");
+  await validateCatalog(exportCatalogPackage({ ...props.project, ...merged }, merged.catalog));
   if (revision === importRevision.value) previewValidated.value = true;
 }
 
@@ -268,6 +308,7 @@ async function applyCatalog() {
   error.value = "";
   const revision = importRevision.value;
   try {
+    if (mode.value !== "import" && draftRevision.value !== props.projectRevision) throw new Error("工程事件表已变化，请重新打开业务定义表单");
     let candidate = incoming.value;
     const decisions = new Map<string, CatalogChoice>();
     for (const [id, choice] of Object.entries(choices.value)) if (choice) decisions.set(id, choice);
@@ -279,15 +320,28 @@ async function applyCatalog() {
       candidate = parseCatalog([definition]);
       if (editingID.value) decisions.set(editingID.value, "replace");
     }
-    const replaced = catalogConflicts(props.catalog, candidate).some((row) => decisions.get(row.id) === "replace");
+    const replaced = conflictRows.value.some((row) => decisions.get(row.id) === "replace") || (mode.value !== "import" && catalogConflicts(props.catalog, candidate).some(row => decisions.get(row.id) === "replace"));
     if (replaced && !acknowledged.value) throw new Error("请确认更新定义对已有绑定和手写 Go 函数的影响");
-    const merged = mergeCatalog(props.catalog, candidate, decisions);
+    let merged = mergeCatalog(props.catalog, mode.value === "import" ? mappedIncoming.value : candidate, decisions);
+    let mergedEvents = props.project.events;
+    let mergedDescription = props.project.eventEnumDescription;
+    let mergedNextEventID = props.project.nextEventId;
+    if (mode.value === "import") {
+      if (!incomingPackage.value) throw new Error("导入预览已失效，请重新解析");
+      const result = mergeCatalogPackage(props.project, incomingPackage.value, decisions,
+        new Map(Object.entries(eventMappings.value).filter(([, id]) => id)), new Map(Object.entries(eventRenames.value).filter(([, name]) => name)), importEnumDescription.value);
+      merged = result.catalog; mergedEvents = result.events; mergedDescription = result.eventEnumDescription; mergedNextEventID = result.nextEventId;
+      if (stringifyJSON(merged) === stringifyJSON(props.catalog) && stringifyJSON(mergedEvents) === stringifyJSON(props.project.events)) {
+        throw new Error("没有采纳任何定义或事件变更；如需单独修改整体注释，请使用事件枚举管理");
+      }
+    }
+    validateEventRegistry(mergedEvents, merged, mergedDescription);
     busy.value = true;
-    const validated = await validateCatalog(merged);
+    const validated = await validateCatalog(exportCatalogPackage({ ...props.project, catalog: merged, events: mergedEvents, eventEnumDescription: mergedDescription, nextEventId: mergedNextEventID }, merged));
     if (revision !== importRevision.value) return;
     const bindID = mode.value === "create" && !editingID.value && bindNew.value && draft.value.kind === props.initialKind
       ? candidate[0]!.id : undefined;
-    emit("apply", validated, bindID);
+    emit("apply", validated.catalog, bindID, mergedEvents, mergedDescription, mergedNextEventID);
   } catch (cause) {
     if (mode.value === "import") previewValidated.value = false;
     error.value = cause instanceof Error ? cause.message : String(cause);
@@ -374,12 +428,12 @@ onUnmounted(() => { importRevision.value++; previousFocus?.focus(); });
               <label class="catalog-wide">注释（可留空）<textarea v-model="parameter.comment" :disabled="busy" placeholder="说明参数用途，将生成到 Go 字段注释中" rows="2" /></label>
               <label v-if="parameter.type === 'enum'" class="catalog-wide">允许的枚举值（每行一个）<textarea v-model="parameter.enumText" :disabled="busy" rows="3" /></label>
             </div>
-            <label class="catalog-events">宿主事件（每行一个，可留空）<textarea v-model="draft.events" :disabled="busy" placeholder="movement_completed" rows="2" /></label>
+            <EventMultiSelect :events="project.events" :selected="draft.eventIds" :disabled="busy" @change="draft.eventIds = $event" @manage="emit('manageEvents')" />
             <div v-if="editingID" class="catalog-warning"><strong>更新已有定义会影响所有引用它的节点。</strong><p>节点参数会按新定义同步：保留兼容绑定，删除已移除参数，重置不兼容绑定；新增参数采用默认值或保持未绑定。应用后自动校验工程，请按提示配置参数，并同步手写 Go 实现。</p><label class="catalog-check"><input v-model="acknowledged" :disabled="busy" type="checkbox" />我已了解影响，确认更新此定义</label></div>
             <label v-if="initialKind && !editingID && draft.kind === initialKind" class="catalog-check"><input v-model="bindNew" :disabled="busy" type="checkbox" />保存并绑定当前节点</label>
           </form>
           <div v-else-if="mode === 'import'" class="catalog-import">
-            <p>粘贴业务定义 JSON 数组，或从文件读取。新 ID 会追加；相同 ID 的变更由你逐项决定，其他定义会保留。</p>
+            <p>粘贴 Schema 4 业务目录交换包，或从文件读取。事件 ID 冲突自动重编号，定义和代码名冲突仍需选择。</p>
             <div class="catalog-import-tools" role="group" aria-label="导入来源">
               <button type="button" :class="{ active: importSource === 'paste' }" :disabled="busy" @click="importSource = 'paste'">粘贴 JSON</button>
               <button type="button" :class="{ active: importSource === 'file' }" :disabled="busy" @click="importSource = 'file'">从文件读取</button>
@@ -387,11 +441,11 @@ onUnmounted(() => { importRevision.value++; previousFocus?.focus(); });
             </div>
             <label v-if="importSource === 'file'">业务定义文件<input type="file" accept=".json,application/json" :disabled="busy" @change="readCatalog" /></label>
             <p v-if="fileLabel">{{ fileLabel }}</p>
-            <label>业务定义 JSON<textarea v-model="importText" :disabled="busy" rows="10" spellcheck="false" placeholder='[{"id":"move_to","name":"移动到目标","kind":"action","goName":"MoveTo"}]' /></label>
+            <label>业务目录 JSON<textarea v-model="importText" :disabled="busy" rows="10" spellcheck="false" placeholder='{"kind":"behaviortree.catalog","schemaVersion":4,"events":[],"catalog":[]}' /></label>
             <button type="button" :disabled="busy || !importText.trim()" @click="previewCatalog">解析预览</button>
             <section v-if="previewReady" class="catalog-preview" aria-label="导入预览">
               <h3>新增 {{ previewCounts.added }} · 相同 {{ previewCounts.same }} · 冲突 {{ previewCounts.conflict }}</h3>
-              <p v-if="!previewRows.length" class="catalog-hint">输入数组为空，没有需要导入的定义。</p>
+              <p v-if="!previewRows.length" class="catalog-hint">交换包内没有需要导入的定义。</p>
               <ul><li v-for="row in previewRows" :key="row.item.id"><span>{{ row.status }}</span> {{ row.item.name }} · {{ row.item.id }} · {{ row.item.goName }}</li></ul>
             </section>
             <article v-for="row in previewReady ? conflictRows : []" :key="row.id" class="catalog-conflict">
@@ -399,6 +453,9 @@ onUnmounted(() => { importRevision.value++; previousFocus?.focus(); });
               <div class="catalog-compare"><div><small>当前工程</small><pre>{{ stringifyJSON(row.current, 2) }}</pre></div><div><small>导入定义</small><pre>{{ stringifyJSON(row.incoming, 2) }}</pre></div></div>
               <label>处理方式<select v-model="choices[row.id]" :disabled="busy" @change="changeChoice"><option :value="undefined" disabled>请选择处理方式</option><option value="keep">保留现有定义</option><option value="replace">使用导入定义</option></select></label>
             </article>
+            <article v-for="row in previewReady ? eventConflictRows : []" :key="row.incoming.id" class="catalog-conflict"><strong>事件 ID 冲突：{{ row.incoming.name }} · Event{{ row.incoming.codeName }}</strong><p>{{ eventMappings[row.incoming.id] ? '已映射到现有事件 ID' : '将自动分配工程内的新 ID' }} {{ preparedEvents?.eventIDs.get(row.incoming.id) ?? '（待校验）' }}，并同步更新业务定义引用。</p></article>
+            <article v-for="row in previewReady ? codeNameCollisionRows : []" :key="row.id" class="catalog-conflict"><strong>代码名冲突：Event{{ row.codeName }}</strong><p>导入事件与当前工程不同 ID 的成员同名，请映射到现有事件或修改导入成员代码名。</p><label>映射到现有事件<select v-model="eventMappings[row.id]" @change="changeChoice"><option value="">不映射</option><option v-for="item in project.events" :key="item.id" :value="item.id">{{ item.name }} · Event{{ item.codeName }}</option></select></label><label>或修改导入代码名<input v-model="eventRenames[row.id]" @change="changeChoice" placeholder="新的代码名" /></label></article>
+            <article v-if="previewReady && enumDescriptionConflict" class="catalog-conflict"><strong>枚举功能注释不同</strong><div class="catalog-compare"><div><small>当前工程</small><pre>{{ project.eventEnumDescription || '（空）' }}</pre></div><div><small>导入来源</small><pre>{{ incomingPackage?.eventEnumDescription || '（空；采用将清空）' }}</pre></div></div><label class="catalog-check"><input v-model="importEnumDescription" type="checkbox" @change="changeChoice" />明确采用导入的整体注释{{ incomingPackage?.eventEnumDescription ? '' : '（将清空）' }}</label></article>
             <p v-if="previewReady && !conflictRows.length" class="catalog-hint">没有同 ID 变更；确认后点击“应用到工程”，再保存工程。</p>
             <div v-if="updatesExisting" class="catalog-warning"><p>更新后节点参数会按新定义同步：保留兼容绑定，删除已移除参数，重置不兼容绑定；新增参数采用默认值或保持未绑定。应用后自动校验工程，请按提示配置参数，并同步手写 Go 实现。</p><label class="catalog-check"><input v-model="acknowledged" :disabled="busy" type="checkbox" />确认使用所选导入定义更新已有绑定</label></div>
           </div>

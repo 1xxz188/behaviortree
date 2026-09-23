@@ -13,6 +13,8 @@ import { normalizeCodeNames } from "./codeNames.ts";
 import { ProjectSaveState } from "./saveState.ts";
 import { GenerationRequests, semanticSignature } from "./generation.ts";
 import { parseJSON, stringifyJSON } from "./json.ts";
+import { pruneHighlightedEvents } from "./eventHighlight.ts";
+import { EventRegistryIndex } from "./eventRegistry.ts";
 
 // 提取真实加载、历史恢复及请求函数，避免预先构造响应式索引掩盖加载边界问题。
 const source = readFileSync(new URL("./App.vue", import.meta.url), "utf8")
@@ -49,6 +51,8 @@ function session() {
     codeNameDraft: ref(""), codeNameError: ref(""),
     treeIdentity: shallowRef(new TreeIdentityIndex(project.value)), renamingTree: false,
     treeMenu: shallowRef(), catalogMenu: shallowRef(), catalogDialog: shallowRef(), canvasMenu: shallowRef(), editRevision: 0, occupiedIDs: new Set<string>(),
+    eventManagerOpen: ref(false), highlightedEventIDs: shallowRef(new Set<string>()),
+    eventIndex: computed(() => new EventRegistryIndex(project.value)), pruneHighlightedEvents,
     codeSnapshot: shallowRef(), scaffoldSnapshot: shallowRef(), semanticRevision: ref(0),
     generationRequests: new GenerationRequests(), diagnostics: ref([]),
     fileName: ref(""), suggestedName: ref(""), workspace: ref("E:/fixture"), files: ref<string[]>([]), allFiles: ref<string[]>([]),

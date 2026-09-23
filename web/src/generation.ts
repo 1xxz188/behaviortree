@@ -3,6 +3,7 @@ import { clone } from "./project.ts";
 import type { Project } from "./project.ts";
 import { stringifyJSON } from "./json.ts";
 import { normalizeCodeNames } from "./codeNames.ts";
+import { normalizeEventDescription } from "./eventRegistry.ts";
 
 // SourceLocation 描述源节点的一次展开及其生成函数起始行。
 export interface SourceLocation {
@@ -95,12 +96,16 @@ function canonicalValue(value: unknown): unknown {
 export function semanticSignature(project: Project): string {
   const snapshot = clone(project);
   delete snapshot.catalogOrganization; // 目录、标签和排序不改变生成语义。
+  delete (snapshot as Partial<Project>).nextEventId; // 分配游标只属于编辑状态，不改变已声明事件的生成结果。
   normalizeCodeNames(snapshot);
   const byID = (a: { id: string }, b: { id: string }) =>
     a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
   snapshot.trees.sort(byID);
   snapshot.blackboard.sort(byID);
   snapshot.catalog.sort(byID);
+  snapshot.events.sort(byID);
+  snapshot.eventEnumDescription = normalizeEventDescription(snapshot.eventEnumDescription, "eventEnumDescription");
+  for (const event of snapshot.events) event.description = normalizeEventDescription(event.description, `events[${event.id}].description`);
   snapshot.generation.contextImport ??= "";
   for (const field of snapshot.blackboard) field.enum ??= [];
   for (const tree of snapshot.trees) {
@@ -122,7 +127,7 @@ export function semanticSignature(project: Project): string {
   }
   for (const definition of snapshot.catalog) {
     definition.params ??= [];
-    definition.events ??= [];
+    definition.eventIds ??= [];
     definition.params.sort((a, b) =>
       a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
     );
@@ -130,7 +135,7 @@ export function semanticSignature(project: Project): string {
       parameter.enum ??= [];
       parameter.comment ??= ""; // 与 Go omitempty 的空注释表示一致，保存后不误报源码过期。
     }
-    definition.events.sort();
+    definition.eventIds.sort();
   }
   return stringifyJSON(canonicalValue(snapshot));
 }

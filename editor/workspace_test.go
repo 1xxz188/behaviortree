@@ -76,7 +76,7 @@ func TestDirectoryBrowseDoesNotSwitchOrRecurse(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, path := range []string{filepath.Join(target, "top.json"), filepath.Join(child, "nested.json"), filepath.Join(target, "notes.txt")} {
-		if err := os.WriteFile(path, []byte(`{"schemaVersion":2,"trees":[{"id":"main","nodes":[]}]}`), 0644); err != nil {
+		if err := os.WriteFile(path, []byte(`{"schemaVersion":4,"nextEventId":"1","events":[],"trees":[{"id":"main","nodes":[]}]}`), 0644); err != nil {
 			t.Fatal(err)
 		}
 	}

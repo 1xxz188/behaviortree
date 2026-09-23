@@ -12,14 +12,14 @@ import { blankProject, clone, kinds } from "./project.ts";
 import type { Project } from "./project.ts";
 import { TreeIdentityIndex } from "./treeIdentity.ts";
 
-// 全部节点种类都允许省略或填写注释，旧版本 2 工程无需迁移或补写属性。
-test("所有节点允许可选字符串注释并兼容旧工程", () => {
+// 全部节点种类都允许省略或填写注释，Schema 4 无需补写节点注释属性。
+test("所有节点允许可选字符串注释", () => {
   const project = blankProject();
   project.trees[0]!.nodes = nodeTypes.map((type, index) => ({ id: `node_${index}`, type }));
   const before = stringifyJSON(project);
   assert.doesNotThrow(() => validateProjectTypes(parseJSON(before)));
   assert.equal(stringifyJSON(project), before);
-  assert.equal(project.schemaVersion, 2);
+  assert.equal(project.schemaVersion, 4);
   for (const node of project.trees[0]!.nodes) {
     assert.equal(Object.hasOwn(node, "comment"), false);
     for (const comment of ["", "中文说明\n保留内部换行", "<b>纯文本</b> & // /* */"]) {
@@ -32,7 +32,7 @@ test("所有节点允许可选字符串注释并兼容旧工程", () => {
 // 校验真实 JSON 输入边界，不能依靠静态类型或仅检查第一棵树的第一个节点。
 test("非字符串节点注释被拒绝并指出完整字段位置", () => {
   for (const comment of [null, false, true, 0, 123, {}, [], ["说明"]]) {
-    const input = { schemaVersion: 2, trees: [
+    const input = { schemaVersion: 4, nextEventId: "1", events: [], catalog: [], trees: [
       { nodes: [{ id: "old", type: "wait" }] },
       { nodes: [{ id: "valid", type: "sequence" }, { id: "invalid", type: "action", comment }] },
     ] };

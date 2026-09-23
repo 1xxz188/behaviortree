@@ -62,19 +62,19 @@ func TestDurationProjectRoundTrip(t *testing.T) {
 				t.Fatalf("保存改变时长表示: got=%s, want=%s", value, raw)
 			}
 		}
-		catalog, err := ExportCatalog(decoded.Catalog)
+		catalog, err := ExportCatalog(decoded)
 		if err != nil {
 			t.Fatal(err)
 		}
-		var definitions []Definition
-		if err := json.Unmarshal(catalog, &definitions); err != nil {
+		var exchange CatalogExchange
+		if err := json.Unmarshal(catalog, &exchange); err != nil {
 			t.Fatal(err)
 		}
-		if string(definitions[0].Params[0].Default) != raw {
+		if string(exchange.Catalog[0].Params[0].Default) != raw {
 			t.Fatal("目录导出改变时长表示")
 		}
 		decoded.Catalog[0].Params[0].Default = json.RawMessage(`"invalid"`)
-		if _, err := ExportCatalog(decoded.Catalog); err == nil {
+		if _, err := ExportCatalog(decoded); err == nil {
 			t.Fatal("目录导出未拒绝非法时长")
 		}
 	}

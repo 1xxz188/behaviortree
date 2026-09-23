@@ -2,7 +2,6 @@
 package editor
 
 import (
-	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -169,6 +168,9 @@ func normalizeDraft(p *model.Project) error {
 	if err := model.ValidateCatalogOrganization(*p); err != nil {
 		return err
 	}
+	if diagnostics := model.ValidateEvents(*p); len(diagnostics) != 0 {
+		return fmt.Errorf("%s: %s", diagnostics[0].Field, diagnostics[0].Message)
+	}
 	p.CatalogOrganization = model.NormalizedCatalogOrganization(p.CatalogOrganization)
 	if len(p.Trees) == 0 {
 		return errors.New("工程至少需要一棵树")
@@ -178,6 +180,9 @@ func normalizeDraft(p *model.Project) error {
 	}
 	if p.Catalog == nil {
 		p.Catalog = []model.Definition{}
+	}
+	if p.Events == nil {
+		p.Events = []model.EventDefinition{}
 	}
 	seen := make(map[string]bool, len(p.Trees))
 	for i := range p.Trees {
@@ -354,35 +359,18 @@ func (s *Server) importProject(w http.ResponseWriter, r *http.Request) {
 	reply(w, 200, p)
 }
 
-// importCatalog 校验 Go 导出的节点声明，返回统一数组形式。
+// importCatalog 校验自包含交换对象并完整返回事件及业务定义。
 func (s *Server) importCatalog(w http.ResponseWriter, r *http.Request) {
 	data, err := readBody(w, r)
-	var catalog []model.Definition
-	if err == nil && !bytes.HasPrefix(bytes.TrimSpace(data), []byte("[")) {
-		err = errors.New("业务定义必须为 JSON 数组，单个定义也须放入数组")
-	}
+	var exchange model.CatalogExchange
 	if err == nil {
-		decoder := json.NewDecoder(bytes.NewReader(data))
-		decoder.DisallowUnknownFields()
-		err = decoder.Decode(&catalog)
-		if err == nil {
-			var extra any
-			if decoder.Decode(&extra) != io.EOF {
-				err = errors.New("目录后含多余 JSON 数据")
-			}
-		}
-	}
-	if err == nil {
-		_, err = model.ExportCatalog(catalog)
+		exchange, err = model.DecodeCatalogExchange(data)
 	}
 	if err != nil {
 		reply(w, 400, map[string]string{"error": err.Error()})
 		return
 	}
-	if catalog == nil {
-		catalog = []model.Definition{}
-	}
-	reply(w, 200, catalog)
+	reply(w, 200, exchange)
 }
 
 // validate 对 Web 和 CLI 使用同一个元数据验证器。

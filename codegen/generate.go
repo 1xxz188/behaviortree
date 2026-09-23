@@ -76,6 +76,7 @@ type generator struct {
 	roots          map[string]int              // 各独立树的入口。
 	defs           map[string]model.Definition // 业务函数声明。
 	fields         map[string]int              // 黑板字段槽位。
+	eventNames     map[string]string           // 稳定事件 ID 到生成常量名的索引。
 	context        string                      // 生成的上下文类型表达式。
 	packageName    string                      // 由生成包路径末级目录推导的包名。
 	countSymbol    string                      // 节点总数及最后一个子树的排他上界常量。
@@ -99,7 +100,7 @@ func Generate(project model.Project) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	g := &generator{p: p, roots: map[string]int{}, defs: map[string]model.Definition{}, fields: map[string]int{}, context: p.Generation.ContextType, packageName: resolved.PackageName}
+	g := &generator{p: p, roots: map[string]int{}, defs: map[string]model.Definition{}, fields: map[string]int{}, eventNames: map[string]string{}, context: p.Generation.ContextType, packageName: resolved.PackageName}
 	if p.Generation.ContextImport != "" {
 		g.context = "ctxpkg." + strings.TrimPrefix(g.context, "*")
 		if strings.HasPrefix(p.Generation.ContextType, "*") {
@@ -111,6 +112,9 @@ func Generate(project model.Project) (Result, error) {
 	}
 	for i, f := range p.Blackboard {
 		g.fields[f.ID] = i
+	}
+	for _, event := range p.Events {
+		g.eventNames[event.ID] = "Event" + event.CodeName
 	}
 	trees := map[string]model.Tree{}
 	indices := map[string]map[string]model.Node{}
@@ -177,6 +181,23 @@ func Generate(project model.Project) (Result, error) {
 	g.line(")")
 	g.line("// %s 表示独立树入口没有父节点。", g.noParentSymbol)
 	g.line("const %s = -1", g.noParentSymbol)
+	if len(p.Events) > 0 {
+		g.line("// 工程事件枚举：以下常量用于宿主通知当前工程的行为树。")
+		if p.EventEnumDescription != "" {
+			writeComment(&g.buf, p.EventEnumDescription)
+		}
+		g.line("const (")
+		for _, event := range p.Events {
+			name := g.eventNames[event.ID]
+			g.line("// %s 表示%q。", name, event.Name)
+			if event.Description != "" {
+				writeComment(&g.buf, event.Description)
+			}
+			value, _ := model.ParseEventID(event.ID)
+			g.line("%s bt.EventID = %d", name, value)
+		}
+		g.line(")")
+	}
 	for _, d := range p.Catalog {
 		g.line("// %sParams 是业务函数 %s（显示名 %q）的强类型参数。", d.GoName, d.GoName, d.Name)
 		g.line("type %sParams struct {", d.GoName)
@@ -226,37 +247,55 @@ func Generate(project model.Project) (Result, error) {
 		}
 		g.line("{ID:%q,Name:%q,Type:bt.%s,Default:bt.Value{%s:%s},Enum:%s},", f.ID, f.Name, runtimeType(f.Type), valueMember(f.Type), literal(f.Type, raw), stringSlice(f.Enum))
 	}
-	g.line("},Dependencies:map[string][]int{")
-	dependencies := map[string][]int{}
+	g.line("},EventEnumDescription:%q,Events:[]bt.EventDefinition{", p.EventEnumDescription)
+	for _, event := range p.Events {
+		g.line("{ID:%s,Name:%q,CodeName:%q,Description:%q},", g.eventNames[event.ID], event.Name, event.CodeName, event.Description)
+	}
+	g.line("},FieldDependencies:map[string][]int{")
+	fieldDependencies := map[string][]int{}
+	eventDependencies := map[string][]int{}
 	for i, n := range g.nodes {
 		if n.node.Type != model.NodeAction && n.node.Type != model.NodeCondition {
 			continue
 		}
 		d := g.defs[n.node.Binding]
-		seen := map[string]bool{}
-		for _, event := range d.Events {
-			seen["event:"+event] = true
+		for _, eventID := range d.EventIDs {
+			eventDependencies[eventID] = append(eventDependencies[eventID], i)
 		}
+		seen := map[string]bool{}
 		for _, param := range n.node.Params {
 			if param.Field != "" {
-				seen["field:"+param.Field] = true
+				seen[param.Field] = true
 			}
 		}
 		for key := range seen {
-			dependencies[key] = append(dependencies[key], i)
+			fieldDependencies[key] = append(fieldDependencies[key], i)
 		}
 	}
-	keys := make([]string, 0, len(dependencies))
-	for key := range dependencies {
+	keys := make([]string, 0, len(fieldDependencies))
+	for key := range fieldDependencies {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
 	for _, key := range keys {
-		names := make([]string, len(dependencies[key]))
-		for i, index := range dependencies[key] {
+		names := make([]string, len(fieldDependencies[key]))
+		for i, index := range fieldDependencies[key] {
 			names[i] = g.slot(index)
 		}
 		g.line("%q:[]int{%s},", key, strings.Join(names, ","))
+	}
+	g.line("},EventDependencies:map[bt.EventID][]int{")
+	keys = keys[:0]
+	for key := range eventDependencies {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		names := make([]string, len(eventDependencies[key]))
+		for i, index := range eventDependencies[key] {
+			names[i] = g.slot(index)
+		}
+		g.line("%s:[]int{%s},", g.eventNames[key], strings.Join(names, ","))
 	}
 	g.line("},Step:btStep,Abort:btAbort}")
 	g.line("}")
@@ -434,6 +473,9 @@ func (g *generator) assignSymbols() error {
 	}
 	for _, f := range g.p.Blackboard {
 		used["Get"+f.Name], used["Set"+f.Name] = true, true
+	}
+	for _, event := range g.p.Events {
+		used[g.eventNames[event.ID]] = true
 	}
 	// 边界符号也避开现有上下文类型与业务声明，保证生成包的标识符唯一。
 	claim := func(name string) string {
@@ -769,7 +811,15 @@ func ProjectVersion(project model.Project) (string, error) {
 
 // normalizeProject 深拷贝并规范化集合，统一预览、产物和草稿的版本判定。
 func normalizeProject(project model.Project) (model.Project, string, error) {
+	if project.SchemaVersion != model.SchemaVersion {
+		return model.Project{}, "", fmt.Errorf("不支持 schemaVersion %d", project.SchemaVersion)
+	}
+	if diagnostics := model.ValidateEvents(project); len(diagnostics) != 0 {
+		return model.Project{}, "", fmt.Errorf("%s: %s", diagnostics[0].Field, diagnostics[0].Message)
+	}
 	project = model.WithCodeNames(project)
+	// 分配游标只影响未来新增事件，不改变当前生成源码及版本摘要。
+	project.NextEventID = ""
 	// 业务分类仅影响编辑器展示，不参与代码内容或生成版本。
 	project.CatalogOrganization = nil
 	// 路径使用同一规范形式参与摘要，避免 Windows 分隔符导致虚假的版本变更。
@@ -794,8 +844,21 @@ func normalizeProject(project model.Project) (model.Project, string, error) {
 	}
 	for i := range p.Catalog {
 		sort.Slice(p.Catalog[i].Params, func(a, b int) bool { return p.Catalog[i].Params[a].Name < p.Catalog[i].Params[b].Name })
-		sort.Strings(p.Catalog[i].Events)
+		sort.Strings(p.Catalog[i].EventIDs)
 	}
+	if p.EventEnumDescription, err = model.NormalizeEventDescription(p.EventEnumDescription); err != nil {
+		return model.Project{}, "", fmt.Errorf("eventEnumDescription: %w", err)
+	}
+	for i := range p.Events {
+		p.Events[i].Name = strings.TrimSpace(p.Events[i].Name)
+		if p.Events[i].Description, err = model.NormalizeEventDescription(p.Events[i].Description); err != nil {
+			return model.Project{}, "", fmt.Errorf("events[%d].description: %w", i, err)
+		}
+	}
+	if p.Events == nil {
+		p.Events = []model.EventDefinition{}
+	}
+	sort.Slice(p.Events, func(i, j int) bool { return p.Events[i].ID < p.Events[j].ID })
 	raw, _ = json.Marshal(p)
 	sum := sha256.Sum256(raw)
 	version := hex.EncodeToString(sum[:16])
