@@ -20,10 +20,12 @@ const source = readFileSync(new URL("./App.vue", import.meta.url), "utf8")
   .split('<script setup lang="ts">')[1]!.split("</script>")[0]!;
 const script = ts.createSourceFile("App.ts", source, ts.ScriptTarget.Latest, true);
 const names = new Set([
-  "moveNode", "deleteSelected", "confirmDeleteCanvasNode", "openCanvasNodeMenu", "openCanvasPaneMenu",
+  "moveNode", "deleteSelected", "confirmDeleteCanvasNode", "confirmDeleteCanvasEdge", "openCanvasNodeMenu", "openCanvasEdgeMenu", "openCanvasPaneMenu",
   "syncCanvasSelection", "finishCanvasSelection", "selectCanvasNode", "keydown",
+  "selectCanvasEdge",
   "checkpoint", "mutate", "restore", "undo", "redo", "rebuildIDs",
   "editCanvasMenuComment", "commitNodeComment",
+  "reconnectEdge",
 ]);
 const handlers = script.statements.filter(statement => ts.isFunctionDeclaration(statement)
   && names.has(statement.name?.text ?? "")).map(statement => statement.getText(script)).join("\n");
@@ -40,6 +42,7 @@ interface CanvasNode {
 interface CanvasMenu {
   tree: Tree; // 打开菜单时的实际树。
   node?: BTNode; // 打开菜单时的实际节点。
+  edge?: { source: BTNode; target: BTNode }; // 打开菜单时捕获的连线两端节点。
   anchor?: CanvasElement; // 右键节点对应的真实 DOM 锚点。
   x: number; // 菜单横坐标。
   y: number; // 菜单纵坐标。
@@ -70,6 +73,7 @@ function session() {
   const nodeIdentity = shallowRef(new NodeIdentityIndex(tree.value));
   const nodeIndex = computed(() => nodeIdentity.value.byID);
   const selected = ref(initialTree.root);
+  const selectedEdge = ref<{ source: string; target: string }>();
   const node = computed(() => nodeIndex.value.get(selected.value));
   watch(tree, current => { nodeIdentity.value = new NodeIdentityIndex(current); }, { flush: "sync" });
   const flowNodes = ref<CanvasNode[]>(tree.value.nodes.map(item => ({
@@ -81,11 +85,13 @@ function session() {
   const redoStack = ref<EditorSnapshot[]>([]);
   const semanticRevision = ref(0);
   const commentEdits: { node: BTNode; anchor: CanvasElement }[] = [];
+  const notices: { text: string; failed: boolean }[] = [];
   const context = {
     nextTick, reactive, captureSnapshot, restoreSnapshot, semanticSignature,
     Element: CanvasElement,
     nodeCommentTooltip: { value: { edit: (node: BTNode, anchor: CanvasElement) => { commentEdits.push({ node, anchor }); } } },
-    project, treeID, tree, treeIdentity, nodeIdentity, nodeIndex, selected, node,
+    notice: (text: string, failed = false) => { notices.push({ text, failed }); },
+    project, treeID, tree, treeIdentity, nodeIdentity, nodeIndex, selected, selectedEdge, node,
     canvasMenu: shallowRef<CanvasMenu>(), workspaceChanging: ref(false), projectReady: ref(true),
     undoStack, redoStack, editRevision: 0, saveState: new ProjectSaveState(), occupiedIDs: new Set<string>(),
     semanticRevision, invalidateCode: () => { semanticRevision.value++; },
@@ -112,19 +118,78 @@ function session() {
     moveNode: (event: { nodes: CanvasNode[] }) => void; // 一次拖动只产生一个历史边界。
     deleteSelected: () => void; // 只请求确认，不直接删除。
     confirmDeleteCanvasNode: () => void; // 确认后校验捕获目标并删除。
+    confirmDeleteCanvasEdge: () => void; // 确认后只删除捕获的连线。
     openCanvasNodeMenu: (event: { event: unknown; node: { id: string } }) => void; // 节点右键入口。
+    openCanvasEdgeMenu: (event: { event: { clientX: number; clientY: number; preventDefault: () => void; stopPropagation: () => void }; edge: { source: string; target: string } }) => void; // 连线右键入口。
     openCanvasPaneMenu: (event: unknown) => void; // 空白右键入口。
     syncCanvasSelection: () => Promise<void>; // 程序化选择同步。
     finishCanvasSelection: () => void; // 框选结束时同步属性面板。
     selectCanvasNode: (event: { node: CanvasNode }) => void; // 单击更新属性主节点。
+    selectCanvasEdge: (event: { edge: { source: string; target: string } }) => void; // 单击更新连线选择。
     keydown: (event: unknown) => void; // 全选及文本输入保护。
     undo: () => void; // 真实撤销入口。
     redo: () => void; // 真实重做入口。
     editCanvasMenuComment: () => Promise<void>; // 菜单关闭后打开统一注释浮层。
     commitNodeComment: (tree: Tree, node: BTNode, value: string) => boolean; // 统一提交并核验目标身份。
+    reconnectEdge: (event: { edge: { source: string; target: string }; connection: { source: string; target: string } }) => void; // 已有连线的端点拖动入口。
   };
-  return { ...context, app, flowNodes, selectionCalls, commentEdits };
+  return { ...context, app, flowNodes, selectionCalls, commentEdits, notices };
 }
+
+// 真实事件处理只产生一个撤销边界，恢复、重做和保存状态跟随拓扑变化。
+test("拖动已有连线端点一次提交且支持撤销重做", () => {
+  const s = session();
+  s.tree.value.nodes.push({ id: "3", type: "sequence", children: [] });
+  s.nodeIdentity.value.addNode(s.tree.value.nodes.at(-1)!);
+  const before = stringifyJSON(s.project.value);
+  s.saveState.reset(before);
+  s.app.reconnectEdge({ edge: { source: "1", target: "2" }, connection: { source: "3", target: "2" } });
+  const after = stringifyJSON(s.project.value);
+  assert.notEqual(after, before);
+  assert.deepEqual(s.tree.value.nodes[0]!.children, []);
+  assert.deepEqual(s.tree.value.nodes.at(-1)!.children, ["2"]);
+  assert.equal(s.undoStack.value.length, 1);
+  assert.equal(s.semanticRevision.value, 1);
+  assert.equal(s.saveState.dirty, true);
+  s.app.undo();
+  assert.equal(stringifyJSON(s.project.value), before);
+  assert.equal(s.saveState.dirty, false);
+  s.app.redo();
+  assert.equal(stringifyJSON(s.project.value), after);
+  assert.equal(s.saveState.dirty, true);
+});
+
+// 被拒绝的重连和原地拖放不创建历史、脏标记或新的生成修订。
+test("非法和原地重连不修改编辑状态", () => {
+  const s = session();
+  const before = stringifyJSON(s.project.value);
+  s.saveState.reset(before);
+  s.app.reconnectEdge({ edge: { source: "1", target: "2" }, connection: { source: "2", target: "2" } });
+  s.app.reconnectEdge({ edge: { source: "1", target: "2" }, connection: { source: "1", target: "2" } });
+  assert.equal(stringifyJSON(s.project.value), before);
+  assert.equal(s.undoStack.value.length, 0);
+  assert.equal(s.semanticRevision.value, 0);
+  assert.equal(s.saveState.dirty, false);
+  assert.equal(s.notices.length, 1);
+  assert.equal(s.notices[0]!.failed, true);
+});
+
+// 点击边只改变画布选择；清空节点主选后仍保留边选择及后续拖动入口。
+test("点击连线选中而不修改工程或历史", async () => {
+  const s = session();
+  const before = stringifyJSON(s.project.value);
+  s.saveState.reset(before);
+  s.app.selectCanvasEdge({ edge: { source: "1", target: "2" } });
+  await s.app.syncCanvasSelection();
+  assert.equal(s.selectedEdge.value?.source, "1");
+  assert.equal(s.selectedEdge.value?.target, "2");
+  assert.equal(s.selected.value, "");
+  assert.equal(stringifyJSON(s.project.value), before);
+  assert.equal(s.undoStack.value.length, 0);
+  assert.equal(s.saveState.dirty, false);
+  s.app.selectCanvasNode({ node: s.flowNodes.value[0]! });
+  assert.equal(s.selectedEdge.value, undefined);
+});
 
 // 一次拖动保存整组选中位置、保持节点拓扑，撤销和重做均按整组恢复。
 test("批量移动一次保存全部坐标且只记录一次历史", () => {
@@ -211,6 +276,78 @@ test("删除确认拒绝过期对象、过期树和切换中的工作目录", ()
     else s.workspaceChanging.value = true;
     const before = stringifyJSON(s.project.value);
     s.app.confirmDeleteCanvasNode();
+    assert.equal(stringifyJSON(s.project.value), before);
+    assert.equal(s.undoStack.value.length, 0);
+    assert.equal(s.canvasMenu.value, undefined);
+  }
+});
+
+// Delete 与 Backspace 删除选中连线时都先请求确认；取消不会改变工程或撤销历史。
+test("键盘删除选中连线必须二次确认", () => {
+  for (const key of ["Delete", "Backspace"]) {
+    const s = session();
+    const before = stringifyJSON(s.project.value);
+    s.saveState.reset(before);
+    s.app.selectCanvasEdge({ edge: { source: "1", target: "2" } });
+    let prevented = 0;
+    s.app.keydown({ key, target: { closest: () => null }, preventDefault: () => { prevented++; } });
+    assert.equal(prevented, 1);
+    assert.equal(s.canvasMenu.value?.initialMode, "delete");
+    assert.equal(s.canvasMenu.value?.edge?.source, s.tree.value.nodes[0]);
+    assert.equal(s.canvasMenu.value?.edge?.target, s.tree.value.nodes[1]);
+    s.canvasMenu.value = undefined;
+    s.app.confirmDeleteCanvasEdge();
+    assert.equal(stringifyJSON(s.project.value), before);
+    assert.equal(s.undoStack.value.length, 0);
+    assert.equal(s.saveState.dirty, false);
+  }
+});
+
+// 连线右键捕获实际目标，确认后只断开该边并一次更新撤销、脏标记和生成修订。
+test("右键删除连线保留两端节点且支持撤销重做", () => {
+  const s = session();
+  const before = stringifyJSON(s.project.value);
+  s.saveState.reset(before);
+  let prevented = 0;
+  let stopped = 0;
+  s.app.openCanvasEdgeMenu({
+    event: { clientX: 120, clientY: 230, preventDefault: () => { prevented++; }, stopPropagation: () => { stopped++; } },
+    edge: { source: "1", target: "2" },
+  });
+  assert.equal(prevented, 1);
+  assert.equal(stopped, 1);
+  assert.equal(s.canvasMenu.value?.edge?.source.id, "1");
+  assert.equal(s.canvasMenu.value?.edge?.target.id, "2");
+  assert.equal(s.selectedEdge.value?.source, "1");
+  assert.equal(s.selectedEdge.value?.target, "2");
+  s.app.confirmDeleteCanvasEdge();
+  const after = stringifyJSON(s.project.value);
+  assert.notEqual(after, before);
+  assert.deepEqual(s.tree.value.nodes[0]!.children, []);
+  assert.equal(s.tree.value.nodes.length, 2);
+  assert.equal(s.tree.value.root, "1");
+  assert.equal(s.undoStack.value.length, 1);
+  assert.equal(s.semanticRevision.value, 1);
+  assert.equal(s.saveState.dirty, true);
+  s.app.undo();
+  assert.equal(stringifyJSON(s.project.value), before);
+  assert.equal(s.saveState.dirty, false);
+  s.app.redo();
+  assert.equal(stringifyJSON(s.project.value), after);
+});
+
+// 菜单打开后若树或端点身份变化，旧确认不能删除当前工程的连线。
+test("连线删除确认拒绝过期目标", () => {
+  for (const stale of ["source", "target", "tree", "workspace"] as const) {
+    const s = session();
+    s.app.selectCanvasEdge({ edge: { source: "1", target: "2" } });
+    s.app.deleteSelected();
+    if (stale === "source") s.canvasMenu.value!.edge!.source = clone(s.tree.value.nodes[0]!);
+    else if (stale === "target") s.canvasMenu.value!.edge!.target = clone(s.tree.value.nodes[1]!);
+    else if (stale === "tree") s.canvasMenu.value!.tree = clone(s.tree.value);
+    else s.workspaceChanging.value = true;
+    const before = stringifyJSON(s.project.value);
+    s.app.confirmDeleteCanvasEdge();
     assert.equal(stringifyJSON(s.project.value), before);
     assert.equal(s.undoStack.value.length, 0);
     assert.equal(s.canvasMenu.value, undefined);

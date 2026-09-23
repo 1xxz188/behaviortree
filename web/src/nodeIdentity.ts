@@ -7,6 +7,18 @@ interface ChildReference {
   position: number; // 孩子数组中的位置，不是运行时节点槽位。
 }
 
+// 重连预案保存受影响父节点的新子节点列表，校验完成前不修改工程。
+export interface ReconnectPlan {
+  updates: { parent: BTNode; children: string[] }[]; // 每个父节点最多更新一次。
+  root: string; // 沿用普通连线连接当前根节点时的入口调整。
+}
+
+// 删除连线预案只包含实际父节点及移除目标后的子节点列表。
+export interface DisconnectPlan {
+  parent: BTNode; // 持有待删除连线的父节点。
+  children: string[]; // 删除后保留原有顺序的子节点列表。
+}
+
 // 节点稳定身份仅要求非空，保留已有中文、空白和特殊字符 ID 的兼容性。
 export function validNodeID(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
@@ -80,6 +92,89 @@ export class NodeIdentityIndex {
     if (children === undefined) delete parent.children;
     else parent.children = children;
     this.indexChildren(parent);
+  }
+
+  // 借助入边索引定位唯一连线；确认前只复制受影响父节点的孩子列表。
+  prepareDisconnect(source: string, target: string): DisconnectPlan | string {
+    const parent = this.byID.get(source);
+    if (!parent || !this.byID.has(target)) return "连线已失效，请重试";
+    let position: number | undefined;
+    for (const edge of this.references.get(target) ?? []) {
+      if (edge.parent !== parent) continue;
+      if (position !== undefined) return "连线存在重复引用，请先修复草稿";
+      position = edge.position;
+    }
+    if (position === undefined) return "连线已失效，请重试";
+    const children = [...(parent.children ?? [])];
+    children.splice(position, 1);
+    return { parent, children };
+  }
+
+  // 只查询两端相关的入边及新子树；返回错误、无操作或可原子提交的重连预案。
+  prepareReconnect(oldSource: string, oldTarget: string, source: string, target: string): ReconnectPlan | string | null {
+    const oldParent = this.byID.get(oldSource);
+    const newParent = this.byID.get(source);
+    if (!oldParent || !this.byID.has(oldTarget)) return "原连线已失效，请重试";
+    // 旧边必须仍是当前树中唯一对应的引用，不能误改过期或重复的草稿边。
+    let oldEdge: ChildReference | undefined;
+    for (const edge of this.references.get(oldTarget) ?? []) {
+      if (edge.parent !== oldParent) continue;
+      if (oldEdge) return "原连线存在重复引用，请先修复草稿";
+      oldEdge = edge;
+    }
+    if (!oldEdge) return "原连线已失效，请重试";
+    if (source === oldSource && target === oldTarget) return null;
+    if (source !== oldSource && target !== oldTarget) return "一次只能修改连线的一个端点";
+    if (!newParent || !this.byID.has(target) || source === target) return "不能连接到自身或不存在的节点";
+    if (["wait", "action", "condition", "subtree"].includes(newParent.type)) return "叶节点不能连接子节点";
+
+    // 新目标只有一条其他入边时自动转移，同一父节点的重复连接仍拒绝。
+    const targetEdges = this.references.get(target);
+    if (targetEdges && targetEdges.size > (target === oldTarget ? 1 : 0)) {
+      if (targetEdges.size !== 1 || target === oldTarget) return "目标节点已有多条入边，请先修复草稿";
+      const prior = targetEdges.values().next().value as ChildReference;
+      if (prior.parent === newParent) return "连接已存在";
+    }
+    const priorParent = target === oldTarget ? undefined
+      : targetEdges?.values().next().value?.parent as BTNode | undefined;
+    const nextChildren = new Map<BTNode, string[]>();
+    // 每个受影响父节点只复制一次孩子列表，预检失败不会触及工程对象。
+    const childrenOf = (parent: BTNode): string[] => {
+      let children = nextChildren.get(parent);
+      if (!children) nextChildren.set(parent, (children = [...(parent.children ?? [])]));
+      return children;
+    };
+    childrenOf(oldParent).splice(oldEdge.position, 1);
+    if (priorParent) {
+      const prior = targetEdges!.values().next().value as ChildReference;
+      childrenOf(priorParent).splice(prior.position, 1);
+    }
+    const destination = childrenOf(newParent);
+    if (!["sequence", "selector", "priority", "parallel"].includes(newParent.type) && destination.length)
+      return "装饰节点只能有一个子节点";
+
+    // 仅遍历新子节点的后代，避免将祖先接回自身并在草稿环中有界结束。
+    const pending = [target];
+    const seen = new Set<string>();
+    while (pending.length) {
+      const id = pending.pop()!;
+      if (id === source) return "连接会形成循环";
+      if (seen.has(id)) continue;
+      seen.add(id);
+      pending.push(...(this.byID.get(id)?.children ?? []));
+    }
+    if (source === oldSource) destination.splice(oldEdge.position, 0, target);
+    else destination.push(target);
+    return {
+      updates: [...nextChildren].map(([parent, children]) => ({ parent, children })),
+      root: this.tree.root === target ? source : this.tree.root,
+    };
+  }
+
+  // 预案只在统一的编辑历史边界内应用，并逐个维护受影响父节点的反向索引。
+  applyReconnect(plan: ReconnectPlan): void {
+    for (const { parent, children } of plan.updates) this.setChildren(parent, children);
+    this.tree.root = plan.root;
   }
 
   // 删除只访问相关父节点及当前节点；数组删除仍保持原有节点顺序。

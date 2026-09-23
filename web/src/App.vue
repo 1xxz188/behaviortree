@@ -32,8 +32,8 @@ import { TreeIdentityIndex, captureSnapshot, restoreSnapshot } from "./treeIdent
 import type { EditorSnapshot } from "./treeIdentity";
 import { NodeIdentityIndex } from "./nodeIdentity";
 import { normalizeCodeNames } from "./codeNames";
-import { VueFlow, Handle, Position, SelectionMode, useVueFlow, getRectOfNodes } from "@vue-flow/core";
-import type { Connection, NodeDragEvent, NodeMouseEvent } from "@vue-flow/core";
+import { VueFlow, Handle, Position, SelectionMode, ConnectionMode, useVueFlow, getRectOfNodes } from "@vue-flow/core";
+import type { Connection, EdgeMouseEvent, EdgeUpdateEvent, NodeDragEvent, NodeMouseEvent } from "@vue-flow/core";
 import { Background } from "@vue-flow/background";
 import { Controls } from "@vue-flow/controls";
 import {
@@ -109,6 +109,7 @@ const treeID = ref(project.value.trees[0]!.id);
 const treeIDDraft = ref(treeID.value); // ID 输入草稿，应用前不影响工程。
 let renamingTree = false; // 同一棵树改号时保留选择与视口。
 const selected = ref(project.value.trees[0]!.root);
+const selectedEdge = ref<{ source: string; target: string }>(); // 仅当前画布的连线选择，不进入工程或撤销历史。
 const nodeIDDraft = ref(selected.value); // 节点身份草稿，显式应用前不修改工程。
 const codeNameDraft = ref(""); // 代码名草稿仅在显式应用后写入工程。
 const codeNameError = ref(""); // 代码名格式或树内占用校验结果。
@@ -174,11 +175,18 @@ function followSourceSelection() {
 watch([treeID, selected, sourceStale], followSourceSelection);
 // 再次点击已选节点时仍恢复其源码文件，支持用户先手动查看公共 glue 的场景。
 function selectCanvasNode({ node: item }: NodeMouseEvent) {
+  selectedEdge.value = undefined;
   selected.value = item.selected ? item.id : getSelectedNodes.value[0]?.id ?? "";
   followSourceSelection();
 }
+// 点击连线只更新画布选择，清空节点属性选择但不改工程数据。
+function selectCanvasEdge({ edge }: EdgeMouseEvent) {
+  selectedEdge.value = { source: edge.source, target: edge.target };
+  selected.value = "";
+}
 // 框选完成后仅同步属性面板的主节点，整组选中状态由 Vue Flow 保持。
 function finishCanvasSelection() {
+  selectedEdge.value = undefined;
   selected.value = getSelectedNodes.value[0]?.id ?? "";
 }
 // 程序化定位、新增或恢复节点时同步画布；已处于多选中的主节点不收缩选区。
@@ -186,7 +194,7 @@ async function syncCanvasSelection() {
   await nextTick();
   const target = findNode(selected.value);
   if (target && !target.selected) addSelectedNodes([target]);
-  else if (!selected.value) removeSelectedElements();
+  else if (!selected.value && !selectedEdge.value) removeSelectedElements();
 }
 const catalogDialog = ref<{
   mode: "create" | "edit" | "import" | "manage"; // 区分新建、编辑和目录操作。
@@ -210,6 +218,10 @@ const treeMenu = shallowRef<{
 const canvasMenu = shallowRef<{
   tree: Tree; // 菜单所属的树，用于排除过期操作。
   node?: BTNode; // 为空表示画布空白菜单。
+  edge?: {
+    source: BTNode; // 右击或按键时捕获的原父节点对象。
+    target: BTNode; // 右击或按键时捕获的原子节点对象。
+  };
   x: number; // 菜单的视口横坐标。
   y: number; // 菜单的视口纵坐标。
   initialMode?: "menu" | "delete"; // 属性面板和删除键直接进入确认。
@@ -354,17 +366,30 @@ const graphNodes = computed(() =>
 );
 const graphEdges = computed(() =>
   (tree.value?.nodes ?? []).flatMap((n) =>
-    (n.children ?? []).map((child, i) => ({
-      id: `${n.id}/${child}`,
-      source: n.id,
-      target: child,
-      type: "smoothstep",
-      label: String(i + 1),
-      // SVG 导出脱离页面样式表后仍保持空心连线。
-      style: { stroke: "#607483", strokeWidth: 1.8, fill: "none" },
-      labelStyle: { fill: "#c7d5df" },
-      labelBgStyle: { fill: "#1e2a35" },
-    })),
+    (n.children ?? []).map((child, i) => {
+      const active = selectedEdge.value?.source === n.id && selectedEdge.value?.target === child;
+      const sourcePosition = tree.value.layout?.[n.id];
+      const targetPosition = tree.value.layout?.[child];
+      // 共享父节点的连线可能在起始水平段和中间竖段重叠；较近子节点置顶，保留较远连线未重叠段的点击入口。
+      const reach = sourcePosition && targetPosition
+        ? Math.round(Math.abs(targetPosition.x - sourcePosition.x) + Math.abs(targetPosition.y - sourcePosition.y))
+        : i;
+      return {
+        id: `${n.id}/${child}`,
+        source: n.id,
+        target: child,
+        type: "smoothstep",
+        label: String(i + 1),
+        selected: active,
+        updatable: active,
+        zIndex: active ? 1 : -reach, // 选中边始终置顶，避免其他边的透明点击路径挡住端点。
+        interactionWidth: 28,
+        // SVG 导出脱离页面样式表后仍保持空心连线。
+        style: { stroke: active ? "#91a9b7" : "#607483", strokeWidth: active ? 2.2 : 1.8, fill: "none" },
+        labelStyle: { fill: "#c7d5df" },
+        labelBgStyle: { fill: "#1e2a35" },
+      };
+    }),
   ),
 );
 
@@ -644,7 +669,15 @@ function moveNode({ nodes }: NodeDragEvent) {
 }
 // 所有删除入口只打开确认框，取消不会修改工程和历史。
 function deleteSelected() {
-  if (!node.value || workspaceChanging.value) return;
+  if (workspaceChanging.value) return;
+  if (selectedEdge.value) {
+    const source = nodeIndex.value.get(selectedEdge.value.source);
+    const target = nodeIndex.value.get(selectedEdge.value.target);
+    if (!source || !target) return;
+    canvasMenu.value = { tree: tree.value, edge: { source, target }, x: 0, y: 0, initialMode: "delete" };
+    return;
+  }
+  if (!node.value) return;
   canvasMenu.value = { tree: tree.value, node: node.value, x: 0, y: 0, initialMode: "delete" };
 }
 // 右击节点仅捕获操作对象，不改变已有多选和属性草稿。
@@ -655,6 +688,18 @@ function openCanvasNodeMenu({ event, node: item }: NodeMouseEvent) {
   if (!target || workspaceChanging.value) return;
   const anchor = event.target instanceof Element ? event.target.closest<HTMLElement>(".vue-flow__node") ?? undefined : undefined;
   canvasMenu.value = { tree: tree.value, node: target, anchor, x: (event as MouseEvent).clientX, y: (event as MouseEvent).clientY };
+}
+// 右击连线捕获实际两端节点并选择这条连线，确认时不依赖后来改变的画布选择。
+function openCanvasEdgeMenu({ event, edge }: EdgeMouseEvent) {
+  event.preventDefault();
+  event.stopPropagation();
+  if (workspaceChanging.value || !projectReady.value) return;
+  const source = nodeIndex.value.get(edge.source);
+  const target = nodeIndex.value.get(edge.target);
+  if (!source || !target) return;
+  selectedEdge.value = { source: source.id, target: target.id };
+  selected.value = "";
+  canvasMenu.value = { tree: tree.value, edge: { source, target }, x: (event as MouseEvent).clientX, y: (event as MouseEvent).clientY };
 }
 // Vue Flow 仅在右键未发生平移时派发此事件，拖动画布不会误弹菜单。
 function openCanvasPaneMenu(event: MouseEvent) {
@@ -719,6 +764,27 @@ function confirmDeleteCanvasNode() {
     nodeIdentity.value.removeNode(target);
     if (selected.value === target.id) selected.value = "";
   });
+}
+// 二次确认后只断开捕获的连线；目标变化或引用失效时不创建历史。
+function confirmDeleteCanvasEdge() {
+  const menu = canvasMenu.value;
+  canvasMenu.value = undefined;
+  if (!menu?.edge || menu.tree !== tree.value || workspaceChanging.value || !projectReady.value) return;
+  const { source, target } = menu.edge;
+  if (nodeIndex.value.get(source.id) !== source || nodeIndex.value.get(target.id) !== target) return;
+  const plan = nodeIdentity.value.prepareDisconnect(source.id, target.id);
+  if (typeof plan === "string") return notice(plan, true);
+  mutate(() => nodeIdentity.value.setChildren(plan.parent, plan.children));
+  if (selectedEdge.value?.source === source.id && selectedEdge.value?.target === target.id) selectedEdge.value = undefined;
+}
+// 拖动现有连线端点时先完整校验，再将父子关系作为一次可撤销编辑提交。
+function reconnectEdge({ edge, connection }: EdgeUpdateEvent) {
+  if (!connection.source || !connection.target) return;
+  const plan = nodeIdentity.value.prepareReconnect(edge.source, edge.target, connection.source, connection.target);
+  if (typeof plan === "string") return notice(plan, true);
+  if (!plan) return;
+  mutate(() => nodeIdentity.value.applyReconnect(plan));
+  selectedEdge.value = { source: connection.source, target: connection.target };
 }
 // 复制单个节点属性，分配新 ID 并断开子节点。
 function duplicate() {
@@ -1530,7 +1596,7 @@ function keydown(e: KeyboardEvent) {
   } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
     e.preventDefault();
     e.shiftKey ? redo() : undo();
-  } else if (e.key === "Delete") {
+  } else if (e.key === "Delete" || e.key === "Backspace") {
     e.preventDefault();
     deleteSelected();
   }
@@ -1541,11 +1607,15 @@ function beforeUnload(e: BeforeUnloadEvent) {
 }
 // 仅在实际树对象替换时重建；普通输入、改号和连线通过增量索引处理。
 watch(tree, (current) => {
+  selectedEdge.value = undefined;
   canvasMenu.value = undefined;
   nodeIdentity.value = reactive(new NodeIdentityIndex(current));
   cancelNodeID();
 }, { flush: "sync" });
-watch(selected, cancelNodeID, { flush: "sync" });
+watch(selected, (id) => {
+  if (id) selectedEdge.value = undefined; // 属性栏或诊断定位节点时退出连线选择。
+  cancelNodeID();
+}, { flush: "sync" });
 watch([tree, selected], syncCanvasSelection, { flush: "post" });
 watch(treeID, () => {
   cancelTreeID();
@@ -1866,6 +1936,9 @@ onUnmounted(() => toolLifecycle.abort());
         :class="{ 'palette-drag-over': canvasDragOver }"
         :nodes="graphNodes"
         :edges="graphEdges"
+        :edges-updatable="false"
+        :edge-updater-radius="17"
+        :connection-mode="ConnectionMode.Strict"
         :min-zoom="0.15"
         :max-zoom="2"
         :delete-key-code="null"
@@ -1877,6 +1950,9 @@ onUnmounted(() => toolLifecycle.abort());
         :pane-click-distance="3"
         fit-view-on-init
         @connect="link"
+        @edge-update="reconnectEdge"
+        @edge-click="selectCanvasEdge"
+        @edge-context-menu="openCanvasEdgeMenu"
         @node-click="selectCanvasNode"
         @nodes-initialized="syncCanvasSelection"
         @selection-end="finishCanvasSelection"
@@ -1888,7 +1964,7 @@ onUnmounted(() => toolLifecycle.abort());
         @move-start="canvasMoving = true; nodeCommentTooltip?.hide()"
         @move-end="canvasMoving = false"
         @pane-context-menu="openCanvasPaneMenu"
-        @pane-click="selected = ''"
+        @pane-click="selected = ''; selectedEdge = undefined"
         @node-drag-stop="moveNode"
         @dragover="dragOverCanvas"
         @dragleave="leaveCanvas"
@@ -1949,7 +2025,7 @@ onUnmounted(() => toolLifecycle.abort());
         </template>
       </VueFlow>
       <EventOverlay :project="project" :events="project.events" :enum-description="project.eventEnumDescription" :highlighted-i-ds="highlightedEventIDs" :auto-open-comments="autoOpenComments" :blocked="eventManagerOpen || !!catalogDialog || !!projectDialog" :commit="commitEventComment" @manage="eventManagerOpen = true" @highlight="toggleEventHighlight" @clear-highlight="highlightedEventIDs = new Set()" />
-      <div class="canvas-hint">左键框选 / 拖动选中节点批量移动 · 空白处右键拖动画布 · 右键打开菜单 · Ctrl+A 全选</div>
+      <div class="canvas-hint">左键框选 / 拖动选中节点批量移动 · 点击连线后拖动靠近节点的线段改连 · 空白处右键拖动画布 · 右键打开菜单 · Ctrl+A 全选</div>
     </main>
 
     <aside v-show="projectReady" :class="['inspector', { opened: inspectorOpen }]">
@@ -2327,10 +2403,10 @@ onUnmounted(() => toolLifecycle.abort());
     <ScaffoldOverwriteDialog v-if="scaffoldOverwrite" :path="scaffoldOverwrite.path" @close="closeScaffoldOverwrite" />
     <NodeCommentTooltip ref="nodeCommentTooltip" :tree="tree" :commit="commitNodeComment" :auto-open="autoOpenComments"
       :disabled="!projectReady || busy || workspaceChanging || canvasMoving || !!(canvasMenu || treeMenu || catalogMenu || catalogDialog || projectDialog || importFailure || nodeHelp || catalogCopy || scaffoldOverwrite)" />
-    <CanvasContextMenu v-if="canvasMenu" :key="`${canvasMenu.node?.id ?? 'pane'}:${canvasMenu.x}:${canvasMenu.y}:${canvasMenu.initialMode ?? 'menu'}`"
-      :node="canvasMenu.node" :x="canvasMenu.x" :y="canvasMenu.y" :initial-mode="canvasMenu.initialMode"
+    <CanvasContextMenu v-if="canvasMenu" :key="`${canvasMenu.node?.id ?? (canvasMenu.edge ? `${canvasMenu.edge.source.id}/${canvasMenu.edge.target.id}` : 'pane')}:${canvasMenu.x}:${canvasMenu.y}:${canvasMenu.initialMode ?? 'menu'}`"
+      :node="canvasMenu.node" :edge="canvasMenu.edge" :x="canvasMenu.x" :y="canvasMenu.y" :initial-mode="canvasMenu.initialMode"
       :disabled="!projectReady || busy || workspaceChanging" :png-busy="pngExportBusy"
-      @close="canvasMenu = undefined" @duplicate="duplicateCanvasNode" @delete="confirmDeleteCanvasNode" @comment="editCanvasMenuComment"
+      @close="canvasMenu = undefined" @duplicate="duplicateCanvasNode" @delete="confirmDeleteCanvasNode" @delete-edge="confirmDeleteCanvasEdge" @comment="editCanvasMenuComment"
       @save="canvasMenu = undefined; save()" @save-as="canvasMenu = undefined; save(true)"
       @json="canvasMenu = undefined; exportJSON()" @png="canvasMenu = undefined; exportPNG()" />
     <TreeContextMenu v-if="treeMenu" :key="`${treeMenu.tree.id}:${treeMenu.x}:${treeMenu.y}:${treeMenu.initialMode ?? 'menu'}`"

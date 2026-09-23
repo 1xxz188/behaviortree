@@ -521,8 +521,15 @@ pre {
   width: 9px;
   height: 9px;
   border: 2px solid #a0b6c5;
-  background: #1a2833;
+  background: #a0b6c5;
 }
+/* 保留选中连线端点的拖动命中区域，但不显示覆盖原连线的大圆盘。 */
+.vue-flow__edge.selected .vue-flow__edgeupdater {
+  fill: transparent;
+  stroke: none;
+  cursor: grab;
+}
+.vue-flow__edge.selected .vue-flow__edgeupdater:active { cursor: grabbing; }
 .vue-flow__controls {
   box-shadow: none;
   display: flex;

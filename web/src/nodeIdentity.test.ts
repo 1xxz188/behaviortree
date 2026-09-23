@@ -188,6 +188,122 @@ test("自动序列避开草稿悬挂引用及残留布局", () => {
   assert.equal(index.allocateID(), "51");
 });
 
+// 独立分支覆盖重连位置、跨父自动转移及旧节点保留，不依赖节点数组的排列。
+function reconnectTree(): Tree {
+  return { id: "reconnect", name: "重连", root: "root", nodes: [
+    { id: "root", type: "sequence", children: ["left", "right", "branch"] },
+    { id: "left", type: "sequence", children: ["nested"] },
+    { id: "right", type: "sequence", children: ["child"] },
+    { id: "branch", type: "sequence", children: [] },
+    { id: "nested", type: "sequence", children: [] },
+    { id: "child", type: "action" },
+    { id: "leaf", type: "wait" },
+    { id: "decorator", type: "timeout", children: ["leaf"] },
+  ] };
+}
+
+// 删除连线只移除该父节点的一个引用，保留两端节点、顺序及根节点。
+test("断开连线保持节点与其他子节点并更新引用索引", () => {
+  const tree = reconnectTree();
+  const index = new NodeIdentityIndex(tree);
+  const plan = index.prepareDisconnect("root", "right");
+  if (typeof plan === "string") assert.fail(plan);
+  assert.deepEqual(tree.nodes[0]!.children, ["left", "right", "branch"]);
+  index.setChildren(plan.parent, plan.children);
+  assert.deepEqual(tree.nodes[0]!.children, ["left", "branch"]);
+  assert.equal(tree.root, "root");
+  assert.ok(index.byID.has("right"));
+  assert.equal(index.prepareDisconnect("root", "right"), "连线已失效，请重试");
+});
+
+// 不存在或重复的旧边在确认前拒绝删除，工程数据维持原值。
+test("断开无效或重复连线不会修改树", () => {
+  const tree = reconnectTree();
+  tree.nodes[0]!.children!.push("left");
+  const index = new NodeIdentityIndex(tree);
+  const before = stringifyJSON(tree);
+  assert.equal(index.prepareDisconnect("root", "left"), "连线存在重复引用，请先修复草稿");
+  assert.equal(index.prepareDisconnect("missing", "right"), "连线已失效，请重试");
+  assert.equal(stringifyJSON(tree), before);
+});
+
+// 拖动终点占用旧边的顺序位置，目标原有父边同次删除；保存往返保留拓扑。
+test("重连终点保留顺序并自动转移已有父节点", () => {
+  const tree = reconnectTree();
+  const index = new NodeIdentityIndex(tree);
+  const plan = index.prepareReconnect("root", "left", "root", "child");
+  if (!plan || typeof plan === "string") assert.fail(`预期合法重连：${plan}`);
+  index.applyReconnect(plan);
+  assert.deepEqual(index.byID.get("root")!.children, ["child", "right", "branch"]);
+  assert.deepEqual(index.byID.get("right")!.children, []);
+  assert.ok(index.byID.has("left"));
+  const loaded = parseJSON<Tree>(stringifyJSON(tree));
+  assert.deepEqual(loaded.nodes.find(node => node.id === "root")!.children, ["child", "right", "branch"]);
+  assert.deepEqual(loaded.nodes.find(node => node.id === "right")!.children, []);
+});
+
+// 拖动起点将旧子节点追加到新父末尾，并保持反向引用索引可继续改号。
+test("重连起点追加到新父末尾并更新入边索引", () => {
+  const tree = reconnectTree();
+  const index = new NodeIdentityIndex(tree);
+  const plan = index.prepareReconnect("root", "branch", "right", "branch");
+  if (!plan || typeof plan === "string") assert.fail(`预期合法重连：${plan}`);
+  index.applyReconnect(plan);
+  assert.deepEqual(index.byID.get("root")!.children, ["left", "right"]);
+  assert.deepEqual(index.byID.get("right")!.children, ["child", "branch"]);
+  assert.equal(index.rename("branch", "moved"), 1);
+  assert.deepEqual(index.byID.get("right")!.children, ["child", "moved"]);
+});
+
+// 当前根作为新子节点时沿用普通连接的入口规则，旧目标保持可编辑草稿。
+test("重连到当前根时调整入口且不删除旧节点", () => {
+  const tree = reconnectTree();
+  tree.root = "leaf";
+  const index = new NodeIdentityIndex(tree);
+  const plan = index.prepareReconnect("root", "left", "root", "leaf");
+  if (!plan || typeof plan === "string") assert.fail(`预期合法重连：${plan}`);
+  index.applyReconnect(plan);
+  assert.equal(tree.root, "root");
+  assert.deepEqual(index.byID.get("root")!.children, ["leaf", "right", "branch"]);
+  assert.ok(index.byID.has("left"));
+});
+
+// 所有失败及原地拖放均不得改变工程；叶节点、装饰容量和环必须被拒绝。
+test("非法重连及无变化重连保持工程和索引不变", () => {
+  const tree = reconnectTree();
+  const index = new NodeIdentityIndex(tree);
+  const before = stringifyJSON(tree);
+  const rejected: [string, string, string, string][] = [
+    ["root", "left", "root", "right"], // 同父已有连接。
+    ["root", "left", "child", "left"], // 叶节点不能作为父节点。
+    ["root", "right", "decorator", "right"], // 装饰节点已有孩子。
+    ["root", "left", "nested", "left"], // 后代回连形成循环。
+    ["root", "left", "missing", "left"], // 无效落点。
+    ["missing", "left", "right", "left"], // 过期旧边。
+    ["root", "left", "right", "branch"], // 一次修改两个端点。
+  ];
+  for (const args of rejected) {
+    assert.equal(typeof index.prepareReconnect(...args), "string");
+    assert.equal(stringifyJSON(tree), before);
+  }
+  assert.equal(index.prepareReconnect("root", "left", "root", "left"), null);
+  assert.equal(stringifyJSON(tree), before);
+  assert.equal(index.rename("left", "still_left"), 1);
+});
+
+// 建索引后的重连只读取相关父节点和目标子树，不扫描整棵树或无关分支。
+test("重连不遍历节点数组和无关分支", () => {
+  const tree = reconnectTree();
+  const index = new NodeIdentityIndex(tree);
+  const unrelated = index.byID.get("decorator")!;
+  Object.defineProperty(tree, "nodes", { get() { throw new Error("不应扫描节点数组"); } });
+  Object.defineProperty(unrelated, "children", { get() { throw new Error("不应读取无关分支"); } });
+  const plan = index.prepareReconnect("root", "branch", "right", "branch");
+  if (!plan || typeof plan === "string") assert.fail(`预期合法重连：${plan}`);
+  index.applyReconnect(plan);
+  assert.deepEqual(index.byID.get("right")!.children, ["child", "branch"]);
+});
+
 // 建索引后的查重和改号不读取节点集合，也不遍历父节点的整个孩子列表。
 test("改号只访问已索引入边，不扫描树或无关节点", () => {
   const tree = makeTree();

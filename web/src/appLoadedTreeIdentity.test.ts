@@ -47,7 +47,7 @@ function session() {
   const context = {
     computed, effect, reactive, ref, shallowRef, watch, NodeIdentityIndex, TreeIdentityIndex,
     normalizeCodeNames, captureSnapshot, restoreSnapshot, semanticSignature, clone, parseJSON, stringifyJSON,
-    project, treeID, treeIDDraft: ref(treeID.value), selected: ref(""), nodeIDDraft: ref(""),
+    project, treeID, treeIDDraft: ref(treeID.value), selected: ref(""), selectedEdge: ref(), nodeIDDraft: ref(""),
     codeNameDraft: ref(""), codeNameError: ref(""),
     treeIdentity: shallowRef(new TreeIdentityIndex(project.value)), renamingTree: false,
     treeMenu: shallowRef(), catalogMenu: shallowRef(), catalogDialog: shallowRef(), canvasMenu: shallowRef(), editRevision: 0, occupiedIDs: new Set<string>(),
