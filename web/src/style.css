@@ -458,10 +458,11 @@ pre {
 .bt-node.invalid {
   border-color: #ff7d83;
 }
-/* 事件匹配使用额外环线，既不设置 Vue Flow selected，也不掩盖错误边框。 */
+/* 事件匹配使用青蓝虚线发光环，与节点类型配色分开且不掩盖错误边框。 */
 .bt-node.event-match {
-  outline: 3px solid #e9bd65;
-  outline-offset: 4px;
+  outline: 2px dashed #62d9ff;
+  outline-offset: 6px;
+  filter: drop-shadow(0 0 5px #62d9ff99);
 }
 /* 多选框保留视觉边界，鼠标穿透后可右击节点或在间隙右拖画布。 */
 .vue-flow__nodesselection-rect { pointer-events: none; }
