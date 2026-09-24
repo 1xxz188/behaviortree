@@ -5,7 +5,7 @@ import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { ref, shallowRef } from "vue";
 import { clone, blankProject } from "./project.ts";
-import { allocateEventID, EventRegistryIndex, removeEvent, validateEventRegistry, validateNextEventID } from "./eventRegistry.ts";
+import { allocateEventID, EventRegistryIndex, normalizeEventDescription, removeEvent, validateEventRegistry, validateNextEventID } from "./eventRegistry.ts";
 import { parseJSON, stringifyJSON } from "./json.ts";
 import type { EventDefinition } from "./project.ts";
 
@@ -18,12 +18,13 @@ const handlers = script.statements.filter(statement => ts.isFunctionDeclaration(
   && names.has(statement.name?.text ?? "")).map(statement => statement.getText(script)).join("\n");
 const js = ts.transpileModule(handlers, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
 
-// 管理入口只保留事件属性表单；整体说明和单项注释由悬停入口处理。
-test("管理窗口不再展示注释编辑框或枚举文案", () => {
+// 管理表单可编辑事件注释，整体说明仍由独立入口处理。
+test("管理窗口展示事件注释编辑框", () => {
   const template = component.split("<template>")[1]!.split("</template>")[0]!;
   assert.match(template, /事件管理/);
   assert.match(template, /事件代码名/);
-  assert.doesNotMatch(template, /枚举|注释|textarea|form\.description|saveEnum/);
+  assert.match(template, /<textarea v-model="form.description"/);
+  assert.doesNotMatch(template, /saveEnum/);
 });
 
 // 新增和编辑表单共享独立弹窗，管理列表在弹窗打开时不可操作。
@@ -36,7 +37,11 @@ test("新增事件表单显示在独立对话框", () => {
   assert.match(component, /function keydownForm\(/);
   // 两个输入框应处于同一行，第二列下方不再出现额外说明。
   assert.doesNotMatch(template, /生成常量/);
-  assert.match(template, /显示名称<input[^>]+\/><\/label><label>事件代码名<input[^>]+\/><\/label>/);
+  assert.match(template, /显示名称<input[^>]+\/><\/label>\s*<label>事件代码名<input[^>]+\/><\/label>/);
+  assert.match(template, /class="event-form-id"/);
+  assert.match(template, /class="event-form-description"/);
+  assert.doesNotMatch(template, /事件 ID<input/);
+  assert.match(component, /textarea:not\(:disabled\)/);
 });
 
 // 删除确认是独立弹窗，管理层在弹窗显示时不能接受点击和键盘焦点。
@@ -84,7 +89,7 @@ test("删除弹窗拒绝过期目标并支持确认删除", () => {
 });
 
 // 事务提交模拟父组件的同步修订，服务端候选校验只返回成功。
-test("新增事件并编辑名称时保留悬停入口保存的注释", async () => {
+test("新增和编辑事件注释，单独修改注释也保存", async () => {
   const project = blankProject();
   project.eventEnumDescription = "整体说明";
   const props = {
@@ -96,12 +101,12 @@ test("新增事件并编辑名称时保留悬停入口保存的注释", async ()
   let validations = 0;
   let validatedProject = "";
   const context = {
-    props, form: ref<{ name: string; codeName: string } | null>(null),
+    props, form: ref<{ name: string; codeName: string; description: string } | null>(null),
     editing: shallowRef<EventDefinition | null>(null), formEvents: shallowRef(project.events), formOriginal: shallowRef<EventDefinition | null>(null),
     error: ref(""), busy: ref(false), active: true,
     formTrigger: null, formNameInput: ref<HTMLInputElement>(),
     document: { activeElement: null }, nextTick: async (task: () => void) => task(),
-    allocateEventID, validateEventRegistry, validateNextEventID,
+    allocateEventID, normalizeEventDescription, validateEventRegistry, validateNextEventID,
     clone, parseJSON, stringifyJSON,
     fetch: async (_url: string, init: { body: string }) => { validations++; validatedProject = init.body; return { ok: true, status: 200 }; },
   };
@@ -110,29 +115,30 @@ test("新增事件并编辑名称时保留悬停入口保存的注释", async ()
     saveMember(): Promise<void>; // 提交当前事件草稿。
   };
   manager.openForm();
-  context.form.value = { name: "采集", codeName: "PickUp" };
+  context.form.value = { name: "采集", codeName: "PickUp", description: "  初始注释\r\n第二行" };
   await manager.saveMember();
   assert.equal(validations, 1);
   assert.equal(context.error.value, "");
   assert.equal(project.eventEnumDescription, "整体说明");
   assert.equal(project.events[0]?.id, "1");
-  assert.equal(project.events[0]?.description, undefined);
+  assert.equal(project.events[0]?.description, "  初始注释\n第二行");
   assert.equal(project.nextEventId, "2");
   assert.equal(parseJSON<{ nextEventId: string }>(validatedProject).nextEventId, "2");
 
-  // 注释由独立入口更新后，管理表单只提交名称与代码名。
+  // 编辑表单读取现有注释，单独修改注释也发布事务。
   project.events[0]!.description = "采集中";
   props.index = new EventRegistryIndex(project);
   manager.openForm(project.events[0]);
-  context.form.value = { name: "采集资源", codeName: "PickUp" };
+  assert.equal(context.form.value?.description, "采集中");
+  context.form.value!.description = "更新注释";
   await manager.saveMember();
   assert.equal(validations, 2);
-  assert.equal(project.events[0]?.name, "采集资源");
-  assert.equal(project.events[0]?.description, "采集中");
+  assert.equal(project.events[0]?.name, "采集");
+  assert.equal(project.events[0]?.description, "更新注释");
 
   // 成员表替换后拒绝旧草稿，避免覆盖外部新增事件。
   manager.openForm();
-  context.form.value = { name: "巡逻", codeName: "Patrol" };
+  context.form.value = { name: "巡逻", codeName: "Patrol", description: "" };
   project.events = [...project.events, { id: "2", name: "移动", codeName: "Move" }];
   props.revision++;
   await manager.saveMember();

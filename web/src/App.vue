@@ -2182,9 +2182,13 @@ onUnmounted(() => toolLifecycle.abort());
               @input="setParam(p.name, p.type, $event)"
             />
           </div>
-          <p v-if="definition?.eventIds?.length" class="muted empty-note">
-            依赖事件：{{ definition.eventIds.map(id => eventIndex.eventByID.get(id)).filter(Boolean).map(event => `${event!.name}（Event${event!.codeName}）`).join('、') }} <button type="button" class="text-button" @click="editCatalogDefinition(definition!)">编辑业务定义</button>
-          </p>
+          <div v-if="definition?.eventIds?.length" class="muted empty-note">
+            <div>依赖事件：</div>
+            <div v-for="id in definition.eventIds" :key="id">
+              {{ eventIndex.eventByID.get(id)?.name ?? id }}（ID: {{ id }}）
+            </div>
+            <button type="button" class="text-button" @click="editCatalogDefinition(definition!)">编辑业务定义</button>
+          </div>
         </template>
         <section class="children-order">
           <div class="panel-heading small-heading">

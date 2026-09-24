@@ -2,7 +2,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from "vue";
 import { clone } from "./project.ts";
 import type { EventDefinition, Project } from "./project.ts";
-import { allocateEventID, EventRegistryIndex, removeEvent, validateEventRegistry, validateNextEventID } from "./eventRegistry.ts";
+import { allocateEventID, EventRegistryIndex, normalizeEventDescription, removeEvent, validateEventRegistry, validateNextEventID } from "./eventRegistry.ts";
 import { parseJSON, stringifyJSON } from "./json.ts";
 
 const props = defineProps<{
@@ -12,7 +12,7 @@ const props = defineProps<{
   commit: (change: () => void) => void; // 由父级建立单次撤销事务。
 }>();
 const emit = defineEmits<{ close: [] }>();
-const form = ref<{ name: string; codeName: string } | null>(null);
+const form = ref<{ name: string; codeName: string; description: string } | null>(null);
 const editing = shallowRef<EventDefinition | null>(null);
 const formEvents = shallowRef(props.project.events);
 const formOriginal = shallowRef<EventDefinition | null>(null);
@@ -46,7 +46,7 @@ function sameEvent(current: EventDefinition, original: EventDefinition | null): 
 function openForm(target?: EventDefinition): void {
   formTrigger = document.activeElement as HTMLElement | null;
   editing.value = target ?? null;
-  form.value = { name: target?.name ?? "", codeName: target?.codeName ?? "" };
+  form.value = { name: target?.name ?? "", codeName: target?.codeName ?? "", description: target?.description ?? "" };
   formEvents.value = props.project.events;
   formOriginal.value = target ? { ...target } : null;
   error.value = "";
@@ -66,7 +66,7 @@ function dismissForm(): void {
 // 两种独立弹窗共用 Tab 焦点约束，避免键盘操作落到背后的管理列表。
 function trapDialogTab(dialog: HTMLElement | undefined, event: KeyboardEvent): void {
   if (event.key !== "Tab") return;
-  const controls = [...(dialog?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled)') ?? [])];
+  const controls = [...(dialog?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), textarea:not(:disabled)') ?? [])];
   if (!controls.length) return;
   const first = controls[0]!;
   const last = controls[controls.length - 1]!;
@@ -93,14 +93,15 @@ async function saveMember(): Promise<void> {
     const current = editing.value;
     validateNextEventID(props.project.nextEventId, props.project.events);
     const allocated = current ? null : allocateEventID(props.project.nextEventId);
+    const description = normalizeEventDescription(form.value.description, "事件注释");
     const member: EventDefinition = {
       id: current?.id ?? allocated!.id,
       name: form.value.name.trim(), codeName: form.value.codeName.trim(),
-      ...(current?.description !== undefined ? { description: current.description } : {}),
+      ...(description ? { description } : {}),
     };
     const events = current ? props.project.events.map(item => item.id === current.id ? member : item) : [...props.project.events, member];
     validateEventRegistry(events, props.project.catalog, props.project.eventEnumDescription);
-    if (current && member.name === current.name && member.codeName === current.codeName) { dismissForm(); return; }
+    if (current && member.name === current.name && member.codeName === current.codeName && description === (current.description ?? "")) { dismissForm(); return; }
     const owner = props.project;
     const revision = props.revision;
     const candidate = clone(owner);
@@ -186,8 +187,17 @@ onUnmounted(() => { active = false; previousFocus?.focus(); });
       <div v-if="form" class="event-form-backdrop" @click.self="closeForm">
         <section ref="formDialog" class="event-form-dialog" role="dialog" aria-modal="true" aria-labelledby="event-form-title" tabindex="-1" @keydown="keydownForm">
           <form @submit.prevent="saveMember">
-            <header><div><h2 id="event-form-title">{{ editing ? '编辑事件' : '新增事件' }}</h2><p>设置事件名称与代码名，保存后立即应用到当前工程。</p></div><button type="button" :disabled="busy" aria-label="关闭事件表单" @click="closeForm">×</button></header>
-            <div class="event-form-content"><div class="event-manager-fields"><label>显示名称<input ref="formNameInput" v-model="form.name" :disabled="busy" required /></label><label>事件代码名<input v-model="form.codeName" :disabled="busy" required pattern="[A-Z][A-Za-z0-9_]{0,79}" /></label><label>事件 ID<input :value="editing?.id ?? project.nextEventId" readonly /><small v-if="!editing">保存时分配</small></label></div><p v-if="error" role="alert" class="event-manager-error">{{ error }}</p><div class="event-manager-actions"><button type="button" :disabled="busy" @click="closeForm">取消</button><button type="submit" :disabled="busy">{{ busy ? '校验中…' : '保存事件' }}</button></div></div>
+            <header><div><h2 id="event-form-title">{{ editing ? '编辑事件' : '新增事件' }}</h2><p>设置事件名称、代码名与注释，保存后立即应用到当前工程。</p></div><button type="button" :disabled="busy" aria-label="关闭事件表单" @click="closeForm">×</button></header>
+            <div class="event-form-content">
+              <div class="event-manager-fields">
+                <label>显示名称<input ref="formNameInput" v-model="form.name" :disabled="busy" required /></label>
+                <label>事件代码名<input v-model="form.codeName" :disabled="busy" required pattern="[A-Z][A-Za-z0-9_]{0,79}" /></label>
+                <div class="event-form-id"><span>事件 ID</span><span class="event-form-id-value">{{ editing?.id ?? project.nextEventId }}</span><small v-if="!editing">保存时分配</small></div>
+                <label class="event-form-description">注释<textarea v-model="form.description" :disabled="busy" rows="5" placeholder="填写事件注释…" /></label>
+              </div>
+              <p v-if="error" role="alert" class="event-manager-error">{{ error }}</p>
+              <div class="event-manager-actions"><button type="button" :disabled="busy" @click="closeForm">取消</button><button type="submit" :disabled="busy">{{ busy ? '校验中…' : '保存事件' }}</button></div>
+            </div>
           </form>
         </section>
       </div>
@@ -202,6 +212,6 @@ onUnmounted(() => { active = false; previousFocus?.focus(); });
 </template>
 
 <style scoped>
-.event-manager-backdrop{position:fixed;inset:0;z-index:1100;background:#071017b8;display:grid;place-items:center;padding:16px;color:#d8e6ed;font:14px/1.5 system-ui,sans-serif}.event-manager,.event-form-dialog{width:min(760px,100%);max-height:calc(100dvh - 32px);background:#14232d;border:1px solid #365260;border-radius:14px;display:flex;flex-direction:column;box-shadow:0 24px 90px #0008;outline:none}.event-manager header,.event-form-dialog header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:18px 24px;border-bottom:1px solid #365260}.event-manager h2,.event-manager h3,.event-manager p,.event-form-dialog h2,.event-form-dialog p{margin:0}.event-manager h2,.event-form-dialog h2{font-size:20px}.event-manager h3{font-size:16px}.event-manager header p,.event-manager small,.event-form-dialog header p,.event-form-dialog small{color:#9bb4c1;font-size:12px}.event-manager-body{padding:20px 24px;overflow:auto}.event-manager-section{display:grid;gap:12px;margin-bottom:18px;padding:16px;border:1px solid #365260;border-radius:8px}.event-manager-section article{display:flex;align-items:center;justify-content:space-between;gap:14px;border-top:1px solid #365260;padding-top:12px}.event-manager-item{min-width:0;display:grid;gap:2px}.event-manager-item strong,.event-manager-item small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.event-manager-empty{color:#9bb4c1}.event-form-dialog label{display:grid;gap:6px}.event-manager-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.event-manager-fields label:last-child{grid-column:1/-1}.event-manager-heading,.event-manager-actions{display:flex;align-items:center;justify-content:space-between;gap:8px}.event-manager-actions{justify-content:flex-end;flex:none}.event-manager button,.event-form-dialog button,.event-form-dialog input{font:inherit;color:inherit;border:1px solid #456170;border-radius:6px;background:#10202a;padding:8px 10px}.event-manager button,.event-form-dialog button{cursor:pointer}.event-manager button:hover,.event-form-dialog button:hover{border-color:#86dec1}.event-manager button:disabled,.event-form-dialog button:disabled{opacity:.55;cursor:default}.event-form-dialog input{width:100%;box-sizing:border-box}.event-manager button:focus-visible,.event-form-dialog button:focus-visible,.event-form-dialog input:focus{outline:2px solid #86dec1;outline-offset:2px}.event-delete-dialog{border-color:#b58b49}.event-delete-dialog #event-delete-description{line-height:1.7}.event-manager-error{color:#ffc2c2;overflow-wrap:anywhere}.event-form-backdrop{position:fixed;inset:0;z-index:1;background:#071017cf;display:grid;place-items:center;padding:16px}.event-form-dialog{width:min(520px,100%)}.event-form-dialog form{display:flex;flex-direction:column;min-height:0}.event-form-content{padding:20px 24px;overflow:auto;display:grid;gap:18px}
+.event-manager-backdrop{position:fixed;inset:0;z-index:1100;background:#071017b8;display:grid;place-items:center;padding:16px;color:#d8e6ed;font:14px/1.5 system-ui,sans-serif}.event-manager,.event-form-dialog{width:min(760px,100%);max-height:calc(100dvh - 32px);background:#14232d;border:1px solid #365260;border-radius:14px;display:flex;flex-direction:column;box-shadow:0 24px 90px #0008;outline:none}.event-manager header,.event-form-dialog header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:18px 24px;border-bottom:1px solid #365260}.event-manager h2,.event-manager h3,.event-manager p,.event-form-dialog h2,.event-form-dialog p{margin:0}.event-manager h2,.event-form-dialog h2{font-size:20px}.event-manager h3{font-size:16px}.event-manager header p,.event-manager small,.event-form-dialog header p,.event-form-dialog small{color:#9bb4c1;font-size:12px}.event-manager-body{padding:20px 24px;overflow:auto}.event-manager-section{display:grid;gap:12px;margin-bottom:18px;padding:16px;border:1px solid #365260;border-radius:8px}.event-manager-section article{display:flex;align-items:center;justify-content:space-between;gap:14px;border-top:1px solid #365260;padding-top:12px}.event-manager-item{min-width:0;display:grid;gap:2px}.event-manager-item strong,.event-manager-item small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.event-manager-empty{color:#9bb4c1}.event-form-dialog label{display:grid;gap:6px}.event-manager-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.event-form-id,.event-form-description{grid-column:1/-1}.event-form-id{display:flex;align-items:baseline;gap:10px;min-width:0}.event-form-id-value{font-weight:600;overflow-wrap:anywhere}.event-form-id small{margin-left:auto}.event-manager-heading,.event-manager-actions{display:flex;align-items:center;justify-content:space-between;gap:8px}.event-manager-actions{justify-content:flex-end;flex:none}.event-manager button,.event-form-dialog button,.event-form-dialog input,.event-form-dialog textarea{font:inherit;color:inherit;border:1px solid #456170;border-radius:6px;background:#10202a;padding:8px 10px}.event-manager button,.event-form-dialog button{cursor:pointer}.event-manager button:hover,.event-form-dialog button:hover{border-color:#86dec1}.event-manager button:disabled,.event-form-dialog button:disabled,.event-form-dialog textarea:disabled{opacity:.55;cursor:default}.event-form-dialog input,.event-form-dialog textarea{width:100%;box-sizing:border-box}.event-form-dialog textarea{resize:vertical;min-height:110px}.event-manager button:focus-visible,.event-form-dialog button:focus-visible,.event-form-dialog input:focus,.event-form-dialog textarea:focus{outline:2px solid #86dec1;outline-offset:2px}.event-delete-dialog{border-color:#b58b49}.event-delete-dialog #event-delete-description{line-height:1.7}.event-manager-error{color:#ffc2c2;overflow-wrap:anywhere}.event-form-backdrop{position:fixed;inset:0;z-index:1;background:#071017cf;display:grid;place-items:center;padding:16px}.event-form-dialog{width:min(520px,100%)}.event-form-dialog form{display:flex;flex-direction:column;min-height:0}.event-form-content{padding:20px 24px;overflow:auto;display:grid;gap:18px}
 @media(max-width:560px){.event-manager header,.event-manager-body,.event-form-dialog header,.event-form-content{padding:14px}.event-manager-fields{grid-template-columns:1fr}.event-manager-section article{align-items:flex-start;flex-direction:column}.event-manager-item{max-width:100%;width:100%}.event-manager-actions{align-self:flex-end}}
 </style>
