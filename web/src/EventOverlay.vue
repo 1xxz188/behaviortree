@@ -8,6 +8,7 @@ const props = defineProps<{
   events: EventDefinition[]; // 当前工程事件成员。
   enumDescription?: string; // 工程事件的整体说明。
   highlightedIDs: ReadonlySet<string>; // 多选高亮仅属当前会话。
+  matchedNodeCount: number; // 当前行为树中被已选事件命中的去重节点数。
   autoOpenComments: boolean; // 与画布节点共用悬浮注释开关。
   blocked?: boolean; // 管理弹窗期间关闭注释。
   commit: (project: Project, event: EventDefinition | null, value: string) => boolean; // 父层负责校验身份及记录历史。
@@ -71,6 +72,10 @@ function overlayKeydown(event: KeyboardEvent): void {
 }
 
 watch(() => props.blocked, blocked => { if (blocked) tooltip.value?.hide(); });
+// 用户清空已经输入的搜索内容后关闭搜索，初次打开空输入框时保持展开。
+watch(query, (value, previous) => {
+  if (searching.value && previous.length > 0 && value.length === 0) searching.value = false;
+});
 watch([query, collapsed], () => tooltip.value?.hide());
 watch(collapsed, hidden => { if (hidden) { searching.value = false; query.value = ""; } });
 watch(() => props.events, () => tooltip.value?.hide());
@@ -79,12 +84,16 @@ watch(() => props.events, () => tooltip.value?.hide());
 <template>
   <section class="event-overlay nodrag nopan nowheel" :class="{ collapsed }" aria-label="画布事件" @pointerdown.stop @mousedown.stop @click.stop @dblclick.stop @contextmenu.stop.prevent @wheel.stop @keydown="overlayKeydown">
     <header class="event-overlay-header">
-      <button type="button" class="event-overlay-toggle" :aria-expanded="!collapsed" aria-controls="event-overlay-content" @click="collapsed = !collapsed">{{ collapsed ? '▸' : '▾' }} 事件（{{ events.length }}）</button>
-      <button v-if="!collapsed" type="button" class="event-icon-button" aria-label="事件管理" title="事件管理" @click="emit('manage')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 2h4l.7 2.2 1.8.8 2.1-1 2.8 2.8-1 2.1.8 1.8L23 11v4l-2.2.7-.8 1.8 1 2.1-2.8 2.8-2.1-1-1.8.8L14 24h-4l-.7-2.2-1.8-.8-2.1 1-2.8-2.8 1-2.1-.8-1.8L.6 15v-4l2.2-.7.8-1.8-1-2.1L5.4 3.6l2.1 1 1.8-.8z" transform="translate(.2 -1) scale(.93)" /><circle cx="12" cy="12" r="3.2" /></svg></button>
-      <button v-if="!collapsed" type="button" class="event-icon-button" aria-label="事件功能注释" title="事件功能注释" aria-controls="event-comment-tooltip" @mouseenter="showComment(enumTarget, $event)" @mouseleave="tooltip?.scheduleHide($event)" @focus="editComment(enumTarget, $event.currentTarget as HTMLElement)" @click="editComment(enumTarget, $event.currentTarget as HTMLElement)"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 11v6M12 7h.01" /></svg></button>
-      <button v-if="!collapsed" type="button" class="event-icon-button" :aria-expanded="searching" aria-label="搜索事件" title="搜索事件" @click="toggleSearch"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m15.5 15.5 5 5" /></svg></button>
       <input v-if="!collapsed && searching" ref="searchInput" v-model="query" class="event-search-input" aria-label="搜索事件" placeholder="名称、代码名或 ID" />
-      <button v-if="!collapsed && highlightedIDs.size" type="button" class="event-overlay-summary" aria-label="清除事件高亮" title="清除事件高亮" @click="emit('clearHighlight')">已选 {{ highlightedIDs.size }} 项 ×</button>
+      <button v-if="!collapsed && searching && highlightedIDs.size" type="button" class="event-overlay-summary" aria-label="清除事件高亮" title="清除事件高亮" @click="emit('clearHighlight')">已选 {{ highlightedIDs.size }} 项 ×</button>
+      <span v-if="!collapsed && searching && highlightedIDs.size" class="event-overlay-hit-count">命中 {{ matchedNodeCount }} 个节点</span>
+      <button v-if="collapsed || !searching" type="button" class="event-overlay-toggle" :aria-expanded="!collapsed" aria-controls="event-overlay-content" @click="collapsed = !collapsed">{{ collapsed ? '▸' : '▾' }} 事件（{{ events.length }}）</button>
+      <button v-if="!collapsed && !searching" type="button" class="event-icon-button" aria-label="事件管理" title="事件管理" @click="emit('manage')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 2h4l.7 2.2 1.8.8 2.1-1 2.8 2.8-1 2.1.8 1.8L23 11v4l-2.2.7-.8 1.8 1 2.1-2.8 2.8-2.1-1-1.8.8L14 24h-4l-.7-2.2-1.8-.8-2.1 1-2.8-2.8 1-2.1-.8-1.8L.6 15v-4l2.2-.7.8-1.8-1-2.1L5.4 3.6l2.1 1 1.8-.8z" transform="translate(.2 -1) scale(.93)" /><circle cx="12" cy="12" r="3.2" /></svg></button>
+      <button v-if="!collapsed && !searching" type="button" class="event-icon-button" aria-label="事件功能注释" title="事件功能注释" aria-controls="event-comment-tooltip" @mouseenter="showComment(enumTarget, $event)" @mouseleave="tooltip?.scheduleHide($event)" @focus="editComment(enumTarget, $event.currentTarget as HTMLElement)" @click="editComment(enumTarget, $event.currentTarget as HTMLElement)"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 11v6M12 7h.01" /></svg></button>
+      <button v-if="!collapsed && !searching" type="button" class="event-icon-button" :aria-expanded="searching" aria-label="搜索事件" title="搜索事件" @click="toggleSearch"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m15.5 15.5 5 5" /></svg></button>
+
+      <button v-if="!collapsed && !searching && highlightedIDs.size" type="button" class="event-overlay-summary" aria-label="清除事件高亮" title="清除事件高亮" @click="emit('clearHighlight')">已选 {{ highlightedIDs.size }} 项 ×</button>
+      <span v-if="!collapsed && !searching && highlightedIDs.size" class="event-overlay-hit-count">命中 {{ matchedNodeCount }} 个节点</span>
     </header>
     <div v-show="!collapsed" id="event-overlay-content">
       <p v-if="!rows.length" class="event-overlay-empty">{{ events.length ? '没有匹配的事件' : '尚无事件，可在事件管理中创建' }}</p>
@@ -106,7 +115,7 @@ watch(() => props.events, () => tooltip.value?.hide());
 .event-overlay button:hover{border-color:#8fe2cb}.event-overlay button:focus-visible,.event-overlay input:focus-visible{outline:2px solid #8fe2cb;outline-offset:1px}
 .event-overlay-toggle{flex:none;padding:5px 7px;font-weight:700;white-space:nowrap}.event-search-input{flex:1;min-width:0;padding:5px 6px;box-sizing:border-box}
 .event-icon-button{width:27px;height:27px;flex:none;display:grid;place-items:center;padding:5px}.event-icon-button svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
-.event-overlay-summary{flex:none;margin-left:auto;padding:5px;color:#a9dfc9;white-space:nowrap}
+.event-overlay-summary{flex:none;margin-left:auto;padding:5px;color:#a9dfc9;white-space:nowrap}.event-overlay-hit-count{flex:none;color:#a9dfc9;white-space:nowrap}
 .event-overlay-list{max-height:min(360px,45vh);overflow-y:auto;overflow-x:hidden;padding:4px 8px 8px}.event-overlay-row{display:flex;align-items:center;gap:7px;min-width:0;min-height:30px;margin:3px 0;padding:0 8px;border:1px solid #49656c;border-radius:6px;background:#182c35;cursor:pointer}.event-overlay-row:hover{border-color:#8fe2cb}.event-overlay-row.selected{border-color:#68dfc6;background:#245047}.event-overlay-row input[type="checkbox"]{width:15px;height:15px;flex:0 0 15px;box-sizing:border-box;padding:0;margin:0;accent-color:#69ddbb}.event-overlay-details{display:flex;align-items:center;gap:6px;flex:1;min-width:0;overflow:hidden;white-space:nowrap}.event-overlay-name{flex:0 1 auto;max-width:45%;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}.event-overlay-code{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#b5cbd1}.event-overlay-id{flex:none;color:#b5cbd1;white-space:nowrap}.event-overlay-empty{padding:2px 9px 9px;color:#b3c8cf}
 @media(max-width:300px){.event-overlay-header{gap:2px;padding:6px}.event-overlay-toggle{padding:4px}.event-icon-button{width:24px;height:25px}.event-overlay-row{padding:0 5px}}
 </style>

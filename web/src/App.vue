@@ -2024,7 +2024,7 @@ onUnmounted(() => toolLifecycle.abort());
           </div>
         </template>
       </VueFlow>
-      <EventOverlay :project="project" :events="project.events" :enum-description="project.eventEnumDescription" :highlighted-i-ds="highlightedEventIDs" :auto-open-comments="autoOpenComments" :blocked="eventManagerOpen || !!catalogDialog || !!projectDialog" :commit="commitEventComment" @manage="eventManagerOpen = true" @highlight="toggleEventHighlight" @clear-highlight="highlightedEventIDs = new Set()" />
+      <EventOverlay :project="project" :events="project.events" :enum-description="project.eventEnumDescription" :highlighted-i-ds="highlightedEventIDs" :matched-node-count="eventMatchedNodes.size" :auto-open-comments="autoOpenComments" :blocked="eventManagerOpen || !!catalogDialog || !!projectDialog" :commit="commitEventComment" @manage="eventManagerOpen = true" @highlight="toggleEventHighlight" @clear-highlight="highlightedEventIDs = new Set()" />
       <div class="canvas-hint">左键框选 / 拖动选中节点批量移动 · 点击连线后拖动靠近节点的线段改连 · 空白处右键拖动画布 · 右键打开菜单 · Ctrl+A 全选</div>
     </main>
 
