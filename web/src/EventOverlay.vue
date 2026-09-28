@@ -43,6 +43,10 @@ const resizeState = shallowRef<ResizeState>(); // 指针结束或取消时清除
 const searchInput = ref<HTMLInputElement>();
 const enumButton = ref<HTMLButtonElement>(); // 事件功能注释按钮用于判断再次点击与外部点击。
 const tooltip = ref<InstanceType<typeof CommentTooltip>>();
+const hasPending = computed(() => tooltip.value?.hasPending ?? false); // 页面导航检查事件注释草稿。
+// 导航被拦截时恢复并聚焦事件注释输入。
+function focusPending() { tooltip.value?.focusPending(); }
+defineExpose({ hasPending, focusPending });
 const enumTarget = {}; // 整体说明使用稳定目标，工程替换由 tooltip 的 context 失效。
 const enumCommentOpen = computed(() => tooltip.value?.activeTarget === enumTarget); // 仅跟踪整体注释浮层。
 

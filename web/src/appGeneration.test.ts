@@ -15,7 +15,9 @@ const appScript = ts.createSourceFile("App.ts", appSource, ts.ScriptTarget.Lates
 const functions = new Set(["request", "action", "notice", "recentStorage", "saveCurrent", "currentProjectRequest", "generate", "changeText", "changeGenerationPackagePath"]);
 const workflowSource = appScript.statements.filter(statement =>
   (ts.isFunctionDeclaration(statement) && functions.has(statement.name?.text ?? ""))
-  || (ts.isClassDeclaration(statement) && statement.name?.text === "RequestError"),
+  || (ts.isClassDeclaration(statement) && statement.name?.text === "RequestError")
+  || (ts.isVariableStatement(statement) && statement.declarationList.declarations.some(declaration =>
+    ts.isIdentifier(declaration.name) && declaration.name.text === "generationUnsaved")),
 ).map(statement => statement.getText(appScript)).join("\n");
 const workflowJS = ts.transpileModule(workflowSource, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
 
@@ -28,7 +30,7 @@ function deferred() {
 
 // 建立最小编辑会话，真实保存状态仍使用工程完整内容判断。
 function editor(options: { dirty?: boolean; name?: string; chosenName?: string; saveError?: boolean; saveWait?: Promise<void> } = {}) {
-  const project = { value: blankProject() };
+  const project = ref(blankProject());
   const saveState = new ProjectSaveState();
   const name = options.name ?? "project.json";
   saveState.reset(name ? stringifyJSON(project.value) : undefined);
@@ -39,7 +41,8 @@ function editor(options: { dirty?: boolean; name?: string; chosenName?: string; 
   const calls: { path: string; body: any }[] = [];
   const context = {
     noticeRevision: { value: 0 }, // 实际发布操作结果的版本。
-    Error, stringifyJSON, parseJSON, clone, project, saveState,
+    Error, stringifyJSON, parseJSON, clone, computed, project, saveState,
+    generationSaved: ref({ ...project.value.generation }), // 对照成功保存的生成设置。
     ensureIdentityDraftsApplied: () => true,
     projectReady: { value: true },
     fileName: { value: name }, suggestedName: { value: "project.json" },
@@ -63,9 +66,11 @@ function editor(options: { dirty?: boolean; name?: string; chosenName?: string; 
           : path === "/api/project" ? { workspace: "E:/workspace" } : { version: "123456789012abcdef" }) };
     },
   };
-  const workflow = runInNewContext(`${workflowJS}\n({ generate, changeGenerationPackagePath });`, context) as {
+  const workflow = runInNewContext(`${workflowJS}\n({ generate, changeGenerationPackagePath, generationUnsaved, saveCurrent });`, context) as {
     generate: (write?: boolean) => Promise<void>; // 执行真实保存与生成请求链。
     changeGenerationPackagePath: (event: unknown) => void; // 执行生成路径输入处理。
+    generationUnsaved: { readonly value: { packagePath: boolean; contextImport: boolean; contextType: boolean } }; // 三个字段的独立未保存状态。
+    saveCurrent: () => Promise<boolean>; // 直接验证保存期间新输入仍然醒目。
   };
   return { context, calls, ...workflow };
 }
@@ -83,6 +88,36 @@ test("生成到目录等待工程保存成功，保存与生成内容一致", as
   assert.deepEqual(calls[0]!.body.project, calls[1]!.body);
   assert.equal(context.dirty.value, false);
   assert.equal(context.busy.value, false);
+});
+
+// 三个生成设置分别显示未保存状态；保存响应只确认已发送的版本。
+test("生成设置逐字段提示未保存并保留保存期间的新输入", async () => {
+  const pending = deferred();
+  const s = editor({ saveWait: pending.promise });
+  const fields = s.context.project.value.generation;
+  assert.equal(s.generationUnsaved.value.packagePath, false);
+  assert.equal(s.generationUnsaved.value.contextImport, false);
+  assert.equal(s.generationUnsaved.value.contextType, false);
+  fields.packagePath = "behavior2";
+  fields.contextImport = "bt_context";
+  fields.contextType = "*Context";
+  assert.equal(s.generationUnsaved.value.packagePath, true);
+  assert.equal(s.generationUnsaved.value.contextImport, true);
+  assert.equal(s.generationUnsaved.value.contextType, true);
+  fields.contextImport = s.context.generationSaved.value.contextImport;
+  assert.equal(s.generationUnsaved.value.contextImport, false);
+  s.context.saveState.changed();
+  s.context.editRevision++;
+  const writing = s.saveCurrent();
+  assert.equal(s.calls[0]?.path, "/api/project");
+  fields.contextType = "any";
+  s.context.saveState.changed();
+  s.context.editRevision++;
+  pending.resolve();
+  assert.equal(await writing, false);
+  assert.equal(s.generationUnsaved.value.packagePath, false);
+  assert.equal(s.generationUnsaved.value.contextImport, false);
+  assert.equal(s.generationUnsaved.value.contextType, true);
 });
 
 // 已保存且无变更时无需重复写 JSON，预览始终不触发保存。

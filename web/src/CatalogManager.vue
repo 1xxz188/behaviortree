@@ -54,6 +54,7 @@ const query = ref(""); // 仅筛选定义名称、ID 和业务函数。
 const kindFilter = ref<"" | DefinitionKind>(""); // 空值代表全部种类。
 const selectedFolder = ref(props.initialFolder ?? ""); // 目录筛选只包含直属定义。
 const organizationBrowser = ref<InstanceType<typeof CatalogBrowser>>(); // 隐藏时仍保留共用分类表单宿主。
+const tagBrowser = ref<InstanceType<typeof CatalogBrowser>>(); // 标签页弹窗切换前也要检查草稿。
 const exportMenu = ref<HTMLDetailsElement>(); // 导出后收起菜单，避免遮挡定义列表。
 const folderChoices = computed(() => {
   props.revision;
@@ -109,6 +110,8 @@ const importText = ref(""); // 尚未提交的原始 JSON，可反复编辑和�
 const previewReady = ref(false); // 只有显式解析成功后才显示预览。
 const previewValidated = ref(false); // 最终合并结果校验通过后允许应用。
 const importRevision = ref(0); // 工程或输入更新后丢弃已过期的异步校验结果。
+const formBaseline = ref(""); // 当前工作页初始草稿，用于识别真正改动。
+const pendingWarning = ref(""); // 拦截导航后在原表单内说明下一步。
 const dialog = ref<HTMLElement>();
 // 页面切换销毁触发按钮后，将焦点带回标题区域，避免落入背景画布。
 watch(mode, async () => { await nextTick(); dialog.value?.focus(); });
@@ -164,10 +167,26 @@ function resetPreview() {
   previewValidated.value = false;
   error.value = "";
 }
+// 创建与编辑只比较当前独立表单，不扫描工程或行为树；导入大文本另做常数次检查。
+function formSignature(): string {
+  return JSON.stringify([draft.value, parameters.value, bindNew.value, acknowledged.value]);
+}
+const hasPending = computed(() => mode.value === "import"
+  ? Boolean(importText.value || fileLabel.value || importSource.value !== "paste")
+  : mode.value !== "manage" && formSignature() !== formBaseline.value);
+// 返回、关闭和切换编辑目标共用守卫；显式“取消”可以直接放弃当前草稿。
+function guardPending(): boolean {
+  if (organizationBrowser.value?.hasPending) { organizationBrowser.value.focusPending(); return false; }
+  if (tagBrowser.value?.hasPending) { tagBrowser.value.focusPending(); return false; }
+  if (!hasPending.value) return true;
+  pendingWarning.value = "有未应用更改，请先保存或点击底部“取消”放弃更改。";
+  void nextTick(() => dialog.value?.querySelector<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>("#catalog-form input:not([readonly]), #catalog-form textarea, #catalog-form select, .catalog-import textarea")?.focus());
+  return false;
+}
 
 // 切换页面时清空上次待提交内容，防止误应用其他工作页的导入。
-function changeMode(next: "create" | "edit" | "import" | "manage") {
-  if (busy.value || props.disabled) return;
+function changeMode(next: "create" | "edit" | "import" | "manage", discard = false): boolean {
+  if (busy.value || props.disabled || (!discard && !guardPending())) return false;
   mode.value = next;
   incoming.value = [];
   choices.value = Object.create(null);
@@ -183,12 +202,15 @@ function changeMode(next: "create" | "edit" | "import" | "manage") {
   previewReady.value = false;
   previewValidated.value = false;
   bindNew.value = Boolean(props.initialKind);
+  pendingWarning.value = "";
+  formBaseline.value = formSignature();
+  return true;
 }
 
 // 稳定 ID 不允许在编辑表单中改名；参数草稿在提交时由工程入口统一同步。
 function editDefinition(item: Definition) {
   if (busy.value || props.disabled) return;
-  changeMode("edit");
+  if (!changeMode("edit")) return;
   editingID.value = item.id;
   draft.value = { id: item.id, name: item.name, kind: item.kind, goName: item.goName, eventIds: [...(item.eventIds ?? [])] };
   draftRevision.value = props.projectRevision;
@@ -198,10 +220,19 @@ function editDefinition(item: Definition) {
     enumText: (parameter.enum ?? []).join("\n"),
   }));
   bindNew.value = false;
+  formBaseline.value = formSignature();
 }
-defineExpose({ openMoveDefinition, openDefinitionTags, editDefinition });
+const anyPending = computed(() => hasPending.value || !!organizationBrowser.value?.hasPending || !!tagBrowser.value?.hasPending);
+// 父级工程切换与卸载前使用同一表单定位入口。
+function focusPending() {
+  if (hasPending.value) guardPending();
+  else if (organizationBrowser.value?.hasPending) organizationBrowser.value.focusPending();
+  else tagBrowser.value?.focusPending();
+}
+defineExpose({ openMoveDefinition, openDefinitionTags, editDefinition, hasPending: anyPending, focusPending });
 
 // 直接编辑入口在首次渲染前填充草稿，避免短暂显示空白的新建表单。
+formBaseline.value = formSignature();
 if (props.initialMode === "edit") {
   if (props.initialDefinition) editDefinition(props.initialDefinition);
   else changeMode("manage");
@@ -352,7 +383,18 @@ async function applyCatalog() {
 
 // 关闭弹窗不会提交草稿；网络提交期间保留弹窗防止用户误判提交结果。
 function close() {
-  if (!busy.value && !props.disabled) emit("close");
+  if (busy.value || props.disabled || !guardPending()) return;
+  if (organizationBrowser.value?.hasPending) return organizationBrowser.value.focusPending();
+  if (tagBrowser.value?.hasPending) return tagBrowser.value.focusPending();
+  emit("close");
+}
+// 从定义表单进入事件管理前先处理当前未应用的内容。
+function manageEvents() { if (guardPending()) emit("manageEvents"); }
+// 目录与标签页切换前先检查组织弹窗，防止销毁当前编辑内容。
+function changeTab(next: "definitions" | "directories" | "tags") {
+  if (next !== activeTab.value && organizationBrowser.value?.hasPending) return organizationBrowser.value.focusPending();
+  if (next !== activeTab.value && tagBrowser.value?.hasPending) return tagBrowser.value.focusPending();
+  activeTab.value = next;
 }
 
 // 将键盘焦点限制在弹窗内，避免快捷键误操作背景画布。
@@ -387,14 +429,14 @@ onUnmounted(() => { importRevision.value++; previousFocus?.focus(); });
           <button type="button" :disabled="busy || disabled" @click="changeMode('manage')">← 返回业务定义</button>
         </nav>
         <nav v-else class="catalog-tabs" aria-label="业务节点管理分类">
-          <button type="button" :class="{ active: activeTab === 'definitions' }" :aria-pressed="activeTab === 'definitions'" @click="activeTab = 'definitions'">业务定义（{{ catalog.length }}）</button>
-          <button type="button" :class="{ active: activeTab === 'directories' }" :aria-pressed="activeTab === 'directories'" @click="activeTab = 'directories'">目录</button>
-          <button type="button" :class="{ active: activeTab === 'tags' }" :aria-pressed="activeTab === 'tags'" @click="activeTab = 'tags'">标签</button>
+          <button type="button" :class="{ active: activeTab === 'definitions' }" :aria-pressed="activeTab === 'definitions'" @click="changeTab('definitions')">业务定义（{{ catalog.length }}）</button>
+          <button type="button" :class="{ active: activeTab === 'directories' }" :aria-pressed="activeTab === 'directories'" @click="changeTab('directories')">目录</button>
+          <button type="button" :class="{ active: activeTab === 'tags' }" :aria-pressed="activeTab === 'tags'" @click="changeTab('tags')">标签</button>
         </nav>
         <div class="catalog-content">
           <div id="catalog-manager-overlays"></div>
           <CatalogBrowser v-if="index" v-show="mode === 'manage' && activeTab === 'directories'" ref="organizationBrowser" presentation="directories" :initial-folder="selectedFolder" :index="index" :revision="revision ?? 0" :collapsed="false" search="" :disabled="Boolean(disabled)" :commit="commitOrganization" :failure-message="failureMessage ?? ''" @select="selectFolder" @inspect="editDefinition" @menu="(event, definition) => emit('menu', event, definition)" />
-          <CatalogBrowser v-if="index && mode === 'manage' && activeTab === 'tags'" presentation="tags" :index="index" :revision="revision ?? 0" :collapsed="false" search="" :disabled="Boolean(disabled)" :commit="commitOrganization" :failure-message="failureMessage ?? ''" />
+          <CatalogBrowser v-if="index && mode === 'manage' && activeTab === 'tags'" ref="tagBrowser" presentation="tags" :index="index" :revision="revision ?? 0" :collapsed="false" search="" :disabled="Boolean(disabled)" :commit="commitOrganization" :failure-message="failureMessage ?? ''" />
           <div v-if="mode === 'manage' && activeTab === 'definitions'" class="catalog-existing">
             <div class="catalog-toolbar">
               <button type="button" class="catalog-primary" :disabled="disabled" @click="changeMode('create')">新建定义</button>
@@ -410,7 +452,7 @@ onUnmounted(() => { importRevision.value++; previousFocus?.focus(); });
             <p v-if="!filteredDefinitions.length" class="catalog-empty">{{ catalog.length ? '当前目录下没有匹配的定义，请调整搜索或筛选条件。' : '还没有业务定义。新建或导入定义后，即可在节点属性中选择绑定。' }}</p>
             <article v-for="item in filteredDefinitions" :key="item.id"><div class="catalog-definition-info"><div class="catalog-definition-heading"><strong>{{ item.name }}</strong><span class="catalog-kind">{{ item.kind === 'action' ? '动作' : '条件' }}</span></div><small>ID：{{ item.id }} · Go 函数：{{ item.goName }} · 参数：{{ item.params?.length ?? 0 }} 个</small></div><div class="catalog-row-actions"><button type="button" :disabled="disabled" @click="editDefinition(item)">编辑</button><button type="button" :disabled="disabled" :aria-label="`${item.name}的更多操作`" @click="emit('menu', $event, item)">更多 ⋯</button></div></article>
           </div>
-          <form v-else-if="mode === 'create' || mode === 'edit'" id="catalog-form" @submit.prevent="applyCatalog">
+          <form v-else-if="mode === 'create' || mode === 'edit'" id="catalog-form" :class="{ 'pending-form': hasPending }" @submit.prevent="applyCatalog">
             <div class="catalog-grid">
               <label>定义 ID<input v-model="draft.id" :readonly="Boolean(editingID)" :disabled="busy" placeholder="move_to" required /><small>绑定使用的稳定 ID{{ editingID ? '，编辑时保持固定' : '，请使用未占用的标识' }}。</small></label>
               <label>显示名称<input v-model="draft.name" :disabled="busy" placeholder="移动到目标" required /></label>
@@ -428,11 +470,11 @@ onUnmounted(() => { importRevision.value++; previousFocus?.focus(); });
               <label class="catalog-wide">注释（可留空）<textarea v-model="parameter.comment" :disabled="busy" placeholder="说明参数用途，将生成到 Go 字段注释中" rows="2" /></label>
               <label v-if="parameter.type === 'enum'" class="catalog-wide">允许的枚举值（每行一个）<textarea v-model="parameter.enumText" :disabled="busy" rows="3" /></label>
             </div>
-            <EventMultiSelect :events="project.events" :selected="draft.eventIds" :disabled="busy" @change="draft.eventIds = $event" @manage="emit('manageEvents')" />
+            <EventMultiSelect :events="project.events" :selected="draft.eventIds" :disabled="busy" @change="draft.eventIds = $event" @manage="manageEvents" />
             <div v-if="editingID" class="catalog-warning"><strong>更新已有定义会影响所有引用它的节点。</strong><p>节点参数会按新定义同步：保留兼容绑定，删除已移除参数，重置不兼容绑定；新增参数采用默认值或保持未绑定。应用后自动校验工程，请按提示配置参数，并同步手写 Go 实现。</p><label class="catalog-check"><input v-model="acknowledged" :disabled="busy" type="checkbox" />我已了解影响，确认更新此定义</label></div>
             <label v-if="initialKind && !editingID && draft.kind === initialKind" class="catalog-check"><input v-model="bindNew" :disabled="busy" type="checkbox" />保存并绑定当前节点</label>
           </form>
-          <div v-else-if="mode === 'import'" class="catalog-import">
+          <div v-else-if="mode === 'import'" class="catalog-import" :class="{ 'pending-form': hasPending }">
             <p>粘贴 Schema 4 业务目录交换包，或从文件读取。事件 ID 冲突自动重编号，定义和代码名冲突仍需选择。</p>
             <div class="catalog-import-tools" role="group" aria-label="导入来源">
               <button type="button" :class="{ active: importSource === 'paste' }" :disabled="busy" @click="importSource = 'paste'">粘贴 JSON</button>
@@ -459,15 +501,17 @@ onUnmounted(() => { importRevision.value++; previousFocus?.focus(); });
             <p v-if="previewReady && !conflictRows.length" class="catalog-hint">没有同 ID 变更；确认后点击“应用到工程”，再保存工程。</p>
             <div v-if="updatesExisting" class="catalog-warning"><p>更新后节点参数会按新定义同步：保留兼容绑定，删除已移除参数，重置不兼容绑定；新增参数采用默认值或保持未绑定。应用后自动校验工程，请按提示配置参数，并同步手写 Go 实现。</p><label class="catalog-check"><input v-model="acknowledged" :disabled="busy" type="checkbox" />确认使用所选导入定义更新已有绑定</label></div>
           </div>
+          <p v-if="pendingWarning" class="catalog-pending" role="alert">{{ pendingWarning }}</p>
           <p v-if="error" class="catalog-error" role="alert">{{ error }}</p>
         </div>
-        <footer><span>{{ mode === 'manage' ? '分类修改即时应用，修改后需保存工程；关闭不会撤销已应用的修改。' : mode === 'import' ? '仅在应用后修改工程；请保存工程以保留导入结果。' : '定义保存后，可在代码面板预览业务函数骨架。' }}</span><button v-if="mode !== 'manage'" type="button" :disabled="busy || disabled" @click="changeMode('manage')">取消</button><button v-if="mode !== 'manage'" class="catalog-primary" type="button" :disabled="busy || (mode === 'import' && (!previewReady || !previewValidated || !incoming.length || pendingChoices || (updatesExisting && !acknowledged)))" @click="applyCatalog">{{ busy ? '校验中…' : mode === 'import' ? '应用到工程' : mode === 'edit' ? '验证并保存修改' : '验证并保存定义' }}</button></footer>
+        <footer><span>{{ hasPending ? '有未应用更改，请先保存或取消。' : mode === 'manage' ? '分类修改即时应用，修改后需保存工程；关闭不会撤销已应用的修改。' : mode === 'import' ? '仅在应用后修改工程；请保存工程以保留导入结果。' : '定义保存后，可在代码面板预览业务函数骨架。' }}</span><button v-if="mode !== 'manage'" type="button" :disabled="busy || disabled" @click="changeMode('manage', true)">取消</button><button v-if="mode !== 'manage'" class="catalog-primary" :class="{ 'pending-apply': hasPending }" type="button" :disabled="busy || (mode === 'import' && (!previewReady || !previewValidated || !incoming.length || pendingChoices || (updatesExisting && !acknowledged)))" @click="applyCatalog">{{ busy ? '校验中…' : mode === 'import' ? '应用到工程' : mode === 'edit' ? '验证并保存修改' : '验证并保存定义' }}{{ hasPending ? ' · 未应用' : '' }}</button></footer>
       </section>
     </div>
   </Teleport>
 </template>
 
 <style scoped>
+.pending-form input:not([readonly]),.pending-form select,.pending-form textarea{border-color:#e9aa43;box-shadow:0 0 0 2px #e9aa4333}.pending-apply{border-color:#e9aa43;background:#66451f;color:#fff0c7;font-weight:700}.catalog-pending{margin-top:16px;padding:10px 12px;border:1px solid #e9aa43;border-radius:6px;color:#ffd38a;background:#45331f}
 .catalog-import-tools{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}.catalog-import textarea{font-family:ui-monospace,monospace;font-size:12px}.catalog-preview{margin-top:20px;padding:14px;border:1px solid #385361;border-radius:8px}.catalog-preview ul{list-style:none;margin:10px 0 0;padding:0;max-height:220px;overflow:auto}.catalog-preview li{padding:5px 0;overflow-wrap:anywhere}.catalog-preview li span{color:#a3f1d9;margin-right:8px}
 .catalog-type-info{color:#94aebb;cursor:help;font-size:12px}.catalog-type-hint{line-height:1.5;overflow-wrap:anywhere}
 .catalog-overlay{position:fixed;inset:0;z-index:1000;display:grid;place-items:center;padding:16px;background:#071017b8;backdrop-filter:blur(4px);color:#d8e6ed;font:14px/1.5 system-ui,sans-serif}

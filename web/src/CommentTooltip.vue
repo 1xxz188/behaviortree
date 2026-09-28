@@ -39,7 +39,9 @@ interface ResizeState {
   handle: HTMLElement; // 持有指针捕获的右下角控件。
 }
 const resizeState = shallowRef<ResizeState>(); // 拖动期间阻止自动收起。
-let drafts = new WeakMap<CommentTarget, string>(); // 收起后按对象身份保留草稿，不额外遍历节点。
+let drafts = new Map<CommentTarget, { text: string; anchor?: HTMLElement }>(); // 收起后按对象身份保留草稿及入口。
+const pendingCount = ref(0); // Map 本身不响应式，增删草稿时同步数量。
+const hasPending = computed(() => dirty.value || pendingCount.value > 0);
 const position = ref({ left: 0, top: 0 }); // 经视口边界裁剪后的坐标。
 const positioned = ref(false); // 测量完成前隐藏，避免首帧在左上角闪现。
 let closeTimer: ReturnType<typeof setTimeout> | undefined; // 一次性离开宽限，允许跨越节点和浮层之间的间隙。
@@ -56,8 +58,10 @@ function hide() {
   stopResize();
   maximized.value = false;
   if (target.value) {
-    if (dirty.value) drafts.set(target.value, draft.value);
-    else drafts.delete(target.value);
+    if (dirty.value) {
+      drafts.set(target.value, { text: draft.value, anchor: anchor.value });
+    } else drafts.delete(target.value);
+    pendingCount.value = drafts.size;
   }
   visible.value = false;
   pinned.value = false;
@@ -70,7 +74,14 @@ function hide() {
 // 树替换或历史恢复后不复用旧对象的草稿。
 function reset() {
   hide();
-  drafts = new WeakMap();
+  drafts = new Map();
+  pendingCount.value = 0;
+}
+// 切页被阻止后把用户带回最近的注释草稿；入口消失时仍保留草稿供原目标重开。
+function focusPending() {
+  if (visible.value && dirty.value) return commentInput.value?.focus();
+  const saved = drafts.entries().next().value;
+  if (saved?.[1].anchor?.isConnected) void open(saved[0], saved[1].anchor, true);
 }
 
 // 仅在打开和窗口尺寸变化时测量两个元素，优先放到节点右侧。
@@ -101,7 +112,7 @@ async function open(node: CommentTarget, element: HTMLElement, pin: boolean) {
   if (target.value !== node) {
     hide();
     target.value = node;
-    draft.value = drafts.get(node) ?? props.getComment(node) ?? "";
+    draft.value = drafts.get(node)?.text ?? props.getComment(node) ?? "";
     error.value = "";
   }
   retain();
@@ -195,6 +206,7 @@ function cancel() {
   if (!target.value) return;
   draft.value = props.getComment(target.value) ?? "";
   drafts.delete(target.value);
+  pendingCount.value = drafts.size;
   error.value = "";
 }
 
@@ -210,6 +222,7 @@ function apply() {
     return;
   }
   drafts.delete(node);
+  pendingCount.value = drafts.size;
   draft.value = props.getComment(node) ?? "";
   error.value = "";
 }
@@ -259,7 +272,7 @@ onBeforeUnmount(() => {
   window.removeEventListener("resize", fit);
 });
 
-defineExpose({ show, edit, hide, scheduleHide, activeTarget });
+defineExpose({ show, edit, hide, scheduleHide, activeTarget, hasPending, focusPending });
 </script>
 
 <template>
@@ -276,12 +289,13 @@ defineExpose({ show, edit, hide, scheduleHide, activeTarget });
           <button type="button" class="comment-close" aria-label="收起注释" title="收起注释" @click="hide">×</button>
         </div>
       </header>
-      <textarea ref="commentInput" v-model="draft" :aria-label="`${label}内容`" :placeholder="`填写${label}…`" rows="6" :disabled="disabled" />
+      <textarea ref="commentInput" v-model="draft" :class="{ 'pending-comment': dirty }" :aria-label="`${label}内容`" :placeholder="`填写${label}…`" rows="6" :disabled="disabled" />
       <div v-if="error" class="comment-error" role="alert">{{ error }}</div>
       <div v-if="dirty" class="comment-actions">
         <button type="button" :disabled="disabled" @click="cancel">取消</button>
-        <button type="button" class="primary" :disabled="disabled" @click="apply">应用</button>
+        <button type="button" class="primary pending-comment-action" :disabled="disabled" @click="apply">应用 · 未应用</button>
       </div>
+      <p v-if="dirty" class="comment-pending" role="status">注释有未应用更改，切换前请应用或取消。</p>
       <button v-if="!maximized" type="button" class="comment-resize-handle" aria-label="调整注释窗口大小" title="按住拖动调整大小"
         @pointerdown.prevent.stop="startResize" @pointermove.stop="resize" @pointerup.stop="stopResize"
         @pointercancel.stop="stopResize" @lostpointercapture="stopResize"><span aria-hidden="true">◢</span></button>
@@ -306,6 +320,9 @@ header strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-s
 .comment-close { padding: 0 5px; border: 0; background: transparent; color: inherit; font-size: 20px; line-height: 22px; }
 textarea { display: block; width: 100%; min-height: 0; min-width: 0; box-sizing: border-box; padding: 10px; border: 1px solid #3a555d; border-radius: 7px; background: #13222b; color: #dce6ee; resize: none; overflow: auto; flex: 1 1 auto; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; overscroll-behavior: contain; }
 textarea:focus-visible { outline: 2px solid #7ee4b1; outline-offset: 2px; }
+.pending-comment { border-color: #e9aa43; box-shadow: 0 0 0 2px #e9aa4340; }
+.pending-comment-action { border-color: #e9aa43; background: #66451f; color: #fff0c7; font-weight: 700; }
+.comment-pending { margin: 0; color: #ffd38a; font-size: 12px; }
 /* 滚动条沿用注释框的深色配色；标准属性作为非 WebKit 浏览器的回退。 */
 textarea { scrollbar-width: thin; scrollbar-color: #52716f #13222b; }
 /* 支持伪元素时保留细轨道、圆角滑块，并去掉系统默认的上下箭头。 */

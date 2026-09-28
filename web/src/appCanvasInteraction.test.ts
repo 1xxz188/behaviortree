@@ -87,6 +87,7 @@ function session() {
   const commentEdits: { node: BTNode; anchor: CanvasElement }[] = [];
   const notices: { text: string; failed: boolean }[] = [];
   const context = {
+    guardPendingNavigation: () => true, // 画布既有交互测试在无草稿场景运行。
     nextTick, reactive, captureSnapshot, restoreSnapshot, semanticSignature,
     Element: CanvasElement,
     nodeCommentTooltip: { value: { edit: (node: BTNode, anchor: CanvasElement) => { commentEdits.push({ node, anchor }); } } },

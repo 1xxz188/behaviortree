@@ -107,6 +107,7 @@ test("实际复制节点保留多行注释并保持独立数据", () => {
   const node = computed(() => nodeIdentity.value.byID.get(selected.value));
   let mutations = 0;
   const duplicate = runInNewContext(`${js}\nduplicate;`, {
+    guardPendingNavigation: () => true, // 注释复制测试只校验独立数据。
     clone, kinds, node, tree, selected, nodeIdentity, treeIdentity,
     mutate: (change: () => void) => { mutations++; change(); },
   }) as () => void;

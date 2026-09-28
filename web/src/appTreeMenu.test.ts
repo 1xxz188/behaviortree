@@ -34,6 +34,7 @@ function session() {
   const semantic: boolean[] = [];
   const notices: string[] = [];
   const context = {
+    guardPendingNavigation: () => true, // 树菜单原有测试不持有属性输入草稿。
     project, treeIdentity, treeID, selected, tree, treeMenu,
     workspaceChanging: { value: false },
     notice: (text: string) => notices.push(text),

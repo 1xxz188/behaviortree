@@ -41,6 +41,7 @@ function session() {
   const history: EditorSnapshot[] = [];
   const notices: string[] = [];
   const context = {
+    guardPendingNavigation: () => true, // 菜单既有测试不模拟属性草稿。
     project, treeID, selected, definitionIndex, catalogMenu, catalogDialog,
     catalogIndex: shallowRef(new CatalogOrganizationIndex(project.value)),
     catalogManager: shallowRef<{ editDefinition: (target: Definition) => void; openMoveDefinition: (id: string) => void; openDefinitionTags: (id: string) => void }>(),

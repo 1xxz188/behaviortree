@@ -36,9 +36,10 @@ function session() {
   const history: string[] = [];
   const notices: string[] = [];
   const context = {
+    guardPendingNavigation: () => true, // 身份操作测试从未应用草稿守卫之外开始。
     computed, clone, kinds, tree, nodeIdentity, treeIdentity, selected, nodeIDDraft, node,
     project: ref(project), treeID, treeIDDraft, renamingTree: false,
-    definitionIndex: { value: new Map() }, cancelCodeName: () => {},
+    definitionIndex: { value: new Map() }, cancelCodeName: () => {}, codeNamePending: { value: false },
     notice: (message: string) => notices.push(message),
     mutate: (fn: () => void) => { history.push(stringifyJSON(project)); fn(); },
   };

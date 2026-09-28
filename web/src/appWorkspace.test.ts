@@ -63,6 +63,7 @@ function session(options: SessionOptions = {}) {
   targetProject.name = "目标目录工程";
   let serverWorkspace = "E:/original";
   const context = {
+    generationSaved: { value: { ...project.value.generation } }, // 工程切换后重置生成设置基准。
     noticeRevision: { value: 0 }, // 实际发布操作结果的版本。
     ensureIdentityDraftsApplied: () => true,
     Error, stringifyJSON, parseJSON, project, saveState, TreeIdentityIndex, normalizeCodeNames, validateProjectTypes,

@@ -16,6 +16,10 @@ const form = ref<{ name: string; codeName: string; description: string } | null>
 const editing = shallowRef<EventDefinition | null>(null);
 const formEvents = shallowRef(props.project.events);
 const formOriginal = shallowRef<EventDefinition | null>(null);
+const formPending = computed(() => !!form.value && (form.value.name !== (formOriginal.value?.name ?? "")
+  || form.value.codeName !== (formOriginal.value?.codeName ?? "")
+  || form.value.description !== (formOriginal.value?.description ?? "")));
+const pendingWarning = ref(""); // 意外关闭时保留输入并提示显式保存或取消。
 const error = ref("");
 const busy = ref(false); // 服务端候选校验期间阻止重复提交。
 const deleteTarget = shallowRef<EventDefinition | null>(null);
@@ -50,6 +54,7 @@ function openForm(target?: EventDefinition): void {
   formEvents.value = props.project.events;
   formOriginal.value = target ? { ...target } : null;
   error.value = "";
+  pendingWarning.value = "";
   void nextTick(() => formNameInput.value?.focus());
 }
 
@@ -58,6 +63,7 @@ function dismissForm(): void {
   form.value = null;
   editing.value = null;
   error.value = "";
+  pendingWarning.value = "";
   const trigger = formTrigger;
   formTrigger = null;
   void nextTick(() => trigger?.isConnected && trigger.focus());
@@ -78,11 +84,20 @@ function trapDialogTab(dialog: HTMLElement | undefined, event: KeyboardEvent): v
 function keydownForm(event: KeyboardEvent): void {
   event.stopPropagation();
   if (busy.value) return;
-  if (event.key === "Escape") { event.preventDefault(); dismissForm(); return; }
+  if (event.key === "Escape") { event.preventDefault(); closeForm(); return; }
   trapDialogTab(formDialog.value, event);
 }
 
-function closeForm(): void { if (!busy.value) dismissForm(); }
+// 标题关闭、背景与 Escape 都先检查草稿；底部“取消”是明确放弃。
+function closeForm(): void {
+  if (busy.value) return;
+  if (formPending.value) {
+    pendingWarning.value = "有未应用更改，请先保存事件或点击“取消”放弃更改。";
+    formNameInput.value?.focus();
+    return;
+  }
+  dismissForm();
+}
 
 // 候选注册表先执行完整校验，成功后才发布一次事务。
 async function saveMember(): Promise<void> {
@@ -164,9 +179,12 @@ function deleteMember(): void {
 function keydown(event: KeyboardEvent): void {
   event.stopPropagation();
   if (busy.value) return;
-  if (event.key === "Escape") { event.preventDefault(); emit("close"); }
+  if (event.key === "Escape") { event.preventDefault(); close(); }
 }
-function close(): void { if (!busy.value) emit("close"); }
+function close(): void { if (!busy.value && !formPending.value) emit("close"); else if (formPending.value) closeForm(); }
+// 父级页面切换及浏览器离开提示共用表单草稿状态。
+function focusPending(): void { if (formPending.value) closeForm(); }
+defineExpose({ hasPending: formPending, focusPending });
 onMounted(() => { previousFocus = document.activeElement as HTMLElement | null; manager.value?.focus(); });
 onUnmounted(() => { active = false; previousFocus?.focus(); });
 </script>
@@ -190,13 +208,14 @@ onUnmounted(() => { active = false; previousFocus?.focus(); });
             <header><div><h2 id="event-form-title">{{ editing ? '编辑事件' : '新增事件' }}</h2><p>设置事件名称、代码名与注释，保存后立即应用到当前工程。</p></div><button type="button" :disabled="busy" aria-label="关闭事件表单" @click="closeForm">×</button></header>
             <div class="event-form-content">
               <div class="event-manager-fields">
-                <label>显示名称<input ref="formNameInput" v-model="form.name" :disabled="busy" required /></label>
-                <label>事件代码名<input v-model="form.codeName" :disabled="busy" required pattern="[A-Z][A-Za-z0-9_]{0,79}" /></label>
+                <label :class="{ 'pending-event-field': form.name !== (formOriginal?.name ?? '') }">显示名称<input ref="formNameInput" v-model="form.name" :disabled="busy" required /></label>
+                <label :class="{ 'pending-event-field': form.codeName !== (formOriginal?.codeName ?? '') }">事件代码名<input v-model="form.codeName" :disabled="busy" required pattern="[A-Z][A-Za-z0-9_]{0,79}" /></label>
                 <div class="event-form-id"><span>事件 ID</span><span class="event-form-id-value">{{ editing?.id ?? project.nextEventId }}</span><small v-if="!editing">保存时分配</small></div>
-                <label class="event-form-description">注释<textarea v-model="form.description" :disabled="busy" rows="5" placeholder="填写事件注释…" /></label>
+                <label class="event-form-description" :class="{ 'pending-event-field': form.description !== (formOriginal?.description ?? '') }">注释<textarea v-model="form.description" :disabled="busy" rows="5" placeholder="填写事件注释…" /></label>
               </div>
               <p v-if="error" role="alert" class="event-manager-error">{{ error }}</p>
-              <div class="event-manager-actions"><button type="button" :disabled="busy" @click="closeForm">取消</button><button type="submit" :disabled="busy">{{ busy ? '校验中…' : '保存事件' }}</button></div>
+              <p v-if="pendingWarning" role="alert" class="event-pending">{{ pendingWarning }}</p>
+              <div class="event-manager-actions"><button type="button" :disabled="busy" @click="dismissForm">取消</button><button type="submit" :class="{ 'pending-event-action': formPending }" :disabled="busy">{{ busy ? '校验中…' : '保存事件' }}{{ formPending ? ' · 未应用' : '' }}</button></div>
             </div>
           </form>
         </section>
@@ -212,6 +231,7 @@ onUnmounted(() => { active = false; previousFocus?.focus(); });
 </template>
 
 <style scoped>
+.pending-event-field{color:#ffd38a}.pending-event-field input,.pending-event-field textarea{border-color:#e9aa43;box-shadow:0 0 0 2px #e9aa4333}.pending-event-action{border-color:#e9aa43!important;background:#66451f!important;color:#fff0c7!important;font-weight:700!important}.event-pending{color:#ffd38a;overflow-wrap:anywhere}
 .event-manager-backdrop{position:fixed;inset:0;z-index:1100;background:#071017b8;display:grid;place-items:center;padding:16px;color:#d8e6ed;font:14px/1.5 system-ui,sans-serif}.event-manager,.event-form-dialog{width:min(760px,100%);max-height:calc(100dvh - 32px);background:#14232d;border:1px solid #365260;border-radius:14px;display:flex;flex-direction:column;box-shadow:0 24px 90px #0008;outline:none}.event-manager header,.event-form-dialog header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:18px 24px;border-bottom:1px solid #365260}.event-manager h2,.event-manager h3,.event-manager p,.event-form-dialog h2,.event-form-dialog p{margin:0}.event-manager h2,.event-form-dialog h2{font-size:20px}.event-manager h3{font-size:16px}.event-manager header p,.event-manager small,.event-form-dialog header p,.event-form-dialog small{color:#9bb4c1;font-size:12px}.event-manager-body{padding:20px 24px;overflow:auto}.event-manager-section{display:grid;gap:12px;margin-bottom:18px;padding:16px;border:1px solid #365260;border-radius:8px}.event-manager-section article{display:flex;align-items:center;justify-content:space-between;gap:14px;border-top:1px solid #365260;padding-top:12px}.event-manager-item{min-width:0;display:grid;gap:2px}.event-manager-item strong,.event-manager-item small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.event-manager-empty{color:#9bb4c1}.event-form-dialog label{display:grid;gap:6px}.event-manager-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.event-form-id,.event-form-description{grid-column:1/-1}.event-form-id{display:flex;align-items:baseline;gap:10px;min-width:0}.event-form-id-value{font-weight:600;overflow-wrap:anywhere}.event-form-id small{margin-left:auto}.event-manager-heading,.event-manager-actions{display:flex;align-items:center;justify-content:space-between;gap:8px}.event-manager-actions{justify-content:flex-end;flex:none}.event-manager button,.event-form-dialog button,.event-form-dialog input,.event-form-dialog textarea{font:inherit;color:inherit;border:1px solid #456170;border-radius:6px;background:#10202a;padding:8px 10px}.event-manager button,.event-form-dialog button{cursor:pointer}.event-manager button:hover,.event-form-dialog button:hover{border-color:#86dec1}.event-manager button:disabled,.event-form-dialog button:disabled,.event-form-dialog textarea:disabled{opacity:.55;cursor:default}.event-form-dialog input,.event-form-dialog textarea{width:100%;box-sizing:border-box}.event-form-dialog textarea{resize:vertical;min-height:110px}.event-manager button:focus-visible,.event-form-dialog button:focus-visible,.event-form-dialog input:focus,.event-form-dialog textarea:focus{outline:2px solid #86dec1;outline-offset:2px}.event-delete-dialog{border-color:#b58b49}.event-delete-dialog #event-delete-description{line-height:1.7}.event-manager-error{color:#ffc2c2;overflow-wrap:anywhere}.event-form-backdrop{position:fixed;inset:0;z-index:1;background:#071017cf;display:grid;place-items:center;padding:16px}.event-form-dialog{width:min(520px,100%)}.event-form-dialog form{display:flex;flex-direction:column;min-height:0}.event-form-content{padding:20px 24px;overflow:auto;display:grid;gap:18px}
 @media(max-width:560px){.event-manager header,.event-manager-body,.event-form-dialog header,.event-form-content{padding:14px}.event-manager-fields{grid-template-columns:1fr}.event-manager-section article{align-items:flex-start;flex-direction:column}.event-manager-item{max-width:100%;width:100%}.event-manager-actions{align-self:flex-end}}
 </style>

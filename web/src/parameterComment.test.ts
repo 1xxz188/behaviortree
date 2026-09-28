@@ -21,6 +21,7 @@ const js = ts.transpileModule(workflow, { compilerOptions: { target: ts.ScriptTa
 // 用可序列化上下文复用真实表单函数，无需复制参数转换实现。
 function form() {
   const context = {
+    guardPending: () => true, formSignature: () => "", formBaseline: { value: "" }, pendingWarning: { value: "" }, // 参数转换测试不模拟离开表单。
     parseJSON, stringifyJSON, props: { projectRevision: 0 }, busy: { value: false }, mode: { value: "create" }, draftRevision: { value: 0 },
     incoming: { value: [] }, incomingPackage: { value: null }, choices: { value: {} }, eventChoices: { value: {} }, eventMappings: { value: {} }, eventRenames: { value: {} }, importEnumDescription: { value: false }, acknowledged: { value: false },
     error: { value: "" }, editingID: { value: "" }, fileLabel: { value: "" }, bindNew: { value: false },

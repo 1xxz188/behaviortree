@@ -39,6 +39,7 @@ function session(options: ImportOptions = {}) {
   const dialogs: string[] = [];
   let resets = 0;
   const context = {
+    generationSaved: { value: { ...project.value.generation } }, // 导入后刷新三个生成字段的保存对照。
     noticeRevision: { value: 0 }, // 实际发布操作结果的版本。
     Error, parseJSON, stringifyJSON, validateProjectTypes, TreeIdentityIndex, normalizeCodeNames,
     project, saveState, projectReady: { value: true },

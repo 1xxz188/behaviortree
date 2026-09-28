@@ -868,6 +868,31 @@ input::placeholder {
   gap: 8px;
   margin-bottom: 16px;
 }
+/* 草稿未应用时同时标出输入和提交按钮，错误状态仍沿用原校验提示。 */
+.pending-field { color: #ffd38a; }
+.pending-field input, .pending-field select, .pending-field textarea {
+  border-color: #e9aa43;
+  box-shadow: 0 0 0 2px #e9aa4340;
+}
+.pending-action {
+  border-color: #e9aa43;
+  background: #66451f;
+  color: #fff0c7;
+  font-weight: 700;
+  box-shadow: 0 0 0 2px #e9aa4333;
+}
+/* 生成设置直接应用到工程，但写入磁盘前仍需逐字段提示。 */
+.unsaved-generation-field { color: #ffd38a; }
+.unsaved-generation-field input {
+  border-color: #e9aa43;
+  box-shadow: 0 0 0 2px #e9aa4340;
+}
+.field-unsaved-marker {
+  float: right;
+  color: #ffd38a;
+  font-size: 11px;
+  font-weight: 700;
+}
 @media (max-width: 860px) {
   .narrow-only {
     display: inline-block;

@@ -37,6 +37,15 @@ const filters = ref<string[]>([]);
 const filtersOpen = ref(false); // 标签筛选默认收起，选择保持到用户主动清除。
 const dialog = ref<OrganizationDialog>();
 const modal = ref<HTMLDialogElement>();
+const dialogBaseline = ref(""); // 打开弹窗时的字段基准，避免未修改的表单误报。
+const pendingWarning = ref(""); // 导航拦截时留在当前弹窗提示用户。
+// 分类弹窗只比较自身字段，不遍历目录索引。
+const hasPending = computed(() => !!dialog.value && JSON.stringify([dialog.value.name, dialog.value.parentId, dialog.value.tagIds]) !== dialogBaseline.value);
+// 离开分类表单前把焦点移回其输入区域。
+function focusPending() {
+  pendingWarning.value = "有未应用更改，请先确定或点击“取消”放弃更改。";
+  modal.value?.querySelector<HTMLElement>("input, select")?.focus();
+}
 const failure = ref("");
 const dragged = ref<CatalogEntry>();
 const dropHint = ref("");
@@ -128,18 +137,23 @@ function toggleFolder(id: string) {
 // 菜单和按钮共用草稿弹窗，避免使用浏览器阻塞式 prompt。
 function openDialog(mode: OrganizationDialog["mode"], id = "", entry?: CatalogEntry) {
   if (props.disabled) return;
+  if (hasPending.value) return focusPending();
   dialogTrigger = folderMenu.value ? menuTrigger : document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
   folderMenu.value = undefined;
   dialog.value = { mode, id, entry, name: mode.startsWith("tag-") ? props.index.tags.get(id)?.name ?? "" : props.index.folders.get(id)?.name ?? "",
     parentId: mode === "create" ? id : entry?.kind === "folder" ? props.index.folders.get(entry.id)!.parentId : props.index.assignments.get(id)?.folderId ?? "",
     tagIds: [...(props.index.assignments.get(id)?.tagIds ?? [])] };
+  dialogBaseline.value = JSON.stringify([dialog.value.name, dialog.value.parentId, dialog.value.tagIds]);
+  pendingWarning.value = "";
 }
 // 业务定义菜单由父级捕获身份，本组件仅接管移动和标签草稿。
 function openMoveDefinition(id: string) { openDialog("move", id, { kind: "definition", id, order: 0 }); }
 function openDefinitionTags(id: string) { openDialog("tags", id); }
 // 管理入口允许直接创建标签，仍使用同一个事务表单。
 function openTagCreate() { openDialog("tag-create"); }
-defineExpose({ openMoveDefinition, openDefinitionTags, openTagCreate });
+defineExpose({ openMoveDefinition, openDefinitionTags, openTagCreate, hasPending, focusPending });
+// Escape 属于页面离开请求；显式取消按钮才直接放弃草稿。
+function cancelDialog() { if (hasPending.value) focusPending(); else dialog.value = undefined; }
 
 // 所有表单提交通过父级事务；校验失败时保留草稿供纠正。
 async function submitDialog() {
@@ -341,8 +355,8 @@ onBeforeUnmount(() => { document.removeEventListener("pointerdown", outside, tru
         <button role="menuitem" :disabled="!index.isFolderEmpty(folderMenu.id)" :title="index.isFolderEmpty(folderMenu.id) ? '删除空目录，可撤销' : '目录中仍有定义或子目录，请先移走内容'" @click="deleteFolder(folderMenu.id)">删除目录</button>
         <small v-if="!index.isFolderEmpty(folderMenu.id)">仅允许删除空目录</small>
       </div>
-      <dialog v-if="dialog" ref="modal" class="project-dialog organization-dialog" :aria-label="dialogTitle" @cancel.prevent.stop="dialog = undefined" @keydown.stop>
-        <form @submit.prevent="submitDialog">
+      <dialog v-if="dialog" ref="modal" class="project-dialog organization-dialog" :aria-label="dialogTitle" @cancel.prevent.stop="cancelDialog" @keydown.stop>
+        <form :class="{ 'pending-organization': hasPending }" @submit.prevent="submitDialog">
           <h2>{{ dialogTitle }}</h2>
           <label v-if="['create', 'rename', 'tag-create', 'tag-rename'].includes(dialog.mode)">名称<input v-model="dialog.name" required autofocus /></label>
           <label v-if="dialog.mode === 'move'">目标目录<select v-model="dialog.parentId"><option v-for="folder in folderChoices" :key="folder.id" :value="folder.id">{{ folder.name }}</option></select></label>
@@ -353,7 +367,8 @@ onBeforeUnmount(() => { document.removeEventListener("pointerdown", outside, tru
           </template>
           <p v-if="dialog.mode === 'tag-delete'">删除标签“{{ dialog.name }}”？将解除 {{ index.tagMembers.get(dialog.id)?.size ?? 0 }} 个定义的关联，定义本身会保留。此操作可撤销。</p>
           <p v-if="failure" class="identity-error" role="alert">{{ failure }}</p>
-          <div class="dialog-actions"><button type="button" @click="dialog = undefined">取消</button><button type="submit" :disabled="disabled">{{ dialog.mode === 'tag-delete' ? '确认删除' : '确定' }}</button></div>
+          <p v-if="pendingWarning" class="identity-error" role="alert">{{ pendingWarning }}</p>
+          <div class="dialog-actions"><button type="button" @click="dialog = undefined">取消</button><button type="submit" :class="{ 'pending-apply': hasPending }" :disabled="disabled">{{ dialog.mode === 'tag-delete' ? '确认删除' : '确定' }}{{ hasPending ? ' · 未应用' : '' }}</button></div>
         </form>
       </dialog>
     </Teleport>
@@ -361,6 +376,7 @@ onBeforeUnmount(() => { document.removeEventListener("pointerdown", outside, tru
 </template>
 
 <style scoped>
+.pending-organization input,.pending-organization select{border-color:#e9aa43;box-shadow:0 0 0 2px #e9aa4333}.pending-apply{border-color:#e9aa43;background:#66451f;color:#fff0c7;font-weight:700}
 .filter-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 6px 0; }
 .directory-tools { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
 .directory-tools button, .tag-row button { flex-shrink: 0; }

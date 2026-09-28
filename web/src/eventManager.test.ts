@@ -37,7 +37,7 @@ test("新增事件表单显示在独立对话框", () => {
   assert.match(component, /function keydownForm\(/);
   // 两个输入框应处于同一行，第二列下方不再出现额外说明。
   assert.doesNotMatch(template, /生成常量/);
-  assert.match(template, /显示名称<input[^>]+\/><\/label>\s*<label>事件代码名<input[^>]+\/><\/label>/);
+  assert.match(template, /显示名称<input[^>]+\/><\/label>\s*<label[^>]*>事件代码名<input[^>]+\/><\/label>/);
   assert.match(template, /class="event-form-id"/);
   assert.match(template, /class="event-form-description"/);
   assert.doesNotMatch(template, /事件 ID<input/);
@@ -102,6 +102,7 @@ test("新增和编辑事件注释，单独修改注释也保存", async () => {
   let validatedProject = "";
   const context = {
     props, form: ref<{ name: string; codeName: string; description: string } | null>(null),
+    pendingWarning: ref(""), // 编辑表单测试沿用真实的提示状态。
     editing: shallowRef<EventDefinition | null>(null), formEvents: shallowRef(project.events), formOriginal: shallowRef<EventDefinition | null>(null),
     error: ref(""), busy: ref(false), active: true,
     formTrigger: null, formNameInput: ref<HTMLInputElement>(),

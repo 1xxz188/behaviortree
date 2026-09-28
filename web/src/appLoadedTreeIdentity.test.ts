@@ -45,6 +45,9 @@ function session() {
   const requests: { path: string; body: unknown }[] = [];
   const notices: { text: string; failed: boolean }[] = [];
   const context = {
+    generationSaved: ref({ ...project.value.generation }), // 加载与保存共用生成设置基准。
+    guardPendingNavigation: () => true, // 身份草稿由本测试原有状态单独校验。
+    codeNamePending: { value: false }, // 本测试分开覆盖代码名和节点 ID 应用。
     computed, effect, reactive, ref, shallowRef, watch, NodeIdentityIndex, TreeIdentityIndex,
     normalizeCodeNames, captureSnapshot, restoreSnapshot, semanticSignature, clone, parseJSON, stringifyJSON,
     project, treeID, treeIDDraft: ref(treeID.value), selected: ref(""), selectedEdge: ref(), nodeIDDraft: ref(""),

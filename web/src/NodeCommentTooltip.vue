@@ -12,6 +12,7 @@ const props = defineProps<{
 }>();
 const tooltip = ref<InstanceType<typeof CommentTooltip>>(); // 节点入口共用通用注释浮层。
 const activeNode = computed(() => tooltip.value?.activeTarget as BTNode | undefined); // 兼容画布气泡显示条件。
+const hasPending = computed(() => tooltip.value?.hasPending ?? false); // 父级导航检查节点注释草稿。
 
 // 节点提交仍经过 App 的身份校验及历史事务。
 function commit(target: CommentTarget, value: string): boolean {
@@ -34,8 +35,10 @@ function show(node: BTNode, element: HTMLElement) { return tooltip.value?.show(n
 function edit(node: BTNode, element: HTMLElement) { return tooltip.value?.edit(node, element); }
 function hide() { tooltip.value?.hide(); }
 function scheduleHide(event?: MouseEvent) { tooltip.value?.scheduleHide(event); }
+// 导航被拦截时恢复并聚焦尚未应用的注释。
+function focusPending() { tooltip.value?.focusPending(); }
 
-defineExpose({ show, edit, hide, scheduleHide, activeNode });
+defineExpose({ show, edit, hide, scheduleHide, activeNode, hasPending, focusPending });
 </script>
 
 <template>

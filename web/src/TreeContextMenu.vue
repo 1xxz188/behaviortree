@@ -21,6 +21,14 @@ const nameInput = ref<HTMLInputElement>(); // 重命名时自动选中原展示�
 const cancelButton = ref<HTMLButtonElement>(); // 删除默认聚焦取消按钮。
 const name = ref(props.tree.name); // 不直接修改目标树的名称草稿。
 const validName = computed(() => name.value.trim().length > 0); // 空白名称禁止提交。
+const namePending = computed(() => mode.value === "rename" && name.value !== props.tree.name);
+const pendingWarning = ref(""); // 意外关闭重命名窗口时保留用户输入。
+// 浏览器离开或父级导航检查树名称草稿时定位原字段。
+function focusPending() {
+  pendingWarning.value = "行为树名称有未应用更改，请先应用或点击“取消”放弃。";
+  nameInput.value?.focus();
+}
+defineExpose({ hasPending: namePending, focusPending });
 const position = ref({ left: props.x, top: props.y }); // 实际显示坐标经视口裁剪。
 let previousFocus: HTMLElement | null = null; // 关闭后恢复到打开菜单的控件。
 let restoreFocus = true; // 点击外部时保留用户刚选择的焦点。
@@ -83,6 +91,8 @@ function submitRename() {
 function confirmDelete() {
   if (props.canDelete) emit("delete");
 }
+// Escape 关闭前先检查草稿；取消按钮明确表示放弃本次修改。
+function requestClose() { if (namePending.value) focusPending(); else emit("close"); }
 
 onMounted(() => {
   previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -112,17 +122,18 @@ onBeforeUnmount(() => {
       <button type="button" role="menuitem" class="tree-delete-action" :disabled="!canDelete" :aria-describedby="!canDelete ? 'tree-delete-disabled' : undefined" @click="openDialog('delete')">删除行为树</button>
       <p v-if="!canDelete" id="tree-delete-disabled" class="muted">工程至少保留一棵行为树。</p>
     </div>
-    <dialog v-else ref="dialog" class="project-dialog tree-operation-dialog" aria-labelledby="tree-operation-title" @keydown.stop @cancel.prevent="emit('close')">
+    <dialog v-else ref="dialog" class="project-dialog tree-operation-dialog" aria-labelledby="tree-operation-title" @keydown.stop @cancel.prevent="requestClose">
       <h2 id="tree-operation-title">{{ mode === 'rename' ? '重命名行为树' : '删除行为树' }}</h2>
       <form v-if="mode === 'rename'" @submit.prevent="submitRename">
-        <label class="field-label">行为树名称
+        <label class="field-label" :class="{ 'pending-field': namePending }">行为树名称
           <input ref="nameInput" v-model="name" autofocus aria-label="行为树名称" aria-describedby="tree-rename-help" />
         </label>
         <p id="tree-rename-help" class="muted">仅修改展示名称，行为树 ID（{{ tree.id }}）保持不变。</p>
         <p v-if="!validName" class="identity-error" role="alert">行为树名称不能为空。</p>
+        <p v-if="pendingWarning" class="identity-error" role="alert">{{ pendingWarning }}</p>
         <div class="dialog-actions">
           <button type="button" @click="emit('close')">取消</button>
-          <button type="submit" class="primary" :disabled="!validName">应用</button>
+          <button type="submit" class="primary" :class="{ 'pending-apply': namePending }" :disabled="!validName">应用{{ namePending ? ' · 未应用' : '' }}</button>
         </div>
       </form>
       <template v-else>
@@ -140,6 +151,7 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.pending-field{color:#ffd38a}.pending-field input{border-color:#e9aa43;box-shadow:0 0 0 2px #e9aa4340}.pending-apply{border-color:#e9aa43;background:#66451f;color:#fff0c7;font-weight:700}
 .tree-context-menu { position: fixed; z-index: 2000; min-width: 190px; max-width: calc(100vw - 16px); max-height: calc(100vh - 16px); overflow-y: auto; padding: 6px; border: 1px solid #49606c; border-radius: 8px; background: #18242e; box-shadow: 0 12px 32px #0008; }
 .tree-context-menu button { display: block; width: 100%; text-align: left; border-color: transparent; background: transparent; }
 .tree-context-menu p { margin: 6px 8px; font-size: 12px; }

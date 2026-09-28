@@ -519,7 +519,7 @@ test("通用浮层提交失败显示错误并保留可修正草稿", async t => 
 // 节点包装器必须保持画布旧入口，并将节点字段与树身份交给通用浮层。
 test("节点包装器保持原有入口并委托通用浮层", () => {
   const wrapper = readFileSync(new URL("./NodeCommentTooltip.vue", import.meta.url), "utf8");
-  assert.match(wrapper, /defineExpose\(\{ show, edit, hide, scheduleHide, activeNode \}\)/);
+  assert.match(wrapper, /defineExpose\(\{ show, edit, hide, scheduleHide, activeNode, hasPending, focusPending \}\)/);
   assert.match(wrapper, /props\.commit\(props\.tree, target as BTNode, value\)/);
   assert.match(wrapper, /:context="tree"/);
   assert.match(wrapper, /tooltip-id="node-comment-tooltip"/);

@@ -96,6 +96,8 @@ const catalogManager = ref<InstanceType<typeof CatalogManager>>(); // 管理窗�
 const catalogCopy = ref<string>(); // 剪贴板不可用时展示可手动复制的文本。
 const catalogTransferBusy = ref(false); // 防止重复发起复制或下载校验。
 const eventManagerOpen = ref(false); // 事件管理独立于业务定义与工程视图状态。
+const eventManager = ref<InstanceType<typeof EventManager>>(); // 离开页面前检查事件表单草稿。
+const eventOverlay = ref<InstanceType<typeof EventOverlay>>(); // 查询事件注释的未应用草稿。
 const highlightedEventIDs = shallowRef<Set<string>>(new Set()); // 多事件高亮只保存会话状态，不使用 Vue Flow selected。
 const eventIndex = computed(() => new EventRegistryIndex(project.value)); // 依赖拓扑变化时重建，注释/布局变更不读取。
 const eventScope = ref<EventScope>("tree"); // 画布默认只看当前树及其递归子树。
@@ -116,6 +118,9 @@ const selectedEdge = ref<{ source: string; target: string }>(); // 仅当前画�
 const nodeIDDraft = ref(selected.value); // 节点身份草稿，显式应用前不修改工程。
 const codeNameDraft = ref(""); // 代码名草稿仅在显式应用后写入工程。
 const codeNameError = ref(""); // 代码名格式或树内占用校验结果。
+const codeNameInput = ref<HTMLInputElement>(); // 拦截切换后定位尚未应用的代码名。
+const nodeIDInput = ref<HTMLInputElement>(); // 拦截切换后定位尚未应用的节点 ID。
+const treeIDInput = ref<HTMLInputElement>(); // 拦截切换后定位尚未应用的行为树 ID。
 const inspectorOpen = ref(false);
 const nodeHelp = ref<NodeType>(); // 库节点的说明窗口独立于画布选择和工程历史。
 const builtinCollapsed = ref(false); // 内置节点区仅保存当前页面的折叠偏好，不进入工程历史。
@@ -144,6 +149,13 @@ const busy = ref(false);
 const workspaceChanging = ref(false); // 切换请求期间冻结编辑，避免丢弃响应途中产生的修改。
 const saveState = reactive(new ProjectSaveState()); // 保存基准与编辑修订各自维护。
 const dirty = computed(() => saveState.dirty);
+const generationSaved = shallowRef({ ...project.value.generation }); // 最近成功打开或写入的三个生成设置值。
+// 各字段独立比较保存基准；输入、撤销和保存响应均无需遍历工程。
+const generationUnsaved = computed(() => ({
+  packagePath: project.value.generation.packagePath !== generationSaved.value.packagePath,
+  contextImport: project.value.generation.contextImport !== generationSaved.value.contextImport,
+  contextType: project.value.generation.contextType !== generationSaved.value.contextType,
+}));
 const diagnostics = ref<Diagnostic[]>([]);
 const validationResult = shallowRef<{
   revision: number; // 校验对应的语义修订，工程修改后不再显示旧的通过结论。
@@ -156,6 +168,7 @@ const scaffoldSnapshot = shallowRef<{
   signature: string; // 撤销恢复时用于确认源码仍有效。
   index: SourceIndex; // 骨架更新时建立，节点切换直接复用。
 }>();
+const projectDialogView = ref<InstanceType<typeof ProjectDialog>>(); // 浏览器离开前检查保存文件名草稿。
 const scaffoldOverwrite = shallowRef<{
   path: string; // 后端确认的实际目标文件路径。
   resolve: (confirmed: boolean) => void; // 关闭对话框后恢复保存流程。
@@ -178,19 +191,31 @@ function followSourceSelection() {
 watch([treeID, selected, sourceStale], followSourceSelection);
 // 再次点击已选节点时仍恢复其源码文件，支持用户先手动查看公共 glue 的场景。
 function selectCanvasNode({ node: item }: NodeMouseEvent) {
+  const next = item.selected ? item.id : getSelectedNodes.value[0]?.id ?? "";
+  if (next !== selected.value && !guardPendingNavigation()) { void restoreCanvasSelection(); return; }
   selectedEdge.value = undefined;
-  selected.value = item.selected ? item.id : getSelectedNodes.value[0]?.id ?? "";
+  selected.value = next;
   followSourceSelection();
 }
 // 点击连线只更新画布选择，清空节点属性选择但不改工程数据。
 function selectCanvasEdge({ edge }: EdgeMouseEvent) {
+  if (!guardPendingNavigation()) { void restoreCanvasSelection(); return; }
   selectedEdge.value = { source: edge.source, target: edge.target };
   selected.value = "";
 }
 // 框选完成后仅同步属性面板的主节点，整组选中状态由 Vue Flow 保持。
 function finishCanvasSelection() {
+  const next = getSelectedNodes.value[0]?.id ?? "";
+  if (next !== selected.value && !guardPendingNavigation()) { void restoreCanvasSelection(); return; }
   selectedEdge.value = undefined;
-  selected.value = getSelectedNodes.value[0]?.id ?? "";
+  selected.value = next;
+}
+// Vue Flow 会先更新自己的选中态；拦截后恢复属性面板对应的节点。
+async function restoreCanvasSelection() {
+  await nextTick();
+  removeSelectedElements();
+  const current = findNode(selected.value);
+  if (current) addSelectedNodes([current]);
 }
 // 程序化定位、新增或恢复节点时同步画布；已处于多选中的主节点不收缩选区。
 async function syncCanvasSelection() {
@@ -230,6 +255,7 @@ const canvasMenu = shallowRef<{
   initialMode?: "menu" | "delete"; // 属性面板和删除键直接进入确认。
   anchor?: HTMLElement; // 右键目标的节点 DOM，直接作为注释浮层锚点。
 }>();
+const treeContextMenu = ref<InstanceType<typeof TreeContextMenu>>(); // 检查重命名弹窗的未应用名称。
 const nodeCommentTooltip = ref<InstanceType<typeof NodeCommentTooltip>>(); // 全画布共享一个注释浮层。
 const autoOpenComments = ref(true); // 默认开启，仅当前页面会话有效，不持久化。
 const canvasMoving = ref(false); // 视口移动及缩放动画期间禁止新悬浮，结束事件解除。
@@ -339,6 +365,45 @@ const treeIDError = computed(() => treeIdentity.value.validateRename(treeID.valu
 // 身份草稿与工程保存状态分开维护；未提交的输入不能被保存或生成静默忽略。
 const identityDraftPending = computed(() => treeIDDraft.value !== treeID.value
   || (!!node.value && (nodeIDDraft.value !== node.value.id || codeNameDraft.value !== (node.value.codeName ?? ""))));
+const codeNamePending = computed(() => !!node.value && codeNameDraft.value !== (node.value.codeName ?? ""));
+const nodeIDPending = computed(() => !!node.value && nodeIDDraft.value !== node.value.id);
+const treeIDPending = computed(() => treeIDDraft.value !== treeID.value);
+// 页面切换前检查尚未进入工程的草稿，按对应字段定位，避免同步 watch 先清空输入。
+function guardPendingNavigation(): boolean {
+  const pending = treeIDPending.value ? { name: "行为树 ID", input: treeIDInput.value }
+    : codeNamePending.value ? { name: "节点代码名", input: codeNameInput.value }
+      : nodeIDPending.value ? { name: "Node ID", input: nodeIDInput.value } : undefined;
+  if (pending) {
+    notice(`${pending.name}有未应用更改，请先点击“应用”或“取消”再切换`, true);
+    inspectorOpen.value = true;
+    pending.input?.scrollIntoView({ block: "nearest" });
+    pending.input?.focus();
+    return false;
+  }
+  if (nodeCommentTooltip.value?.hasPending || eventOverlay.value?.hasPending) {
+    notice("注释有未应用更改，请先点击注释框的“应用”或“取消”再切换", true);
+    if (nodeCommentTooltip.value?.hasPending) nodeCommentTooltip.value.focusPending();
+    if (eventOverlay.value?.hasPending) eventOverlay.value.focusPending();
+    return false;
+  }
+  if (catalogBrowser.value?.hasPending || catalogManager.value?.hasPending || eventManager.value?.hasPending || treeContextMenu.value?.hasPending || projectDialogView.value?.hasPending) {
+    notice("表单有未应用更改，请先确认或取消当前输入再切换", true);
+    if (catalogBrowser.value?.hasPending) catalogBrowser.value.focusPending();
+    if (catalogManager.value?.hasPending) catalogManager.value.focusPending();
+    if (eventManager.value?.hasPending) eventManager.value.focusPending();
+    if (treeContextMenu.value?.hasPending) treeContextMenu.value.focusPending();
+    if (projectDialogView.value?.hasPending) projectDialogView.value.focusPending();
+    return false;
+  }
+  return true;
+}
+// 树及节点导航统一先检查草稿；同一目标不触发无意义的拦截。
+function navigateTree(id: string) { if (id !== treeID.value && guardPendingNavigation()) treeID.value = id; }
+function navigateNode(id: string) { if (id !== selected.value && guardPendingNavigation()) selected.value = id; }
+// 画布空白点击同时清除连线，拦截时保持原属性目标。
+function navigatePane() { if (selected.value && !guardPendingNavigation()) { void restoreCanvasSelection(); return; } selected.value = ""; selectedEdge.value = undefined; }
+function navigateTab(next: string) { if (next !== tab.value && guardPendingNavigation()) tab.value = next; }
+function openEventManager() { if (guardPendingNavigation()) eventManagerOpen.value = true; }
 const definitionIndex = computed(() => new Map(project.value.catalog.map((d) => [d.id, d])));
 const definition = computed(() => definitionIndex.value.get(node.value?.binding ?? ""));
 const bindingOptions = computed(() => project.value.catalog.filter((d) => d.kind === node.value?.type));
@@ -469,6 +534,7 @@ function restore(snapshot: EditorSnapshot) {
 }
 // 撤销最近一次工程修改。
 function undo() {
+  if (!guardPendingNavigation()) return;
   const state = undoStack.value.pop();
   if (state) {
     redoStack.value.push(captureSnapshot(project.value, treeID.value, selected.value));
@@ -477,6 +543,7 @@ function undo() {
 }
 // 恢复被撤销的工程修改。
 function redo() {
+  if (!guardPendingNavigation()) return;
   const state = redoStack.value.pop();
   if (state) {
     undoStack.value.push(captureSnapshot(project.value, treeID.value, selected.value));
@@ -518,7 +585,7 @@ function cancelTreeID() {
 }
 // 统一阻止对旧身份快照的保存、导出与生成，不隐式提交可能冲突的 ID。
 function ensureIdentityDraftsApplied(): boolean {
-  if (!identityDraftPending.value) return true;
+  if (!identityDraftPending.value) return guardPendingNavigation();
   notice("存在尚未应用的 ID 或代码名修改，请先点击属性面板的“应用”或“取消”，再保存或生成", true);
   return false;
 }
@@ -547,6 +614,7 @@ function applyCodeName() {
 }
 // 根、入边、布局和选择在同一次历史操作中更新，并使源码与诊断过期。
 function applyNodeID() {
+  if (codeNamePending.value && !guardPendingNavigation()) return;
   const previous = selected.value;
   const next = nodeIDDraft.value;
   const failure = nodeIdentity.value.validateRename(previous, next);
@@ -586,6 +654,7 @@ function changeTreeReference(event: Event) {
 }
 // 创建稳定节点 ID，并放置到当前树画布。
 function addNode(type: NodeType, binding?: string, position?: NodePosition) {
+  if (!guardPendingNavigation()) return;
   mutate(() => {
     const id = nodeIdentity.value.allocateID(),
       item: BTNode = { id, type, name: kinds[type]?.label ?? type };
@@ -675,6 +744,7 @@ function moveNode({ nodes }: NodeDragEvent) {
 }
 // 所有删除入口只打开确认框，取消不会修改工程和历史。
 function deleteSelected() {
+  if (!guardPendingNavigation()) return;
   if (workspaceChanging.value) return;
   if (selectedEdge.value) {
     const source = nodeIndex.value.get(selectedEdge.value.source);
@@ -756,6 +826,7 @@ function duplicateCanvasNode() {
   const menu = canvasMenu.value;
   canvasMenu.value = undefined;
   if (!menu?.node || menu.tree !== tree.value || nodeIndex.value.get(menu.node.id) !== menu.node) return;
+  if (menu.node.id !== selected.value && !guardPendingNavigation()) return;
   selected.value = menu.node.id;
   duplicate();
 }
@@ -764,6 +835,7 @@ function confirmDeleteCanvasNode() {
   const menu = canvasMenu.value;
   canvasMenu.value = undefined;
   if (!menu?.node || menu.tree !== tree.value || nodeIndex.value.get(menu.node.id) !== menu.node || workspaceChanging.value) return;
+  if (menu.node.id === selected.value && !guardPendingNavigation()) return;
   const target = menu.node;
   mutate(() => {
     treeIdentity.value.removeNode(target);
@@ -795,6 +867,7 @@ function reconnectEdge({ edge, connection }: EdgeUpdateEvent) {
 // 复制单个节点属性，分配新 ID 并断开子节点。
 function duplicate() {
   if (!node.value) return;
+  if (!guardPendingNavigation()) return;
   mutate(() => {
     const n = clone(node.value!);
     n.id = nodeIdentity.value.allocateID();
@@ -831,6 +904,7 @@ function layout() {
 }
 // 创建可独立生成或作为子树引用的入口。
 function addTree() {
+  if (!guardPendingNavigation()) return;
   let id: string;
   try { id = treeIdentity.value.allocateID(); }
   catch (error) { return notice(String(error), true); }
@@ -879,6 +953,7 @@ function confirmDeleteTree() {
   const target = treeMenu.value?.tree;
   treeMenu.value = undefined;
   if (!target || treeIdentity.value.byID.get(target.id) !== target) return;
+  if (target.id === treeID.value && !guardPendingNavigation()) return;
   if (project.value.trees.length === 1) return notice("至少保留一棵树", true);
   const position = project.value.trees.indexOf(target);
   if (position < 0) return;
@@ -986,6 +1061,7 @@ async function saveCurrent(saveAs = false): Promise<boolean> {
   const name = target.name;
   const revision = editRevision;
   const snapshot = stringifyJSON(project.value);
+  const submittedGeneration = { ...project.value.generation }; // 保存响应期间的新输入仍须保持未保存提示。
   const result = await request<{ workspace: string; files?: string[]; allFiles?: string[] }>("/api/project", { ...target, project: parseJSON(snapshot) });
   const moved = workspace.value !== result.workspace;
   workspace.value = result.workspace;
@@ -995,6 +1071,7 @@ async function saveCurrent(saveAs = false): Promise<boolean> {
   fileName.value = name;
   suggestedName.value = name;
   saveState.saved(snapshot, revision === editRevision ? snapshot : stringifyJSON(project.value));
+  generationSaved.value = submittedGeneration;
   rememberProject(workspace.value, name, recentStorage());
   // 本次写入已知成功，只更新内存列表，避免保存后重复枚举目录。
   if (!files.value.includes(name)) files.value = [...files.value, name].sort();
@@ -1019,6 +1096,7 @@ function installProject(loaded: Project, name: string, unsaved = false) {
   // 替换响应式工程前完成身份校验，失败时继续保留当前工程。
   new TreeIdentityIndex(loaded);
   project.value = loaded;
+  generationSaved.value = { ...loaded.generation };
   fileName.value = name;
   treeID.value = loaded.trees[0]!.id;
   selected.value = "";
@@ -1361,6 +1439,7 @@ async function importProject(event: Event) {
 }
 // 从节点属性或节点库打开同一目录管理入口。
 function manageCatalog(mode: "create" | "import" | "manage", forNode = false, folderId = catalogFolder.value) {
+  if (!guardPendingNavigation()) return;
   const kind = forNode && (node.value?.type === "action" || node.value?.type === "condition") ? node.value.type : undefined;
   catalogDialog.value = { mode, kind, folderId };
 }
@@ -1465,6 +1544,7 @@ function openCatalogMenu(event: MouseEvent | KeyboardEvent, target: Definition) 
 // 按对象身份验证编辑目标，直接进入已有定义表单并保持节点绑定不变。
 function editCatalogDefinition(target: Definition) {
   catalogMenu.value = undefined;
+  if (!guardPendingNavigation()) return;
   if (workspaceChanging.value || definitionIndex.value.get(target.id) !== target) return;
   if (catalogDialog.value && catalogManager.value) {
     catalogManager.value.editDefinition(target);
@@ -1578,6 +1658,7 @@ function setParam(name: string, type: ValueType, event: Event) {
 }
 // 定位诊断所属的树与画布节点。
 function focusDiagnostic(d: Diagnostic) {
+  if ((d.treeId && d.treeId !== treeID.value || (d.nodeId ?? "") !== selected.value) && !guardPendingNavigation()) return;
   if (d.treeId) treeID.value = d.treeId;
   selected.value = d.nodeId ?? "";
   const p = tree.value?.layout?.[selected.value];
@@ -1615,7 +1696,7 @@ function keydown(e: KeyboardEvent) {
 }
 // 离开页面前提示尚未保存的修改。
 function beforeUnload(e: BeforeUnloadEvent) {
-  if (projectReady.value && (dirty.value || identityDraftPending.value)) e.preventDefault();
+  if (projectReady.value && (dirty.value || identityDraftPending.value || nodeCommentTooltip.value?.hasPending || eventOverlay.value?.hasPending || catalogBrowser.value?.hasPending || catalogManager.value?.hasPending || eventManager.value?.hasPending || treeContextMenu.value?.hasPending || projectDialogView.value?.hasPending)) e.preventDefault();
 }
 // 仅在实际树对象替换时重建；普通输入、改号和连线通过增量索引处理。
 watch(tree, (current) => {
@@ -1745,7 +1826,7 @@ onUnmounted(() => toolLifecycle.abort());
           </select>
           <button class="refresh-projects" title="只更新可打开的文件列表，保留当前编辑内容" :disabled="busy || !workspace" @click="refreshProjectList">刷新列表</button>
           <button class="refresh-projects" title="从磁盘重新加载当前文件" :disabled="busy || !fileName" @click="open(fileName, true)">重载文件</button>
-          <span v-if="projectReady" class="save-state" :class="{ unsaved: dirty || identityDraftPending }">{{ identityDraftPending ? '● 有未应用修改' : dirty ? '● 未保存' : '已保存' }}</span>
+          <span v-if="projectReady" class="save-state" :class="{ unsaved: dirty || identityDraftPending || nodeCommentTooltip?.hasPending || eventOverlay?.hasPending }">{{ identityDraftPending || nodeCommentTooltip?.hasPending || eventOverlay?.hasPending ? '● 有未应用修改' : dirty ? '● 未保存' : '已保存' }}</span>
           <span v-if="projectReady" class="project-caption" :title="project.name">{{ project.name }}</span>
         </div>
       </div>
@@ -1753,7 +1834,7 @@ onUnmounted(() => toolLifecycle.abort());
         <button :disabled="busy || !workspace" @click="resetProject()">新建</button
         ><button title="将 JSON 内容读入未保存草稿，不会直接修改源文件；保存时选择目录和文件名，确认覆盖同名文件后才会覆盖。" :disabled="busy || !workspace" @click="importInput?.click()">导入</button>
         <ExportMenu :disabled="!projectReady" :png-busy="pngExportBusy" @json="exportJSON" @png="exportPNG" />
-        <button :disabled="busy || !projectReady" @click="save()">保存 <kbd>Ctrl S</kbd></button>
+        <button :class="{ 'pending-action': dirty }" :disabled="busy || !projectReady" @click="save()">保存{{ dirty ? ' · 未保存' : '' }} <kbd>Ctrl S</kbd></button>
         <button title="选择目录和文件名另存为；保存成功后使用目标工作目录" :disabled="busy || !projectReady" @click="save(true)">另存为</button>
         <button :disabled="busy || !projectReady" @click="validate">校验</button>
         <button :disabled="busy || !projectReady" @click="generate(false)">预览 Go</button>
@@ -1797,17 +1878,17 @@ onUnmounted(() => toolLifecycle.abort());
           @contextmenu.prevent.stop="openTreeMenu($event, item)"
           @keydown.shift.f10.prevent.stop="openTreeMenu($event, item)"
           @keydown.prevent.stop.context-menu="openTreeMenu($event, item)"
-          @click="treeID = item.id"
+          @click="navigateTree(item.id)"
         >
           <span>⑂</span><span class="tree-caption">{{ item.name }}<code :title="`当前生效的行为树 ID：${item.id}`">ID: {{ item.id }}</code></span><small :title="`${item.nodes.length} 个节点`">{{ item.nodes.length }}</small>
         </button>
       </nav>
       <div class="sidebar-tabs">
-        <button :class="{ active: tab === 'nodes' }" @click="tab = 'nodes'">
+        <button :class="{ active: tab === 'nodes' }" @click="navigateTab('nodes')">
           节点库</button
-        ><button :class="{ active: tab === 'board' }" @click="tab = 'board'">
+        ><button :class="{ active: tab === 'board' }" @click="navigateTab('board')">
           黑板
-        </button><button type="button" @click="eventManagerOpen = true">事件</button>
+        </button><button type="button" @click="openEventManager">事件</button>
       </div>
       <template v-if="tab === 'nodes'">
         <input
@@ -1941,7 +2022,7 @@ onUnmounted(() => toolLifecycle.abort());
           >
             ↷</button
           ><button @click="layout">自动布局</button
-          ><button type="button" @click="eventManagerOpen = true">事件</button
+          ><button type="button" @click="openEventManager">事件</button
           ><button @click="fitView({ padding: 0.18 })">适应画布</button>
           <button type="button" role="switch" :aria-checked="autoOpenComments" class="comment-hover-switch"
             title="关闭后仍可通过节点气泡、事件信息图标或右键菜单查看注释" @click="autoOpenComments = !autoOpenComments">
@@ -1984,7 +2065,7 @@ onUnmounted(() => toolLifecycle.abort());
         @move-start="canvasMoving = true; nodeCommentTooltip?.hide()"
         @move-end="canvasMoving = false"
         @pane-context-menu="openCanvasPaneMenu"
-        @pane-click="selected = ''; selectedEdge = undefined"
+        @pane-click="navigatePane"
         @node-drag-stop="moveNode"
         @dragover="dragOverCanvas"
         @dragleave="leaveCanvas"
@@ -2044,14 +2125,14 @@ onUnmounted(() => toolLifecycle.abort());
           </div>
         </template>
       </VueFlow>
-      <EventOverlay :project="project" :events="project.events" :tree-event-i-ds="currentTreeEventIDs" :scope="eventScope" :enum-description="project.eventEnumDescription" :highlighted-i-ds="highlightedEventIDs" :matched-node-count="eventMatchedNodes.size" :auto-open-comments="autoOpenComments" :blocked="eventManagerOpen || !!catalogDialog || !!projectDialog" :commit="commitEventComment" @manage="eventManagerOpen = true" @scope="setEventScope" @highlight="toggleEventHighlight" @clear-highlight="highlightedEventIDs = new Set()" />
+      <EventOverlay ref="eventOverlay" :project="project" :events="project.events" :tree-event-i-ds="currentTreeEventIDs" :scope="eventScope" :enum-description="project.eventEnumDescription" :highlighted-i-ds="highlightedEventIDs" :matched-node-count="eventMatchedNodes.size" :auto-open-comments="autoOpenComments" :blocked="eventManagerOpen || !!catalogDialog || !!projectDialog" :commit="commitEventComment" @manage="openEventManager" @scope="setEventScope" @highlight="toggleEventHighlight" @clear-highlight="highlightedEventIDs = new Set()" />
       <div class="canvas-hint">左键框选 / 拖动选中节点批量移动 · 点击连线后拖动靠近节点的线段改连 · 空白处右键拖动画布 · 右键打开菜单 · Ctrl+A 全选</div>
     </main>
 
     <aside v-show="projectReady" :class="['inspector', { opened: inspectorOpen }]">
       <button
         class="narrow-only text-button inspector-close"
-        @click="inspectorOpen = false"
+        @click="guardPendingNavigation() && (inspectorOpen = false)"
       >
         关闭属性 ×
       </button>
@@ -2072,24 +2153,24 @@ onUnmounted(() => toolLifecycle.abort());
             :value="node.name"
             @input="changeNodeName"
         /></label>
-        <label class="field-label"
-          >节点代码名<input v-model="codeNameDraft" class="mono" maxlength="40"
+        <label class="field-label" :class="{ 'pending-field': codeNamePending }"
+          >节点代码名<input ref="codeNameInput" v-model="codeNameDraft" class="mono" maxlength="40"
             :aria-invalid="!!codeNameError" aria-describedby="code-name-help code-name-error"
             @input="codeNameError = ''" @keydown.enter.prevent="applyCodeName" @keydown.esc.prevent="cancelCodeName"
         /></label>
         <div class="identity-actions">
-          <button @click="applyCodeName" :disabled="codeNameDraft === node.codeName">应用代码名</button>
+          <button :class="{ 'pending-action': codeNamePending }" @click="applyCodeName" :disabled="codeNameDraft === node.codeName">应用代码名{{ codeNamePending ? ' · 未应用' : '' }}</button>
           <button @click="cancelCodeName" :disabled="codeNameDraft === node.codeName && !codeNameError">取消</button>
         </div>
         <p id="code-name-help" class="muted identity-help">树内唯一，1–40 位，英文开头，可含数字和下划线，不能是 Go 关键字。用于生成节点常量和节点函数；从业务目录创建时默认采用业务函数名，之后独立保存，修改绑定不会自动改名。</p>
         <p v-if="codeNameError" id="code-name-error" class="identity-error" role="alert">{{ codeNameError }}</p>
-        <label class="field-label"
-          >Node ID<input v-model="nodeIDDraft" class="mono"
+        <label class="field-label" :class="{ 'pending-field': nodeIDPending }"
+          >Node ID<input ref="nodeIDInput" v-model="nodeIDDraft" class="mono"
             :aria-invalid="!!nodeIDError" aria-describedby="node-id-help node-id-error"
             @keydown.enter.prevent="applyNodeID" @keydown.esc.prevent="cancelNodeID"
         /></label>
         <div class="identity-actions">
-          <button @click="applyNodeID" :disabled="nodeIDDraft === node.id || !!nodeIDError">应用 ID</button>
+          <button :class="{ 'pending-action': nodeIDPending }" @click="applyNodeID" :disabled="nodeIDDraft === node.id || !!nodeIDError">应用 ID{{ nodeIDPending ? ' · 未应用' : '' }}</button>
           <button @click="cancelNodeID" :disabled="nodeIDDraft === node.id && !nodeIDError">取消</button>
         </div>
         <p id="node-id-help" class="muted identity-help">仅当前树内唯一，不同树可重复；新增和复制自动分配递增数字 ID。不能为空或与本树其他节点重复，冲突时不生效。应用时同步根、连线和布局；显式改号后需更新外部旧 ID 关联。</p>
@@ -2220,7 +2301,7 @@ onUnmounted(() => toolLifecycle.abort());
             class="child-row"
           >
             <b>{{ i + 1 }}</b
-            ><button class="child-name" @click="selected = child">
+            ><button class="child-name" @click="navigateNode(child)">
               {{
               nodeIndex.get(child)?.name ?? child
               }}</button
@@ -2254,21 +2335,21 @@ onUnmounted(() => toolLifecycle.abort());
             :value="tree.name"
             @input="changeTreeName"
         /></label>
-        <label class="field-label"
-          >行为树 ID<input v-model="treeIDDraft" class="mono"
+        <label class="field-label" :class="{ 'pending-field': treeIDPending }"
+          >行为树 ID<input ref="treeIDInput" v-model="treeIDDraft" class="mono"
             :aria-invalid="!!treeIDError" aria-describedby="tree-id-help tree-id-error"
             @keydown.enter.prevent="applyTreeID" @keydown.esc.prevent="cancelTreeID"
         /></label>
         <div class="identity-actions">
-          <button @click="applyTreeID" :disabled="treeIDDraft === tree.id || !!treeIDError">应用 ID</button>
+          <button :class="{ 'pending-action': treeIDPending }" @click="applyTreeID" :disabled="treeIDDraft === tree.id || !!treeIDError">应用 ID{{ treeIDPending ? ' · 未应用' : '' }}</button>
           <button @click="cancelTreeID" :disabled="treeIDDraft === tree.id && !treeIDError">取消</button>
         </div>
         <p v-if="treeIDDraft !== tree.id" class="identity-help" role="status">ID 修改尚未应用。当前生效 ID：<code>{{ tree.id }}</code>。点击“应用 ID”或按 Enter 后同步左侧列表。</p>
         <p v-if="treeIDError" id="tree-id-error" class="identity-error" role="alert">{{ treeIDError }}</p>
         <p id="tree-id-help" class="muted identity-help">工程内唯一，新建树自动分配递增数字 ID；手动改为更大数字后继续递增。允许 1–80 位英文、数字或下划线，不能仅大小写不同；冲突时不生效。应用时同步全部子树引用，外部入口调用需同步调整。</p>
         <div class="panel-heading small-heading">Go 生成设置</div>
-        <label class="field-label"
-          >生成包路径<input
+        <label class="field-label" :class="{ 'unsaved-generation-field': generationUnsaved.packagePath }"
+          >生成包路径<span v-if="generationUnsaved.packagePath" class="field-unsaved-marker" role="status">● 未保存</span><input
             :value="project.generation.packagePath"
             placeholder="例如：ai/brawl"
             aria-describedby="generation-package-help generation-package-preview"
@@ -2280,16 +2361,16 @@ onUnmounted(() => toolLifecycle.abort());
         </p>
         <p id="generation-package-help" class="muted identity-help">生成目录相对于当前工程目录，路径最后一级目录名将作为 Go package 名。例如 ai/brawl 会生成到 ai/brawl/，package 为 brawl。</p>
         <p class="muted identity-help">更改路径后会在新目录生成，旧目录保留；手写代码请自行迁移。</p>
-        <label class="field-label"
-          >业务上下文导入路径<input
+        <label class="field-label" :class="{ 'unsaved-generation-field': generationUnsaved.contextImport }"
+          >业务上下文导入路径<span v-if="generationUnsaved.contextImport" class="field-unsaved-marker" role="status">● 未保存</span><input
             :value="project.generation.contextImport"
             placeholder="例如 bt_context 或 bt_test/bt_context；留空使用同包类型"
             @input="
               changeText($event, (v) => (project.generation.contextImport = v))
             "
         /></label>
-        <label class="field-label"
-          >上下文类型<input
+        <label class="field-label" :class="{ 'unsaved-generation-field': generationUnsaved.contextType }"
+          >上下文类型<span v-if="generationUnsaved.contextType" class="field-unsaved-marker" role="status">● 未保存</span><input
             :value="project.generation.contextType"
             placeholder="any 或 *Context"
             @input="
@@ -2409,7 +2490,7 @@ onUnmounted(() => toolLifecycle.abort());
       @change="importProject"
     />
     <NodeHelpDialog v-if="nodeHelp" :type="nodeHelp" @close="nodeHelp = undefined" />
-    <EventManager v-if="eventManagerOpen" :project="project" :index="eventIndex" :revision="editRevision" :commit="commitEventChange" @close="eventManagerOpen = false" />
+    <EventManager v-if="eventManagerOpen" ref="eventManager" :project="project" :index="eventIndex" :revision="editRevision" :commit="commitEventChange" @close="eventManagerOpen = false" />
     <CatalogManager v-if="catalogDialog" ref="catalogManager" :catalog="project.catalog" :project="project" :project-revision="editRevision" :initial-mode="catalogDialog.mode" :initial-kind="catalogDialog.kind"
       :initial-definition="catalogDialog.definition" :initial-folder="catalogDialog.folderId"
       :index="catalogIndex" :revision="catalogRevision" :disabled="workspaceChanging" :commit="commitCatalogOrganization"
@@ -2422,7 +2503,7 @@ onUnmounted(() => toolLifecycle.abort());
       @move="organizeCatalogDefinition('move')" @tags="organizeCatalogDefinition('tags')"
       @copy="transferCatalog('copy', catalogMenu.definition)" @export="transferCatalog('download', catalogMenu.definition)" />
     <CatalogCopyDialog v-if="catalogCopy !== undefined" :content="catalogCopy" @close="catalogCopy = undefined" />
-    <ProjectDialog v-if="projectDialog" :kind="projectDialog.kind" :reload="projectDialog.reload" :workspace="workspace" :suggestion="fileName || suggestedName" :files="allFiles" @close="closeProjectDialog" />
+    <ProjectDialog v-if="projectDialog" ref="projectDialogView" :kind="projectDialog.kind" :reload="projectDialog.reload" :workspace="workspace" :suggestion="fileName || suggestedName" :files="allFiles" @close="closeProjectDialog" />
     <ImportErrorDialog v-if="importFailure" :name="importFailure.name" :message="importFailure.message" @close="importFailure = undefined" />
     <ScaffoldOverwriteDialog v-if="scaffoldOverwrite" :path="scaffoldOverwrite.path" @close="closeScaffoldOverwrite" />
     <NodeCommentTooltip ref="nodeCommentTooltip" :tree="tree" :commit="commitNodeComment" :auto-open="autoOpenComments"
@@ -2433,7 +2514,7 @@ onUnmounted(() => toolLifecycle.abort());
       @close="canvasMenu = undefined" @duplicate="duplicateCanvasNode" @delete="confirmDeleteCanvasNode" @delete-edge="confirmDeleteCanvasEdge" @comment="editCanvasMenuComment"
       @save="canvasMenu = undefined; save()" @save-as="canvasMenu = undefined; save(true)"
       @json="canvasMenu = undefined; exportJSON()" @png="canvasMenu = undefined; exportPNG()" />
-    <TreeContextMenu v-if="treeMenu" :key="`${treeMenu.tree.id}:${treeMenu.x}:${treeMenu.y}:${treeMenu.initialMode ?? 'menu'}`"
+    <TreeContextMenu v-if="treeMenu" ref="treeContextMenu" :key="`${treeMenu.tree.id}:${treeMenu.x}:${treeMenu.y}:${treeMenu.initialMode ?? 'menu'}`"
       :tree="treeMenu.tree" :x="treeMenu.x" :y="treeMenu.y"
       :initial-mode="treeMenu.initialMode" :can-delete="project.trees.length > 1"
       @close="treeMenu = undefined" @rename="renameTree" @delete="confirmDeleteTree" />
