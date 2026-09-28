@@ -55,7 +55,7 @@ function session(options: ImportOptions = {}) {
     saveCurrent: async () => true,
     ensureIdentityDraftsApplied: () => true,
     showOutput: () => {}, resetResults: () => { resets++; },
-    nextTick: async (fn?: () => void) => fn?.(), updateOutputBounds: () => {}, fitView: () => {},
+    nextTick: async (fn?: () => void) => fn?.(), updateOutputBounds: () => {}, fitView: () => {}, requestCanvasFit: () => {},
     fetch: async (path: string, init: { body: string }) => {
       assert.equal(path, "/api/import");
       const body = parseJSON(init.body);

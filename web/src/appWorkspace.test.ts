@@ -86,7 +86,7 @@ function session(options: SessionOptions = {}) {
     window: { localStorage: { getItem: (key: string) => records.get(key) ?? null, setItem: (key: string, value: string) => records.set(key, value) } },
     askProject: async (kind: string) => { dialogs.push(kind); return choices.shift(); },
     showOutput: () => {}, cancelTreeID: () => {}, cancelNodeID: () => {},
-    nextTick: async (fn?: () => void) => fn?.(), updateOutputBounds: () => {}, fitView: () => {}, readGenerated: async () => {},
+    nextTick: async (fn?: () => void) => fn?.(), updateOutputBounds: () => {}, fitView: () => {}, requestCanvasFit: () => {}, readGenerated: async () => {},
     fetch: async (path: string, init: { body?: string; headers: Record<string, string> }) => {
       const body = init.body ? parseJSON<any>(init.body) : undefined;
       calls.push({ path, body, workspace: decodeURIComponent(init.headers["X-BT-Workspace"]!) });

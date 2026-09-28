@@ -345,6 +345,26 @@ const importInput = ref<HTMLInputElement>();
 const { fitView, setCenter, screenToFlowCoordinate, getNodes, getSelectedNodes, findNode,
   addSelectedNodes, removeSelectedElements, vueFlowRef } = useVueFlow();
 const pngExportBusy = ref(false); // 图片编码期间禁止重复创建画布副本。
+let pendingCanvasFit = 0; // 工程或行为树切换后，只在节点和视口就绪时适应一次。
+
+// 节点尺寸未完成测量时保留请求，由 Vue Flow 的就绪事件再次尝试。
+function fitCanvasWhenReady() {
+  const request = pendingCanvasFit;
+  if (!request || !projectReady.value) return;
+  const nodes = getNodes.value;
+  if (!tree.value.nodes.length) { pendingCanvasFit = 0; return; }
+  if (nodes.length !== tree.value.nodes.length || nodes.some(n =>
+    !nodeIndex.value.has(n.id) || !n.dimensions.width || !n.dimensions.height)) return;
+  void fitView({ padding: 0.18 }).then(fitted => {
+    if (fitted && pendingCanvasFit === request) pendingCanvasFit = 0;
+  });
+}
+
+// 下一次视图更新尝试适应；若节点尚未就绪，等待节点或画布就绪事件。
+function requestCanvasFit() {
+  pendingCanvasFit++;
+  void nextTick(fitCanvasWhenReady);
+}
 // 拖拽只保存节点模板，成功落入画布后才写入工程和撤销历史。
 const paletteDrag = ref<{ type: NodeType; binding?: string }>();
 const canvasDragOver = ref(false);
@@ -1108,7 +1128,8 @@ function installProject(loaded: Project, name: string, unsaved = false) {
   workspaceError.value = "";
   failedOpen.value = "";
   inspectorOpen.value = false;
-  void nextTick(() => { updateOutputBounds(); fitView({ padding: 0.18 }); });
+  void nextTick(updateOutputBounds);
+  requestCanvasFit();
 }
 // 内部加载步骤可供启动及手动切换复用，避免嵌套 action 被 busy 跳过。
 async function openCurrent(name: string, reload = false) {
@@ -1717,7 +1738,7 @@ watch(treeID, () => {
   highlightedEventIDs.value = new Set();
   endPaletteDrag();
   selected.value = "";
-  setTimeout(() => fitView({ padding: 0.18 }), 30);
+  requestCanvasFit();
 }, { flush: "sync" });
 // 依赖或子树引用变化后，只检查已勾选项是否仍属于当前树。
 watch(currentTreeEventIDs, available => {
@@ -2001,7 +2022,7 @@ onUnmounted(() => toolLifecycle.abort());
       </template>
     </aside>
 
-    <main v-show="projectReady" class="canvas-area">
+    <main v-if="projectReady" class="canvas-area">
       <div v-if="workspaceError" class="project-open-error" role="alert">{{ workspaceError }} <button :disabled="busy" @click="open(failedOpen)">重试</button><button @click="workspaceError = ''">关闭</button></div>
       <div class="canvas-toolbar">
         <div>
@@ -2049,13 +2070,13 @@ onUnmounted(() => toolLifecycle.abort());
         :selection-mode="SelectionMode.Partial"
         :node-drag-threshold="3"
         :pane-click-distance="3"
-        fit-view-on-init
+        @pane-ready="fitCanvasWhenReady"
         @connect="link"
         @edge-update="reconnectEdge"
         @edge-click="selectCanvasEdge"
         @edge-context-menu="openCanvasEdgeMenu"
         @node-click="selectCanvasNode"
-        @nodes-initialized="syncCanvasSelection"
+        @nodes-initialized="syncCanvasSelection(); fitCanvasWhenReady()"
         @selection-end="finishCanvasSelection"
         @node-context-menu="openCanvasNodeMenu"
         @node-mouse-enter="showCanvasNodeComment"

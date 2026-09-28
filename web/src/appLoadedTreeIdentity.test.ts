@@ -63,7 +63,7 @@ function session() {
     saveState, dirty: computed(() => saveState.dirty), projectReady: ref(false),
     workspaceError: ref(""), failedOpen: ref(""), inspectorOpen: ref(false),
     notice: (text: string, failed = false) => notices.push({ text, failed }),
-    endPaletteDrag: () => {}, fitView: () => {}, closeTreeMenu: () => {},
+    endPaletteDrag: () => {}, fitView: () => {}, requestCanvasFit: () => {}, closeTreeMenu: () => {},
     rememberProject: () => {}, recentStorage: () => undefined, updateOutputBounds: () => {},
     action: async (callback: () => Promise<void>) => callback(), acceptCodeSnapshot: () => {}, showOutput: () => {},
     setTimeout: (callback: () => void) => callback(), nextTick: async (callback: () => void) => callback(),

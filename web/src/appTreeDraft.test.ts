@@ -47,7 +47,7 @@ function session() {
     eventScope: ref("tree"), highlightedEventIDs: shallowRef(new Set<string>()), // 切树监听器同时维护事件视图状态。
     eventIndex: computed(() => new EventRegistryIndex(project.value)),
     treeIdentity: shallowRef(new TreeIdentityIndex(project.value)), renamingTree: false,
-    notice: () => {}, endPaletteDrag: () => {}, fitView: () => {}, closeTreeMenu: () => {}, cancelCodeName: () => {},
+    notice: () => {}, endPaletteDrag: () => {}, fitView: () => {}, requestCanvasFit: () => {}, closeTreeMenu: () => {}, cancelCodeName: () => {},
     setTimeout: (callback: () => void) => callback(),
     mutate: (callback: () => void) => { history.push(stringifyJSON(project.value)); callback(); },
   };
