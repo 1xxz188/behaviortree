@@ -5,13 +5,16 @@ import {
   projectFileKey,
   recentProjectKey,
   rememberProject,
+  tabSessionKey,
+  readTabSession,
+  rememberTabSession,
   startupProject,
   validProjectFileName,
 } from "./workspace.ts";
-import type { RecentStorage } from "./workspace.ts";
+import type { SessionStorage } from "./workspace.ts";
 
 // 用内存存储模拟浏览器历史，避免测试依赖浏览器或磁盘。
-function memoryStorage(): RecentStorage {
+function memoryStorage(): SessionStorage {
   const entries = new Map<string, string>();
   return {
     getItem: (key) => entries.get(key) ?? null,
@@ -19,54 +22,76 @@ function memoryStorage(): RecentStorage {
   };
 }
 
-// 唯一候选不依赖历史读取，浏览器禁用存储也应自动打开。
-test("单候选直接打开且不读取存储", () => {
-  const storage: RecentStorage = {
-    getItem: () => { assert.fail("单候选不应读取历史"); },
-    setItem: () => {},
-  };
-  assert.equal(startupProject({ workspace: "E:\\workspace", files: ["bt_project.json"] }, storage), "bt_project.json");
+// 首次进入默认目录且没有最近工程时自动打开唯一工程。
+test("首次进入单候选直接打开", () => {
+  assert.equal(startupProject({ workspace: "E:\\workspace", files: ["bt_project.json"] }), "bt_project.json");
 });
 
-// 多候选只恢复用户成功打开过的有效文件，不默认取排序首项。
-test("多候选恢复有效历史，无记录时等待选择", () => {
+// 无页签身份时沿用每个目录的最近工程；已有页签身份优先于共享记录。
+test("新页签按目录恢复最近工程且不覆盖已有页签", () => {
+  const storage = memoryStorage();
+  const first = { workspace: "E:\\first", files: ["a.json", "b.json"] };
+  const second = { workspace: "E:\\second", files: ["a.json", "b.json"] };
+  assert.notEqual(recentProjectKey(first.workspace), recentProjectKey(second.workspace));
+  rememberProject(first.workspace, "a.json", storage);
+  rememberProject(second.workspace, "b.json", storage);
+  assert.equal(startupProject(first, undefined, storage), "a.json");
+  assert.equal(startupProject(second, undefined, storage), "b.json");
+  assert.equal(startupProject(first, { workspace: first.workspace, fileName: "b.json" }, storage), "b.json");
+});
+
+// 最近文件或页签文件消失时均不能偷偷选择剩余的唯一工程。
+test("已记住文件缺失时不跳到其他单候选", () => {
+  const storage = memoryStorage();
+  const list = { workspace: "E:\\workspace", files: ["remaining.json"] };
+  rememberProject(list.workspace, "removed.json", storage);
+  assert.equal(startupProject(list, undefined, storage), undefined);
+  assert.equal(startupProject(list, { workspace: list.workspace, fileName: "removed.json" }, storage), undefined);
+});
+
+// 页签恢复自身成功打开的文件，多候选没有记录时等待选择。
+test("页签身份恢复当前工程", () => {
   const storage = memoryStorage();
   const list = { workspace: "E:\\workspace", files: ["a.json", "b.json"] };
-  assert.equal(startupProject(list, storage), undefined);
   assert.equal(startupProject(list), undefined);
-  rememberProject(list.workspace, "b.json", storage);
-  assert.equal(startupProject(list, storage), "b.json");
+  rememberTabSession(list.workspace, "b.json", storage);
+  assert.deepEqual(readTabSession(storage), { workspace: list.workspace, fileName: "b.json" });
+  assert.equal(startupProject(list, readTabSession(storage)), "b.json");
 });
 
-// 文件被移除后不能把过期历史或剩余列表首项当作用户选择。
-test("过期历史与空目录均不选择工程", () => {
+// 记录的文件消失时不打开剩余的单候选，当前目录仍保留供重新选择。
+test("缺失文件不自动打开其他工程", () => {
   const storage = memoryStorage();
-  rememberProject("E:\\workspace", "removed.json", storage);
-  assert.equal(startupProject({ workspace: "E:\\workspace", files: ["a.json", "b.json"] }, storage), undefined);
-  assert.equal(startupProject({ workspace: "E:\\workspace", files: [] }, storage), undefined);
+  rememberTabSession("E:\\workspace", "removed.json", storage);
+  assert.equal(startupProject({ workspace: "E:\\workspace", files: ["a.json"] }, readTabSession(storage)), undefined);
+  assert.equal(startupProject({ workspace: "E:\\workspace", files: [] }, readTabSession(storage)), undefined);
 });
 
-// 同一浏览器连接不同工作目录时，最近文件记录必须相互隔离。
-test("不同工作目录分别恢复最近工程", () => {
-  const storage = memoryStorage();
+// 两个页签即使目录相同，也分别恢复自己的工程文件。
+test("同目录不同页签的文件身份相互隔离", () => {
+  const firstStorage = memoryStorage(), secondStorage = memoryStorage();
   const first = "E:\\workspace-one";
-  const second = "E:\\workspace-two";
-  assert.notEqual(recentProjectKey(first), recentProjectKey(second));
-  rememberProject(first, "a.json", storage);
-  rememberProject(second, "b.json", storage);
-  assert.equal(startupProject({ workspace: first, files: ["a.json", "b.json"] }, storage), "a.json");
-  assert.equal(startupProject({ workspace: second, files: ["a.json", "b.json"] }, storage), "b.json");
+  const list = { workspace: first, files: ["a.json", "b.json"] };
+  rememberTabSession(first, "a.json", firstStorage);
+  rememberTabSession(first, "b.json", secondStorage);
+  assert.equal(startupProject(list, readTabSession(firstStorage)), "a.json");
+  assert.equal(startupProject(list, readTabSession(secondStorage)), "b.json");
+  assert.equal(readTabSession(firstStorage)?.workspace, readTabSession(secondStorage)?.workspace);
 });
 
-// 隐私模式和存储配额异常只影响历史功能，不能阻断打开工程。
+// 无效记录及存储异常只影响恢复功能，不能阻断手动操作。
 test("存储读写异常降级为手动选择", () => {
-  const storage: RecentStorage = {
+  const storage: SessionStorage = {
     getItem: () => { throw new Error("存储不可读"); },
     setItem: () => { throw new Error("存储不可写"); },
   };
-  assert.equal(startupProject({ workspace: "E:\\workspace", files: ["a.json", "b.json"] }, storage), undefined);
-  assert.doesNotThrow(() => rememberProject("E:\\workspace", "a.json", storage));
-  assert.doesNotThrow(() => rememberProject("E:\\workspace", "a.json"));
+  assert.equal(readTabSession(storage), undefined);
+  assert.equal(startupProject({ workspace: "E:\\workspace", files: ["a.json", "b.json"] }, readTabSession(storage)), undefined);
+  assert.doesNotThrow(() => rememberTabSession("E:\\workspace", "a.json", storage));
+  assert.doesNotThrow(() => rememberTabSession("E:\\workspace", "a.json"));
+  const malformed = memoryStorage();
+  malformed.setItem(tabSessionKey, "not json");
+  assert.equal(readTabSession(malformed), undefined);
 });
 
 // 文件名只能指向工作目录顶层的非隐藏 JSON 文件，扩展名不区分大小写。

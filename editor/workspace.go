@@ -83,7 +83,7 @@ func openDirectory(path string) (*os.Root, directoryListing, error) {
 func (s *Server) listDirectories(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Query().Get("path")
 	if path == "" {
-		path = s.path
+		path = requestWorkspace(r).path
 	}
 	root, listing, err := openDirectory(path)
 	if err != nil {
@@ -94,7 +94,7 @@ func (s *Server) listDirectories(w http.ResponseWriter, r *http.Request) {
 	reply(w, 200, listing)
 }
 
-// switchWorkspace 在目标目录可读后替换根句柄；调用者持有工作区写锁。
+// switchWorkspace 仅验证用户选择的目录并返回目录内容，不修改其他页签的默认目录。
 func (s *Server) switchWorkspace(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Directory string `json:"directory"` // 用户在目录选择器中确认的绝对路径。
@@ -112,8 +112,6 @@ func (s *Server) switchWorkspace(w http.ResponseWriter, r *http.Request) {
 		reply(w, 400, map[string]string{"error": err.Error()})
 		return
 	}
-	old := s.root
-	s.root, s.path = root, listing.Workspace
-	_ = old.Close()
+	defer root.Close()
 	reply(w, 200, listing)
 }

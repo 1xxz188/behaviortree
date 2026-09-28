@@ -14,6 +14,7 @@ import (
 
 // saveScaffold 将业务骨架写入生成包目录，已有文件必须针对当前内容再次确认覆盖。
 func (s *Server) saveScaffold(w http.ResponseWriter, r *http.Request) {
+	workspace := requestWorkspace(r)
 	data, err := readBody(w, r)
 	var req struct {
 		Project      json.RawMessage `json:"project"`      // 点击下载时的完整工程快照。
@@ -30,7 +31,7 @@ func (s *Server) saveScaffold(w http.ResponseWriter, r *http.Request) {
 		project, err = model.Decode(req.Project)
 	}
 	if err == nil {
-		project, context, err = PrepareProjectContext(s.root, project)
+		project, context, err = PrepareProjectContext(workspace.root, project)
 	}
 	if err == nil {
 		source, err = codegen.Scaffold(project)
@@ -39,26 +40,26 @@ func (s *Server) saveScaffold(w http.ResponseWriter, r *http.Request) {
 		generationError(w, err)
 		return
 	}
-	resolved, err := model.ResolveGoPackage(s.path, project.Generation.PackagePath)
+	resolved, err := model.ResolveGoPackage(workspace.path, project.Generation.PackagePath)
 	if err != nil {
 		generationError(w, err)
 		return
 	}
 	name := filepath.Join(filepath.FromSlash(resolved.PackagePath), "actions.go")
-	path := filepath.Join(s.path, name)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err = context.Ensure(s.root); err != nil {
+	path := filepath.Join(workspace.path, name)
+	unlock := s.lockDirectory(workspace.path)
+	defer unlock()
+	if err = context.Ensure(workspace.root); err != nil {
 		reply(w, 409, map[string]string{"error": err.Error()})
 		return
 	}
-	if err = s.root.MkdirAll(filepath.Dir(name), 0755); err != nil {
+	if err = workspace.root.MkdirAll(filepath.Dir(name), 0755); err != nil {
 		reply(w, 409, map[string]string{"error": err.Error(), "path": path})
 		return
 	}
 	if !req.Overwrite {
 		// 排他创建将同名检查与占用合为一步，多个页面同时下载也不会静默覆盖。
-		err = createScaffold(s.root, name, source)
+		err = createScaffold(workspace.root, name, source)
 		if err == nil {
 			reply(w, 200, map[string]string{"path": path})
 			return
@@ -68,7 +69,7 @@ func (s *Server) saveScaffold(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	hash, err := scaffoldFileHash(s.root, name)
+	hash, err := scaffoldFileHash(workspace.root, name)
 	if err != nil {
 		reply(w, 409, map[string]string{"error": "无法确认已有业务文件，请重新下载：" + err.Error(), "path": path})
 		return
@@ -81,7 +82,7 @@ func (s *Server) saveScaffold(w http.ResponseWriter, r *http.Request) {
 		reply(w, 409, map[string]string{"error": message, "path": path, "existingHash": hash})
 		return
 	}
-	if err = atomicWrite(s.root, name, source); err != nil {
+	if err = atomicWrite(workspace.root, name, source); err != nil {
 		reply(w, 409, map[string]string{"error": err.Error(), "path": path})
 		return
 	}

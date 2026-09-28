@@ -2,6 +2,7 @@
 package editor
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -26,15 +27,58 @@ import (
 // MaxProjectBytes 限制单个工程的输入体积，避免误导入大型非工程文件。
 const MaxProjectBytes = 8 << 20
 
-// Server 通过 os.Root 将工程读写限制在当前选定目录内，包括符号链接访问。
+// Server 保留启动目录作为默认值；每个请求独立打开受限根，防止页签间切换目录。
 type Server struct {
-	workspaceMu     sync.RWMutex                 // 请求持有目录读锁；切换和另存为持有写锁，避免关闭在用句柄。
-	pickerMu        sync.Mutex                   // 同一服务最多打开一个系统目录选择窗口。
 	directoryPicker func(string) (string, error) // 原生选择器边界，测试可注入确定性的用户选择。
-	root            *os.Root                     // 受限文件系统根。
-	path            string                       // 展示工作目录和生成产物的绝对路径。
-	mu              sync.Mutex                   // 串行化文件发布，防止同一生成文件交错写入。
+	path            string                       // 服务启动时的默认绝对目录，不随请求改变。
+	lockMu          sync.Mutex                   // 保护按目录分配的发布锁及引用计数。
+	locks           map[string]*directoryLock    // 仅保留正在使用的目录锁。
 	mux             *http.ServeMux               // HTTP 路由与内嵌前端。
+}
+
+// directoryLock 让同目录的生成、读取与保存串行，不阻塞其他目录。
+type directoryLock struct {
+	mu   sync.Mutex // 同一目录的文件发布与读取边界。
+	refs int        // 等待或持有此锁的请求数。
+}
+
+// workspaceRequest 保存当前 HTTP 请求唯一的工作目录及受限根。
+type workspaceRequest struct {
+	path string   // 当前页签请求的绝对目录。
+	root *os.Root // 仅供本次请求使用，返回前关闭。
+}
+
+// workspaceContextKey 避免请求上下文键与其他包冲突。
+type workspaceContextKey struct{}
+
+// requestWorkspace 从已校验的请求上下文获取目录，不读取共享可变状态。
+func requestWorkspace(r *http.Request) *workspaceRequest {
+	return r.Context().Value(workspaceContextKey{}).(*workspaceRequest)
+}
+
+// lockDirectory 只串行化同一目录的发布操作，并在最后一个请求离开时释放锁条目。
+func (s *Server) lockDirectory(path string) func() {
+	s.lockMu.Lock()
+	if s.locks == nil {
+		s.locks = make(map[string]*directoryLock)
+	}
+	entry := s.locks[path]
+	if entry == nil {
+		entry = &directoryLock{}
+		s.locks[path] = entry
+	}
+	entry.refs++
+	s.lockMu.Unlock()
+	entry.mu.Lock()
+	return func() {
+		entry.mu.Unlock()
+		s.lockMu.Lock()
+		entry.refs--
+		if entry.refs == 0 {
+			delete(s.locks, path)
+		}
+		s.lockMu.Unlock()
+	}
 }
 
 // New 创建本地工程服务；不会覆盖已有工程或启动后台协程。
@@ -50,7 +94,8 @@ func New(workspace string) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{root: root, path: abs, mux: http.NewServeMux(), directoryPicker: pickNativeDirectory}
+	_ = root.Close()
+	s := &Server{path: abs, mux: http.NewServeMux(), directoryPicker: pickNativeDirectory}
 	s.mux.HandleFunc("GET /api/projects", s.listProjects)
 	s.mux.HandleFunc("GET /api/directories", s.listDirectories)
 	s.mux.HandleFunc("POST /api/directory-picker", s.selectDirectory)
@@ -72,8 +117,8 @@ func New(workspace string) (*Server, error) {
 	return s, nil
 }
 
-// Close 关闭工作目录句柄，须在 HTTP 服务停止后调用。
-func (s *Server) Close() error { return s.root.Close() }
+// Close 保留服务生命周期接口；请求目录句柄已在各自请求结束时关闭。
+func (s *Server) Close() error { return nil }
 
 // ServeHTTP 拒绝非本地 Host 和跨站写请求，不将本地文件能力暴露给外部网页。
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -100,26 +145,31 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			reply(w, 415, map[string]string{"error": "请求必须使用 application/json"})
 			return
 		}
-		// 系统窗口等待用户操作时不持有工作区锁，选择器自行检查前后的目录身份。
-		if r.URL.Path == "/api/directory-picker" {
-			s.mux.ServeHTTP(w, r)
-			return
-		}
-		// 文件操作与目录切换在同一锁边界内，旧页面不能把工程误存到新目录。
-		if r.Method == http.MethodPost && (r.URL.Path == "/api/workspace" || r.URL.Path == "/api/project") {
-			s.workspaceMu.Lock()
-			defer s.workspaceMu.Unlock()
-		} else {
-			s.workspaceMu.RLock()
-			defer s.workspaceMu.RUnlock()
-		}
-		if expected := r.Header.Get("X-BT-Workspace"); expected != "" && r.URL.Path != "/api/projects" {
-			path, err := url.PathUnescape(expected)
-			if err != nil || path != s.path {
-				reply(w, 409, map[string]string{"error": "工作目录已被其他页面切换，请先导出当前草稿，再刷新页面"})
+		// 头部是本次请求的目标目录；无头部时使用启动默认目录。
+		path := s.path
+		if encoded := r.Header.Get("X-BT-Workspace"); encoded != "" {
+			decoded, err := url.PathUnescape(encoded)
+			if err != nil || !filepath.IsAbs(decoded) {
+				reply(w, 400, map[string]string{"error": "请选择绝对目录路径"})
 				return
 			}
+			path = filepath.Clean(decoded)
 		}
+		workspace := &workspaceRequest{path: path}
+		// 目标由请求体或查询参数指定的接口自行打开根；其余文件接口只打开一次。
+		switch r.URL.Path {
+		case "/api/projects", "/api/project", "/api/generate", "/api/preview", "/api/generated", "/api/scaffold", "/api/scaffold/save":
+			if !(r.URL.Path == "/api/project" && r.Method == http.MethodPost) {
+				root, err := os.OpenRoot(path)
+				if err != nil {
+					reply(w, 400, map[string]string{"error": err.Error()})
+					return
+				}
+				workspace.root = root
+				defer root.Close()
+			}
+		}
+		r = r.WithContext(context.WithValue(r.Context(), workspaceContextKey{}, workspace))
 	}
 	s.mux.ServeHTTP(w, r)
 }
@@ -217,7 +267,8 @@ func normalizeDraft(p *model.Project) error {
 
 // listProjects 按需枚举顶层文件，仅将可读取的工程列入选择列表。
 func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
-	f, err := s.root.Open(".")
+	workspace := requestWorkspace(r)
+	f, err := workspace.root.Open(".")
 	if err != nil {
 		reply(w, 500, map[string]string{"error": err.Error()})
 		return
@@ -233,24 +284,25 @@ func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
 	for _, entry := range entries {
 		if entry.Type().IsRegular() && projectName(entry.Name()) {
 			allFiles = append(allFiles, entry.Name())
-			if readableProject(s.root, entry.Name()) {
+			if readableProject(workspace.root, entry.Name()) {
 				files = append(files, entry.Name())
 			}
 		}
 	}
 	sort.Strings(files)
 	sort.Strings(allFiles)
-	reply(w, 200, map[string]any{"workspace": s.path, "files": files, "allFiles": allFiles})
+	reply(w, 200, map[string]any{"workspace": workspace.path, "files": files, "allFiles": allFiles})
 }
 
 // readProject 从受限目录读取和解析工程。
 func (s *Server) readProject(w http.ResponseWriter, r *http.Request) {
+	workspace := requestWorkspace(r)
 	name := r.URL.Query().Get("name")
 	if !projectName(name) {
 		reply(w, 400, map[string]string{"error": "无效的 JSON 文件名"})
 		return
 	}
-	f, err := s.root.Open(name)
+	f, err := workspace.root.Open(name)
 	if err != nil {
 		reply(w, 404, map[string]string{"error": err.Error()})
 		return
@@ -274,6 +326,7 @@ func (s *Server) readProject(w http.ResponseWriter, r *http.Request) {
 
 // saveProject 原子保存草稿；校验和生成是单独操作。
 func (s *Server) saveProject(w http.ResponseWriter, r *http.Request) {
+	workspace := requestWorkspace(r)
 	data, err := readBody(w, r)
 	var req struct {
 		Name      string          `json:"name"`      // 目标目录内的 JSON 文件名。
@@ -301,7 +354,11 @@ func (s *Server) saveProject(w http.ResponseWriter, r *http.Request) {
 		reply(w, 400, map[string]string{"error": err.Error()})
 		return
 	}
-	root, path := s.root, s.path
+	path := workspace.path
+	if req.Directory != "" {
+		path = req.Directory
+	}
+	var root *os.Root
 	var listing *directoryListing
 	if req.Directory != "" {
 		var target directoryListing
@@ -310,31 +367,32 @@ func (s *Server) saveProject(w http.ResponseWriter, r *http.Request) {
 			reply(w, 400, map[string]string{"error": err.Error()})
 			return
 		}
-		defer func() {
-			if root != s.root {
-				_ = root.Close()
-			}
-		}()
+		defer root.Close()
 		path, listing = target.Workspace, &target
+	} else {
+		root, err = os.OpenRoot(path)
+		if err != nil {
+			reply(w, 400, map[string]string{"error": err.Error()})
+			return
+		}
+		defer root.Close()
+	}
+	unlock := s.lockDirectory(path)
+	defer unlock()
+	if req.Directory != "" {
+		// 同名检查与发布处于同一目录锁内，避免两个页签同时另存为时静默覆盖。
 		if _, statErr := root.Lstat(req.Name); !req.Overwrite && !errors.Is(statErr, fs.ErrNotExist) {
 			reply(w, 409, map[string]string{"error": "目标文件已存在或无法检查，请重新选择并确认覆盖"})
 			return
 		}
 	}
-	s.mu.Lock()
 	err = atomicWrite(root, req.Name, data)
-	s.mu.Unlock()
 	if err != nil {
 		reply(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
-	// 完整写入成功后才发布新目录，失败不会改变原工程的保存位置。
-	if root != s.root {
-		old := s.root
-		s.root, s.path = root, path
-		_ = old.Close()
-	}
-	response := map[string]any{"name": req.Name, "workspace": s.path}
+	// 成功后将目标目录交给发起另存为的页签，不改变其他请求的目录。
+	response := map[string]any{"name": req.Name, "workspace": path}
 	if listing != nil {
 		response["files"] = listing.Files
 		response["allFiles"] = listing.AllFiles
@@ -393,6 +451,7 @@ func (s *Server) validate(w http.ResponseWriter, r *http.Request) {
 
 // generate 只向工程内的生成包路径发布产物，不编译或执行浏览器提供的代码。
 func (s *Server) generate(w http.ResponseWriter, r *http.Request) {
+	workspace := requestWorkspace(r)
 	data, err := readBody(w, r)
 	var p model.Project
 	var result codegen.Result
@@ -401,7 +460,7 @@ func (s *Server) generate(w http.ResponseWriter, r *http.Request) {
 		p, err = model.Decode(data)
 	}
 	if err == nil {
-		p, context, err = PrepareProjectContext(s.root, p)
+		p, context, err = PrepareProjectContext(workspace.root, p)
 	}
 	if err == nil {
 		result, err = codegen.Generate(p)
@@ -415,23 +474,23 @@ func (s *Server) generate(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	resolved, err := model.ResolveGoPackage(s.path, p.Generation.PackagePath)
+	resolved, err := model.ResolveGoPackage(workspace.path, p.Generation.PackagePath)
 	if err != nil {
 		reply(w, 400, map[string]string{"error": err.Error()})
 		return
 	}
 	rel := filepath.FromSlash(resolved.PackagePath)
-	s.mu.Lock()
-	err = context.Ensure(s.root)
+	unlock := s.lockDirectory(workspace.path)
+	err = context.Ensure(workspace.root)
 	if err == nil {
-		err = writeGenerated(s.root, rel, result)
+		err = writeGenerated(workspace.root, rel, result)
 	}
-	s.mu.Unlock()
+	unlock()
 	if err != nil {
 		reply(w, 409, map[string]string{"error": err.Error()})
 		return
 	}
-	reply(w, 200, map[string]any{"files": responseFiles(result.Files), "sourceMap": result.SourceMap, "version": result.Version, "directory": filepath.Join(s.path, rel)})
+	reply(w, 200, map[string]any{"files": responseFiles(result.Files), "sourceMap": result.SourceMap, "version": result.Version, "directory": filepath.Join(workspace.path, rel)})
 }
 
 // WriteProjectGenerated 通过工程根目录发布产物，阻止路径中的符号链接逃出工程。

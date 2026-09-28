@@ -3,8 +3,6 @@ package editor
 import (
 	"bytes"
 	"encoding/json"
-	"net/http/httptest"
-	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
@@ -142,29 +140,24 @@ func TestSaveScaffoldRejectsUnsafeTargets(t *testing.T) {
 	}
 }
 
-// TestSaveScaffoldRejectsStaleWorkspace 验证旧页面不能将下载目标切换到其他工作目录。
-func TestSaveScaffoldRejectsStaleWorkspace(t *testing.T) {
-	root := t.TempDir()
-	s, err := New(root)
+// TestSaveScaffoldUsesRequestWorkspace 验证业务骨架只写入请求指定的页签目录。
+func TestSaveScaffoldUsesRequestWorkspace(t *testing.T) {
+	defaultDir, target := t.TempDir(), t.TempDir()
+	s, err := New(defaultDir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s.Close()
 	p := model.Example()
-	data, err := json.Marshal(map[string]any{"project": p})
-	if err != nil {
-		t.Fatal(err)
+	w := workspaceTestCall(t, s, "POST", "/api/scaffold/save", target, map[string]any{"project": p})
+	if w.Code != 200 {
+		t.Fatal("未写入请求目录", w.Code, w.Body.String())
 	}
-	r := httptest.NewRequest("POST", "http://127.0.0.1:8791/api/scaffold/save", bytes.NewReader(data))
-	r.Header.Set("Content-Type", "application/json")
-	r.Header.Set("X-BT-Workspace", url.PathEscape(t.TempDir()))
-	w := httptest.NewRecorder()
-	s.ServeHTTP(w, r)
-	if w.Code != 409 {
-		t.Fatal("未拒绝旧工作目录", w.Code)
+	if _, err := os.Stat(filepath.Join(target, p.Generation.PackagePath, "actions.go")); err != nil {
+		t.Fatal("目标目录缺少骨架", err)
 	}
-	entries, err := os.ReadDir(root)
+	entries, err := os.ReadDir(defaultDir)
 	if err != nil || len(entries) != 0 {
-		t.Fatal("旧页面写入了新目录", err)
+		t.Fatal("骨架写入了默认目录", err)
 	}
 }

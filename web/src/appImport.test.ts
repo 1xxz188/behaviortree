@@ -54,6 +54,7 @@ function session(options: ImportOptions = {}) {
     askProject: async (kind: string) => { dialogs.push(kind); return options.choice; },
     saveCurrent: async () => true,
     ensureIdentityDraftsApplied: () => true,
+    rememberTabSession: () => {}, recentStorage: () => undefined,
     showOutput: () => {}, resetResults: () => { resets++; },
     nextTick: async (fn?: () => void) => fn?.(), updateOutputBounds: () => {}, fitView: () => {}, requestCanvasFit: () => {},
     fetch: async (path: string, init: { body: string }) => {

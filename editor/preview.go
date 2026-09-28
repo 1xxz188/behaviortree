@@ -62,6 +62,7 @@ func sourceHash(source []byte) string {
 
 // preview 使用正式生成器返回源码和定位信息，不创建目录或写入产物。
 func (s *Server) preview(w http.ResponseWriter, r *http.Request) {
+	workspace := requestWorkspace(r)
 	data, err := readBody(w, r)
 	var project model.Project
 	var result codegen.Result
@@ -69,7 +70,7 @@ func (s *Server) preview(w http.ResponseWriter, r *http.Request) {
 		project, err = model.Decode(data)
 	}
 	if err == nil {
-		project, _, err = PrepareProjectContext(s.root, project)
+		project, _, err = PrepareProjectContext(workspace.root, project)
 	}
 	if err == nil {
 		result, err = codegen.Generate(project)
@@ -83,6 +84,7 @@ func (s *Server) preview(w http.ResponseWriter, r *http.Request) {
 
 // scaffold 仅预览业务函数骨架，用户可以复制所需函数到自己的业务文件。
 func (s *Server) scaffold(w http.ResponseWriter, r *http.Request) {
+	workspace := requestWorkspace(r)
 	data, err := readBody(w, r)
 	var project model.Project
 	var source []byte
@@ -90,7 +92,7 @@ func (s *Server) scaffold(w http.ResponseWriter, r *http.Request) {
 		project, err = model.Decode(data)
 	}
 	if err == nil {
-		project, _, err = PrepareProjectContext(s.root, project)
+		project, _, err = PrepareProjectContext(workspace.root, project)
 	}
 	if err == nil {
 		source, err = codegen.Scaffold(project)
@@ -114,27 +116,28 @@ func generationError(w http.ResponseWriter, err error) {
 
 // readGenerated 读取上次实际发布的产物；同锁读取源码和映射，避免与发布交错。
 func (s *Server) readGenerated(w http.ResponseWriter, r *http.Request) {
+	workspace := requestWorkspace(r)
 	data, err := readBody(w, r)
 	var project model.Project
 	if err == nil {
 		project, err = model.Decode(data)
 	}
 	if err == nil {
-		project, _, err = PrepareProjectContext(s.root, project)
+		project, _, err = PrepareProjectContext(workspace.root, project)
 	}
 	if err != nil {
 		generationError(w, err)
 		return
 	}
-	resolved, err := model.ResolveGoPackage(s.path, project.Generation.PackagePath)
+	resolved, err := model.ResolveGoPackage(workspace.path, project.Generation.PackagePath)
 	if err != nil {
 		reply(w, 400, map[string]string{"error": err.Error()})
 		return
 	}
 	dir := filepath.FromSlash(resolved.PackagePath)
-	s.mu.Lock()
-	files, mapping, err := readGeneratedFiles(s.root, dir, resolved.PackageName)
-	s.mu.Unlock()
+	unlock := s.lockDirectory(workspace.path)
+	files, mapping, err := readGeneratedFiles(workspace.root, dir, resolved.PackageName)
+	unlock()
 	if err != nil {
 		status := 409
 		if errors.Is(err, fs.ErrNotExist) {
@@ -148,7 +151,7 @@ func (s *Server) readGenerated(w http.ResponseWriter, r *http.Request) {
 		generationError(w, err)
 		return
 	}
-	reply(w, 200, map[string]any{"files": responseFiles(files), "sourceMap": mapping.Locations, "version": mapping.Version, "directory": filepath.Join(s.path, dir), "matchesCurrent": currentVersion == mapping.Version})
+	reply(w, 200, map[string]any{"files": responseFiles(files), "sourceMap": mapping.Locations, "version": mapping.Version, "directory": filepath.Join(workspace.path, dir), "matchesCurrent": currentVersion == mapping.Version})
 }
 
 // readGeneratedFiles 在同一批大小预算内读取清单和全部源码，并验证完整快照。

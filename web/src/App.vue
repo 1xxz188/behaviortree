@@ -24,8 +24,8 @@ import ExportMenu from "./ExportMenu.vue";
 import CanvasContextMenu from "./CanvasContextMenu.vue";
 import NodeCommentTooltip from "./NodeCommentTooltip.vue";
 import { exportCanvasPNG } from "./canvasExport";
-import { startupProject, rememberProject, selectNativeDirectory } from "./workspace";
-import type { WorkspaceFiles, RecentStorage, ProjectDialogResult } from "./workspace";
+import { startupProject, readTabSession, rememberTabSession, rememberProject, selectNativeDirectory } from "./workspace";
+import type { WorkspaceFiles, SessionStorage, ProjectDialogResult } from "./workspace";
 import { ProjectSaveState } from "./saveState";
 import { createGeneratedSourceIndex, GenerationRequests, selectGeneratedFile, semanticSignature, sourceNodeKey } from "./generation";
 import type { GeneratedFile, GeneratedSourceIndex, SourceIndex, SourceLocation } from "./generation";
@@ -1036,15 +1036,16 @@ async function action(fn: () => Promise<void>, onError?: (message: string) => vo
   }
 }
 // 浏览器禁用存储时降级为手动选择，不影响文件读写。
-function recentStorage(): RecentStorage | undefined {
+function recentStorage(): SessionStorage | undefined {
+  try { return window.sessionStorage; } catch { return undefined; }
+}
+// 跨页签共享的最近工程仅在没有本页签身份时辅助首次打开。
+function projectHistoryStorage(): SessionStorage | undefined {
   try { return window.localStorage; } catch { return undefined; }
 }
-// 按需读取一次顶层列表，同时更新服务端实际工作目录。
+// 按当前页签目录读取顶层列表；服务端返回的规范路径仅更新本页签。
 async function refreshFiles() {
   const result = await request<WorkspaceFiles>("/api/projects");
-  if (projectReady.value && workspace.value && workspace.value !== result.workspace) {
-    throw new Error("工作目录已被其他页面切换，请先导出当前草稿，再刷新页面");
-  }
   workspace.value = result.workspace;
   files.value = result.files;
   allFiles.value = result.allFiles ?? result.files;
@@ -1092,7 +1093,8 @@ async function saveCurrent(saveAs = false): Promise<boolean> {
   suggestedName.value = name;
   saveState.saved(snapshot, revision === editRevision ? snapshot : stringifyJSON(project.value));
   generationSaved.value = submittedGeneration;
-  rememberProject(workspace.value, name, recentStorage());
+  rememberTabSession(workspace.value, name, recentStorage());
+  rememberProject(workspace.value, name, projectHistoryStorage());
   // 本次写入已知成功，只更新内存列表，避免保存后重复枚举目录。
   if (!files.value.includes(name)) files.value = [...files.value, name].sort();
   if (!allFiles.value.includes(name)) allFiles.value = [...allFiles.value, name].sort();
@@ -1125,6 +1127,7 @@ function installProject(loaded: Project, name: string, unsaved = false) {
   saveState.reset(unsaved ? undefined : stringifyJSON(loaded));
   resetResults();
   projectReady.value = true;
+  rememberTabSession(workspace.value, name, recentStorage());
   workspaceError.value = "";
   failedOpen.value = "";
   inspectorOpen.value = false;
@@ -1142,7 +1145,7 @@ async function openCurrent(name: string, reload = false) {
     validateProjectTypes(loaded);
     installProject(loaded, name);
     suggestedName.value = name;
-    rememberProject(workspace.value, name, recentStorage());
+    rememberProject(workspace.value, name, projectHistoryStorage());
     notice(`${reload ? "已从磁盘重新加载" : "已打开"} ${name}`);
   } catch (e) {
     failedOpen.value = name;
@@ -1161,16 +1164,24 @@ function open(name: string, reload = false) {
     if (await allowReplacement(reload)) await openCurrent(name, reload);
   });
 }
-// 首屏只自动读取单候选或本工作目录仍存在的最近工程。
+// 首屏优先恢复此页签的目录和文件；首次进入才自动打开默认目录的单候选。
 function initializeWorkspace() {
   return action(async () => {
     initializing.value = true;
     workspaceError.value = "";
     try {
+      const session = readTabSession(recentStorage());
+      if (session) workspace.value = session.workspace;
       const list = await refreshFiles();
-      const name = startupProject(list, recentStorage());
+      const name = startupProject(list, session, projectHistoryStorage());
       if (name) await openCurrent(name);
-      else notice(list.files.length ? "请选择要打开的工程" : "工作目录中尚无工程");
+      else if (session?.workspace === list.workspace && session.fileName) {
+        workspaceError.value = `上次打开的工程 ${session.fileName} 已不可用，请重新选择工程`;
+        rememberTabSession(list.workspace, "", recentStorage());
+      } else {
+        rememberTabSession(list.workspace, "", recentStorage());
+        notice(list.files.length ? "请选择要打开的工程" : "工作目录中尚无工程");
+      }
     } catch (e) {
       workspaceError.value ||= e instanceof Error ? e.message : String(e);
       throw e;
@@ -1199,7 +1210,8 @@ function chooseWorkspace() {
       resetResults();
       workspaceError.value = "";
       failedOpen.value = "";
-      const name = startupProject(list, recentStorage());
+      rememberTabSession(list.workspace, "", recentStorage());
+      const name = startupProject(list, undefined, projectHistoryStorage());
       if (name) await openCurrent(name);
       else notice(list.files.length ? "工作目录已切换，请选择要打开的工程" : "工作目录已切换，尚无工程");
     } finally {
@@ -1834,7 +1846,7 @@ onUnmounted(() => toolLifecycle.abort());
       <div class="workspace-context">
         <div class="workspace-location">
           <span>工作目录</span><span class="workspace-path mono" :title="workspace">{{ workspace || '正在读取…' }}</span>
-          <button class="open-workspace" title="选择工作目录并重新加载，相当于切换 --workspace" aria-label="打开工作目录" :disabled="busy || !workspace" @click="chooseWorkspace">📁 打开目录</button>
+          <button class="open-workspace" title="仅在当前页签打开所选工作目录" aria-label="打开工作目录" :disabled="busy" @click="chooseWorkspace">📁 打开目录</button>
           <button class="text-button" :disabled="!workspace" @click="copyWorkspace">复制路径</button>
         </div>
         <div class="project-identity">

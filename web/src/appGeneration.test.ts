@@ -12,7 +12,7 @@ import { ProjectSaveState } from "./saveState.ts";
 // 直接执行 App 的真实保存与生成调用链，只替换网络、对话框和视图边界。
 const appSource = readFileSync(new URL("./App.vue", import.meta.url), "utf8").split('<script setup lang="ts">')[1]!.split("</script>")[0]!;
 const appScript = ts.createSourceFile("App.ts", appSource, ts.ScriptTarget.Latest, true);
-const functions = new Set(["request", "action", "notice", "recentStorage", "saveCurrent", "currentProjectRequest", "generate", "changeText", "changeGenerationPackagePath"]);
+const functions = new Set(["request", "action", "notice", "recentStorage", "projectHistoryStorage", "saveCurrent", "currentProjectRequest", "generate", "changeText", "changeGenerationPackagePath"]);
 const workflowSource = appScript.statements.filter(statement =>
   (ts.isFunctionDeclaration(statement) && functions.has(statement.name?.text ?? ""))
   || (ts.isClassDeclaration(statement) && statement.name?.text === "RequestError")
@@ -53,7 +53,7 @@ function editor(options: { dirty?: boolean; name?: string; chosenName?: string; 
     diagnostics: { value: [] }, semanticRevision: { value: 0 }, editRevision: 0,
     mutate: (fn: () => void) => { fn(); saveState.changed(); },
     generationRequests: new GenerationRequests(),
-    window: { localStorage: undefined }, rememberProject: () => {},
+    window: { sessionStorage: undefined, localStorage: undefined }, rememberTabSession: () => {}, rememberProject: () => {},
     askProject: async (_kind: string) => options.chosenName
       ? { name: options.chosenName, directory: "E:/workspace", overwrite: false } : undefined,
     showOutput: () => {}, acceptCodeSnapshot: () => {}, resetResults: () => {},

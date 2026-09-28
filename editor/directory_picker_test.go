@@ -106,45 +106,55 @@ func TestDirectoryPickerErrorsKeepWorkspace(t *testing.T) {
 	}
 }
 
-// TestDirectoryPickerRejectsStaleWorkspace 验证旧页面被拒绝时不会弹出系统窗口。
-func TestDirectoryPickerRejectsStaleWorkspace(t *testing.T) {
-	s := workspaceTestServer(t, t.TempDir())
-	called := false
-	s.directoryPicker = func(string) (string, error) {
-		called = true
+// TestDirectoryPickerUsesRequestWorkspace 验证不同页签各自的目录可以作为选择器初始位置。
+func TestDirectoryPickerUsesRequestWorkspace(t *testing.T) {
+	first, second := t.TempDir(), t.TempDir()
+	s := workspaceTestServer(t, first)
+	s.directoryPicker = func(initial string) (string, error) {
+		if initial != second {
+			t.Errorf("初始目录 = %q，期望 %q", initial, second)
+		}
 		return "", nil
 	}
-	w := workspaceTestCall(t, s, "POST", "/api/directory-picker", t.TempDir(), map[string]string{})
-	if w.Code != http.StatusConflict || called {
-		t.Fatalf("旧工作目录请求未被提前拒绝：%d，调用窗口 %t", w.Code, called)
+	w := workspaceTestCall(t, s, "POST", "/api/directory-picker", second, map[string]string{})
+	if w.Code != http.StatusOK {
+		t.Fatalf("第二页签目录选择器失败：%d %s", w.Code, w.Body.String())
 	}
 }
 
-// TestDirectoryPickerAllowsWorkspaceSwitchWhileWaiting 验证窗口等待不持有工作区锁，期间切换会使选择结果失效。
+// TestDirectoryPickerMissingWorkspaceFallsBack 验证恢复目录已被删除时仍能从启动目录重新选择。
+func TestDirectoryPickerMissingWorkspaceFallsBack(t *testing.T) {
+	defaultDir, selected := t.TempDir(), t.TempDir()
+	missing := filepath.Join(t.TempDir(), "已删除目录")
+	s := workspaceTestServer(t, defaultDir)
+	s.directoryPicker = func(initial string) (string, error) {
+		if initial != defaultDir {
+			t.Errorf("失效初始目录未回退：%q", initial)
+		}
+		return selected, nil
+	}
+	w := workspaceTestCall(t, s, "POST", "/api/directory-picker", missing, map[string]string{"directory": missing})
+	if listing := workspaceTestDecode(t, w); listing.Workspace != selected {
+		t.Fatalf("无法从失效目录重新选择：%+v", listing)
+	}
+}
+
+// TestDirectoryPickerAllowsWorkspaceSwitchWhileWaiting 验证窗口等待时其他页签仍能选择目录。
 func TestDirectoryPickerAllowsWorkspaceSwitchWhileWaiting(t *testing.T) {
 	original, target, selected := t.TempDir(), t.TempDir(), t.TempDir()
 	s := workspaceTestServer(t, original)
-	opened := make(chan bool, 1)
+	opened := make(chan struct{}, 1)
 	resume := make(chan struct{})
 	done := make(chan *httptest.ResponseRecorder, 1)
 	s.directoryPicker = func(string) (string, error) {
-		// 先检查锁边界，锁回归时直接返回，避免测试陷入互相等待。
-		unlocked := s.workspaceMu.TryLock()
-		if unlocked {
-			s.workspaceMu.Unlock()
-		}
-		opened <- unlocked
+		opened <- struct{}{}
 		<-resume
 		return selected, nil
 	}
 	go func() {
 		done <- workspaceTestCall(t, s, "POST", "/api/directory-picker", original, map[string]string{})
 	}()
-	if !<-opened {
-		close(resume)
-		<-done
-		t.Fatal("系统窗口等待期间仍持有工作区锁")
-	}
+	<-opened
 	// 使用窗口已打开的信号安排切换，避免依赖延时或定时轮询。
 	switched := workspaceTestCall(t, s, "POST", "/api/workspace", original, map[string]string{"directory": target})
 	close(resume)
@@ -152,17 +162,20 @@ func TestDirectoryPickerAllowsWorkspaceSwitchWhileWaiting(t *testing.T) {
 	if switched.Code != http.StatusOK {
 		t.Fatalf("窗口等待期间无法切换目录：%d %s", switched.Code, switched.Body.String())
 	}
-	if w.Code != http.StatusConflict {
-		t.Fatalf("工作目录改变后仍接受旧选择结果：%d %s", w.Code, w.Body.String())
+	if w.Code != http.StatusOK {
+		t.Fatalf("目录选择不应被另一页签干扰：%d %s", w.Code, w.Body.String())
 	}
 	current := workspaceTestDecode(t, callEditor(t, s, "GET", "/api/projects", nil))
-	if current.Workspace != target {
-		t.Fatalf("选择结果覆盖了并发切换：%s", current.Workspace)
+	if current.Workspace != original {
+		t.Fatalf("其他页签切换改变了默认目录：%s", current.Workspace)
+	}
+	if listing := workspaceTestDecode(t, w); listing.Workspace != selected {
+		t.Fatalf("窗口结果被其他页签切换：%s", listing.Workspace)
 	}
 }
 
-// TestDirectoryPickerRejectsDuplicateWindow 验证首个窗口未关闭时重复请求返回冲突，只调用一次原生窗口。
-func TestDirectoryPickerRejectsDuplicateWindow(t *testing.T) {
+// TestDirectoryPickerAllowsConcurrentWindows 验证多个页签可以同时发起目录选择请求。
+func TestDirectoryPickerAllowsConcurrentWindows(t *testing.T) {
 	original := t.TempDir()
 	s := workspaceTestServer(t, original)
 	calls := 0
@@ -170,14 +183,14 @@ func TestDirectoryPickerRejectsDuplicateWindow(t *testing.T) {
 	s.directoryPicker = func(string) (string, error) {
 		calls++
 		if calls > 1 {
-			return "", errors.New("重复调用原生窗口")
+			return "", nil
 		}
-		// 在首个窗口回调返回前重入请求，确定性覆盖选择器忙碌状态。
+		// 在首个窗口回调返回前重入请求，确定性覆盖并发入口。
 		duplicate = workspaceTestCall(t, s, "POST", "/api/directory-picker", original, map[string]string{})
 		return "", nil
 	}
 	w := workspaceTestCall(t, s, "POST", "/api/directory-picker", original, map[string]string{})
-	if w.Code != http.StatusOK || duplicate == nil || duplicate.Code != http.StatusConflict || calls != 1 {
-		t.Fatalf("重复窗口未被拒绝：首请求 %d，重复请求 %+v，窗口次数 %d", w.Code, duplicate, calls)
+	if w.Code != http.StatusOK || duplicate == nil || duplicate.Code != http.StatusOK || calls != 2 {
+		t.Fatalf("并发窗口未独立完成：首请求 %d，第二请求 %+v，窗口次数 %d", w.Code, duplicate, calls)
 	}
 }
