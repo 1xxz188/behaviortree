@@ -32,4 +32,24 @@ test("事件表变化只清理失效高亮", () => {
   const available = new Map<string, unknown>([["1", {}], ["3", {}]]);
   assert.deepEqual([...pruneHighlightedEvents(selected, available)], ["1", "3"]);
   assert.deepEqual([...selected], ["1", "2", "3"]);
+  // 查看范围收窄时使用事件 ID 集合，也只遍历已勾选项。
+  assert.deepEqual([...pruneHighlightedEvents(selected, new Set(["2"]))], ["2"]);
+});
+
+// 多个子树引用和当前树业务节点命中同一事件时，画布节点按 ID 去重计数。
+test("子树继承事件高亮当前画布的所有引用节点", () => {
+  const project = blankProject();
+  project.events = [{ id: "1", name: "状态", codeName: "State" }];
+  project.catalog = [{ id: "A", name: "动作", kind: "action", goName: "A", eventIds: ["1"] }];
+  project.trees[0]!.nodes.push(
+    { id: "local", type: "action", binding: "A" },
+    { id: "sub-1", type: "subtree", tree: "child" },
+    { id: "sub-2", type: "subtree", tree: "child" },
+  );
+  project.trees.push({ id: "child", name: "子树", root: "leaf", nodes: [{ id: "leaf", type: "action", binding: "A" }] });
+  const index = new EventRegistryIndex(project);
+  const matched = matchedEventNodes(new Set(["1"]), index, project.trees[0]!.id);
+  assert.deepEqual([...matched].sort(), ["local", "sub-1", "sub-2"]);
+  assert.equal(matched.size, 3);
+  assert.deepEqual([...matchedEventNodes(new Set(["1"]), index, "child")], ["leaf"]);
 });

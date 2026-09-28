@@ -8,8 +8,8 @@ export function toggleHighlightedEvent(selected: ReadonlySet<string>, id: string
   return next;
 }
 
-// 删除或恢复工程后，仅检查已选事件，避免重新扫描整个事件表。
-export function pruneHighlightedEvents(selected: ReadonlySet<string>, available: ReadonlyMap<string, unknown>): Set<string> {
+// 删除、恢复或缩小查看范围后，仅检查已选事件，避免重新扫描整个事件表。
+export function pruneHighlightedEvents(selected: ReadonlySet<string>, available: { has(id: string): boolean }): Set<string> {
   const next = new Set<string>();
   for (const id of selected) if (available.has(id)) next.add(id);
   return next;

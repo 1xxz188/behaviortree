@@ -4,6 +4,7 @@ import CatalogManager from "./CatalogManager.vue";
 import EventManager from "./EventManager.vue";
 import EventOverlay from "./EventOverlay.vue";
 import { EventRegistryIndex, normalizeEventDescription, validateEventRegistry, validateNextEventID } from "./eventRegistry";
+import type { EventScope } from "./eventRegistry";
 import { matchedEventNodes, pruneHighlightedEvents, toggleHighlightedEvent } from "./eventHighlight";
 import CatalogBrowser from "./CatalogBrowser.vue";
 import NodeHelpDialog from "./NodeHelpDialog.vue";
@@ -97,6 +98,7 @@ const catalogTransferBusy = ref(false); // 防止重复发起复制或下载校�
 const eventManagerOpen = ref(false); // 事件管理独立于业务定义与工程视图状态。
 const highlightedEventIDs = shallowRef<Set<string>>(new Set()); // 多事件高亮只保存会话状态，不使用 Vue Flow selected。
 const eventIndex = computed(() => new EventRegistryIndex(project.value)); // 依赖拓扑变化时重建，注释/布局变更不读取。
+const eventScope = ref<EventScope>("tree"); // 画布默认只看当前树及其递归子树。
 // 工程替换和撤销只重建一次组织索引，不深度监听每次属性编辑。
 watch(project, () => {
   catalogIndex.value = new CatalogOrganizationIndex(project.value);
@@ -106,6 +108,7 @@ watch(project, () => {
 // 路径末级仅供即时说明，合法性统一交由 Go 解析器校验。
 const generationPackageName = computed(() => project.value.generation.packagePath.split("/").at(-1) ?? "");
 const treeID = ref(project.value.trees[0]!.id);
+const currentTreeEventIDs = computed(() => eventIndex.value.eventsInTree(treeID.value));
 const treeIDDraft = ref(treeID.value); // ID 输入草稿，应用前不影响工程。
 let renamingTree = false; // 同一棵树改号时保留选择与视口。
 const selected = ref(project.value.trees[0]!.root);
@@ -429,6 +432,7 @@ function resetResults() {
   catalogDialog.value = undefined;
   eventManagerOpen.value = false;
   highlightedEventIDs.value = new Set();
+  eventScope.value = "tree";
   treeMenu.value = undefined;
   editRevision++;
   invalidateCode();
@@ -564,10 +568,12 @@ function applyTreeID() {
   if (previous === next) return cancelTreeID();
   let references = 0;
   mutate(() => {
-    references = treeIdentity.value.rename(previous, next);
-    // 同一棵树改号保留当前节点选择，避免触发切树时的清空逻辑。
+    // 整个改号过程保持同一树标记，避免同步事件监听器读到新树 ID 与旧选择的中间状态。
     renamingTree = true;
-    try { treeID.value = next; } finally { renamingTree = false; }
+    try {
+      references = treeIdentity.value.rename(previous, next);
+      treeID.value = next;
+    } finally { renamingTree = false; }
   });
   cancelTreeID();
   notice(`行为树 ID 已更新，已同步 ${references} 处引用，请保存并重新生成`);
@@ -1383,8 +1389,14 @@ function commitEventComment(sourceProject: Project, target: EventDefinition | nu
 }
 // 同一事件行再次勾选则取消；高亮始终只是编辑器视图状态。
 function toggleEventHighlight(id: string): void {
-  if (!eventIndex.value.eventByID.has(id)) return;
+  if (!eventIndex.value.eventByID.has(id) || (eventScope.value === "tree" && !currentTreeEventIDs.value.has(id))) return;
   highlightedEventIDs.value = toggleHighlightedEvent(highlightedEventIDs.value, id);
+}
+// 缩小范围时去除不可见勾选，避免底部计数与当前画布脱节。
+function setEventScope(scope: EventScope): void {
+  if (scope === eventScope.value) return;
+  eventScope.value = scope;
+  if (scope === "tree") highlightedEventIDs.value = pruneHighlightedEvents(highlightedEventIDs.value, currentTreeEventIDs.value);
 }
 // 分类变更成功后才登记历史；校验失败保留原工程与当前表单。
 function commitCatalogOrganization(change: () => void): boolean {
@@ -1620,9 +1632,17 @@ watch([tree, selected], syncCanvasSelection, { flush: "post" });
 watch(treeID, () => {
   cancelTreeID();
   if (renamingTree) return;
+  eventScope.value = "tree";
+  highlightedEventIDs.value = new Set();
   endPaletteDrag();
   selected.value = "";
   setTimeout(() => fitView({ padding: 0.18 }), 30);
+}, { flush: "sync" });
+// 依赖或子树引用变化后，只检查已勾选项是否仍属于当前树。
+watch(currentTreeEventIDs, available => {
+  if (renamingTree || eventScope.value !== "tree" || !highlightedEventIDs.value.size) return;
+  const next = pruneHighlightedEvents(highlightedEventIDs.value, available);
+  if (next.size !== highlightedEventIDs.value.size) highlightedEventIDs.value = next;
 }, { flush: "sync" });
 onMounted(() => {
   outputResizeObserver = new ResizeObserver(updateOutputBounds);
@@ -2024,7 +2044,7 @@ onUnmounted(() => toolLifecycle.abort());
           </div>
         </template>
       </VueFlow>
-      <EventOverlay :project="project" :events="project.events" :enum-description="project.eventEnumDescription" :highlighted-i-ds="highlightedEventIDs" :matched-node-count="eventMatchedNodes.size" :auto-open-comments="autoOpenComments" :blocked="eventManagerOpen || !!catalogDialog || !!projectDialog" :commit="commitEventComment" @manage="eventManagerOpen = true" @highlight="toggleEventHighlight" @clear-highlight="highlightedEventIDs = new Set()" />
+      <EventOverlay :project="project" :events="project.events" :tree-event-i-ds="currentTreeEventIDs" :scope="eventScope" :enum-description="project.eventEnumDescription" :highlighted-i-ds="highlightedEventIDs" :matched-node-count="eventMatchedNodes.size" :auto-open-comments="autoOpenComments" :blocked="eventManagerOpen || !!catalogDialog || !!projectDialog" :commit="commitEventComment" @manage="eventManagerOpen = true" @scope="setEventScope" @highlight="toggleEventHighlight" @clear-highlight="highlightedEventIDs = new Set()" />
       <div class="canvas-hint">左键框选 / 拖动选中节点批量移动 · 点击连线后拖动靠近节点的线段改连 · 空白处右键拖动画布 · 右键打开菜单 · Ctrl+A 全选</div>
     </main>
 

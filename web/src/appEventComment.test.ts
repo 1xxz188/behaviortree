@@ -28,6 +28,7 @@ test("事件悬停注释提交校验目标身份并保持单次事务", () => {
   let transactions = 0;
   const context = {
     project, projectReady: ref(true), workspaceChanging: ref(false), eventIndex, highlightedEventIDs,
+    eventScope: ref("all"), // 此用例验证工程事件高亮，使用完整事件查看范围。
     normalizeEventDescription, validateEventRegistry, pruneHighlightedEvents, toggleHighlightedEvent,
     mutate(change: () => void) { transactions++; change(); }, notice() {},
   };

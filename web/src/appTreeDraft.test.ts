@@ -7,14 +7,16 @@ import { computed, reactive, ref, shallowRef, watch } from "vue";
 import { blankProject, clone } from "./project.ts";
 import { NodeIdentityIndex } from "./nodeIdentity.ts";
 import { TreeIdentityIndex } from "./treeIdentity.ts";
+import { EventRegistryIndex } from "./eventRegistry.ts";
+import { pruneHighlightedEvents } from "./eventHighlight.ts";
 import { stringifyJSON } from "./json.ts";
 
 // 提取真实应用的身份提交和选择监听器，覆盖草稿到侧栏已生效身份的完整同步路径。
 const source = readFileSync(new URL("./App.vue", import.meta.url), "utf8")
   .split('<script setup lang="ts">')[1]!.split("</script>")[0]!;
 const script = ts.createSourceFile("App.ts", source, ts.ScriptTarget.Latest, true);
-const functions = new Set(["applyTreeID", "cancelTreeID", "cancelNodeID"]);
-const variables = new Set(["tree", "nodeIdentity", "nodeIndex", "node", "treeIDError"]);
+const functions = new Set(["applyTreeID", "cancelTreeID", "cancelNodeID", "setEventScope"]);
+const variables = new Set(["tree", "nodeIdentity", "nodeIndex", "node", "treeIDError", "currentTreeEventIDs"]);
 const handlers = script.statements.filter(statement => {
   if (ts.isFunctionDeclaration(statement)) return functions.has(statement.name?.text ?? "");
   if (ts.isVariableStatement(statement)) return statement.declarationList.declarations.some(
@@ -22,7 +24,7 @@ const handlers = script.statements.filter(statement => {
   if (!ts.isExpressionStatement(statement) || !ts.isCallExpression(statement.expression)) return false;
   const call = statement.expression;
   return call.expression.getText(script) === "watch"
-    && ["tree", "treeID", "selected"].includes(call.arguments[0]?.getText(script) ?? "");
+    && ["tree", "treeID", "selected", "currentTreeEventIDs"].includes(call.arguments[0]?.getText(script) ?? "");
 }).map(statement => statement.getText(script)).join("\n");
 const js = ts.transpileModule(handlers, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
 
@@ -40,19 +42,22 @@ function session() {
   const nodeIDDraft = ref("");
   const history: string[] = [];
   const context = {
-    computed, reactive, ref, shallowRef, watch, NodeIdentityIndex,
+    computed, reactive, ref, shallowRef, watch, NodeIdentityIndex, EventRegistryIndex, pruneHighlightedEvents,
     project, treeID, treeIDDraft, selected, selectedEdge: ref(), nodeIDDraft, canvasMenu: shallowRef(),
+    eventScope: ref("tree"), highlightedEventIDs: shallowRef(new Set<string>()), // 切树监听器同时维护事件视图状态。
+    eventIndex: computed(() => new EventRegistryIndex(project.value)),
     treeIdentity: shallowRef(new TreeIdentityIndex(project.value)), renamingTree: false,
     notice: () => {}, endPaletteDrag: () => {}, fitView: () => {}, closeTreeMenu: () => {}, cancelCodeName: () => {},
     setTimeout: (callback: () => void) => callback(),
     mutate: (callback: () => void) => { history.push(stringifyJSON(project.value)); callback(); },
   };
-  const app = runInNewContext(`${js}\n({ tree, node, treeIDError, applyTreeID, cancelTreeID });`, context) as {
+  const app = runInNewContext(`${js}\n({ tree, node, treeIDError, applyTreeID, cancelTreeID, setEventScope });`, context) as {
     tree: { readonly value: typeof other }; // 侧栏和右侧设置共同定位的真实树。
     node: { readonly value: typeof other.nodes[number] | undefined }; // 右侧面板的实际分支条件。
     treeIDError: { readonly value: string }; // 输入框与提交入口共享的校验结果。
     applyTreeID: () => void; // 应用草稿并同步索引与选择。
     cancelTreeID: () => void; // 放弃草稿并恢复生效身份。
+    setEventScope: (scope: "tree" | "all") => void; // 事件面板查看范围切换。
   };
   return { ...context, app, history };
 }
@@ -71,6 +76,30 @@ test("树 ID 草稿允许暂时不同，应用后同步侧栏身份且只记录�
   assert.equal(s.treeIDDraft.value, "NpcTroop");
   assert.equal(s.treeID.value, "NpcTroop");
   assert.equal(s.history.length, 1);
+});
+
+// 事件范围与高亮只属于会话；改树 ID 保留，真正切树清除，缩小范围丢弃隐藏勾选。
+test("事件范围切换与树切换保持当前画布的高亮口径", () => {
+  const s = session();
+  s.project.value.events = [
+    { id: "1", name: "当前", codeName: "Current" },
+    { id: "2", name: "其他", codeName: "Other" },
+  ];
+  s.project.value.catalog = [{ id: "A", name: "A", kind: "action", goName: "A", eventIds: ["1"] }];
+  s.project.value.trees[0]!.nodes.push({ id: "event-node", type: "action", binding: "A" });
+  const original = stringifyJSON(s.project.value);
+  s.app.setEventScope("all");
+  s.highlightedEventIDs.value = new Set(["1", "2"]);
+  s.app.setEventScope("tree");
+  assert.deepEqual([...s.highlightedEventIDs.value], ["1"]);
+  assert.equal(stringifyJSON(s.project.value), original);
+  s.treeIDDraft.value = "NpcTroop";
+  s.app.applyTreeID();
+  assert.deepEqual([...s.highlightedEventIDs.value], ["1"]);
+  s.app.setEventScope("all");
+  s.treeID.value = "enemy";
+  assert.equal(s.eventScope.value, "tree");
+  assert.equal(s.highlightedEventIDs.value.size, 0);
 });
 
 // 未提交内容不能随切树带入另一棵树，返回原树也只能看到其已生效身份。

@@ -51,7 +51,7 @@ function session() {
     codeNameDraft: ref(""), codeNameError: ref(""),
     treeIdentity: shallowRef(new TreeIdentityIndex(project.value)), renamingTree: false,
     treeMenu: shallowRef(), catalogMenu: shallowRef(), catalogDialog: shallowRef(), canvasMenu: shallowRef(), editRevision: 0, occupiedIDs: new Set<string>(),
-    eventManagerOpen: ref(false), highlightedEventIDs: shallowRef(new Set<string>()),
+    eventManagerOpen: ref(false), highlightedEventIDs: shallowRef(new Set<string>()), eventScope: ref("tree"),
     eventIndex: computed(() => new EventRegistryIndex(project.value)), pruneHighlightedEvents,
     codeSnapshot: shallowRef(), scaffoldSnapshot: shallowRef(), semanticRevision: ref(0),
     generationRequests: new GenerationRequests(), diagnostics: ref([]),

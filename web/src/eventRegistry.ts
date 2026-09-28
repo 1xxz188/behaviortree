@@ -6,6 +6,17 @@ const maxEventID = (1n << 64n) - 1n;
 const exhaustedEventCursor = maxEventID + 1n;
 const codePattern = /^[A-Z][A-Za-z0-9_]{0,79}$/;
 const encoder = new TextEncoder();
+const emptyEventIDs: ReadonlySet<string> = new Set();
+
+// 事件面板只切换查看范围，不改变工程级事件声明。
+export type EventScope = "tree" | "all";
+
+// 在选定范围内按工程原顺序搜索，子树复用的事件仍只显示一次。
+export function filterEventRows(events: readonly EventDefinition[], treeEventIDs: ReadonlySet<string>, scope: EventScope, query: string): EventDefinition[] {
+  const needle = query.trim().toLocaleLowerCase();
+  return events.filter(item => (scope === "all" || treeEventIDs.has(item.id))
+    && (!needle || `${item.name}\nEvent${item.codeName}\n${item.id}`.toLocaleLowerCase().includes(needle)));
+}
 
 // 注释统一采用 LF，保留有意义的段落与缩进，并按 UTF-8 字节限制长度。
 export function normalizeEventDescription(value: unknown, path: string): string {
@@ -83,14 +94,19 @@ export function validateEventRegistry(events: unknown, catalog: unknown, enumDes
   }
 }
 
-// 引用索引将定义和各树节点分层保存，查询高亮只遍历引用当前事件的定义。
+// 引用索引在工程拓扑变化时建立当前画布与递归子树的事件视图。
 export class EventRegistryIndex {
   readonly eventByID = new Map<string, EventDefinition>(); // 稳定 ID 到事件声明。
   readonly definitionByID = new Map<string, Definition>(); // 定义 ID 到当前声明。
   readonly eventToDefs = new Map<string, Set<string>>(); // 事件到直接订阅的业务定义。
   readonly definitionToNodes = new Map<string, Map<string, Set<string>>>(); // 定义到各树画布节点。
+  private readonly directByTree = new Map<string, Map<string, Set<string>>>(); // 树到直接事件及画布节点。
+  private readonly referencesByTree = new Map<string, { nodeID: string; targetID: string }[]>(); // 树到直接子树引用。
+  private readonly reverseReferences = new Map<string, Set<string>>(); // 目标树到引用它的树，供按事件反向查询。
+  private readonly eventSources = new Map<string, Set<string>>(); // 事件到直接绑定它的树。
+  private readonly viewCache = new Map<string, { eventIDs: ReadonlySet<string>; nodes: Map<string, Set<string>> }>(); // 最近查看树的事件视图。
 
-  // 装载工程或事务快照时线性构建索引；视图操作不调用此方法。
+  // 装载工程或事务快照时只扫描一次节点；事件视图按需从树引用图计算。
   constructor(project: Project) {
     for (const event of project.events) {
       this.eventByID.set(event.id, event);
@@ -100,7 +116,58 @@ export class EventRegistryIndex {
       this.definitionByID.set(definition.id, definition);
       for (const id of definition.eventIds ?? []) this.eventToDefs.get(id)?.add(definition.id);
     }
-    for (const tree of project.trees) for (const node of tree.nodes) this.addNode(tree.id, node);
+    for (const tree of project.trees) {
+      const direct = new Map<string, Set<string>>();
+      const references: { nodeID: string; targetID: string }[] = [];
+      this.directByTree.set(tree.id, direct);
+      this.referencesByTree.set(tree.id, references);
+      for (const node of tree.nodes) {
+        this.addNode(tree.id, node);
+        if ((node.type === "action" || node.type === "condition") && node.binding) {
+          for (const id of this.definitionByID.get(node.binding)?.eventIds ?? []) {
+            if (!this.eventByID.has(id)) continue;
+            let nodes = direct.get(id);
+            if (!nodes) direct.set(id, nodes = new Set());
+            nodes.add(node.id);
+            let sources = this.eventSources.get(id);
+            if (!sources) this.eventSources.set(id, sources = new Set());
+            sources.add(tree.id);
+          }
+        } else if (node.type === "subtree" && node.tree) {
+          references.push({ nodeID: node.id, targetID: node.tree });
+        }
+      }
+    }
+    for (const [treeID, references] of this.referencesByTree) for (const reference of references) {
+      if (!this.directByTree.has(reference.targetID)) continue;
+      let parents = this.reverseReferences.get(reference.targetID);
+      if (!parents) this.reverseReferences.set(reference.targetID, parents = new Set());
+      parents.add(treeID);
+    }
+  }
+
+  // 首次查看树时只遍历可达引用图；visited 使深链和循环草稿安全终止。
+  private view(treeID: string): { eventIDs: ReadonlySet<string>; nodes: Map<string, Set<string>> } {
+    const cached = this.viewCache.get(treeID);
+    if (cached) {
+      this.viewCache.delete(treeID);
+      this.viewCache.set(treeID, cached);
+      return cached;
+    }
+    const events = new Set<string>();
+    const visited = new Set<string>();
+    const pending = [treeID];
+    while (pending.length) {
+      const current = pending.pop()!;
+      if (visited.has(current) || !this.directByTree.has(current)) continue;
+      visited.add(current);
+      for (const id of this.directByTree.get(current)!.keys()) events.add(id);
+      for (const reference of this.referencesByTree.get(current) ?? []) pending.push(reference.targetID);
+    }
+    const result = { eventIDs: events, nodes: new Map<string, Set<string>>() };
+    this.viewCache.set(treeID, result);
+    if (this.viewCache.size > 4) this.viewCache.delete(this.viewCache.keys().next().value!);
+    return result;
   }
 
   // 仅 action/condition 的直接 binding 才算事件节点引用。
@@ -113,13 +180,37 @@ export class EventRegistryIndex {
     nodes.add(node.id);
   }
 
-  // 返回目标树的去重匹配集合，保留不同树中相同节点 ID 的隔离。
+  // 返回当前画布的直接业务节点和通向目标事件的第一层子树节点。
   nodes(eventID: string, treeID: string): Set<string> {
-    const matched = new Set<string>();
-    for (const definitionID of this.eventToDefs.get(eventID) ?? []) {
-      for (const nodeID of this.definitionToNodes.get(definitionID)?.get(treeID) ?? []) matched.add(nodeID);
+    const view = this.view(treeID);
+    let matched = view.nodes.get(eventID);
+    if (!matched) {
+      matched = new Set(this.directByTree.get(treeID)?.get(eventID));
+      const targets = new Set((this.referencesByTree.get(treeID) ?? [])
+        .map(reference => reference.targetID).filter(id => this.directByTree.has(id)));
+      if (view.eventIDs.has(eventID) && targets.size) {
+        // 从直接事件来源反向寻找当前画布引用的目标树，避免逐个子树重复展开。
+        const visited = new Set<string>();
+        const pending = [...this.eventSources.get(eventID) ?? []];
+        while (pending.length && targets.size) {
+          const current = pending.pop()!;
+          if (visited.has(current)) continue;
+          visited.add(current);
+          targets.delete(current);
+          for (const parent of this.reverseReferences.get(current) ?? []) pending.push(parent);
+        }
+        for (const reference of this.referencesByTree.get(treeID) ?? []) {
+          if (visited.has(reference.targetID)) matched.add(reference.nodeID);
+        }
+      }
+      view.nodes.set(eventID, matched);
     }
-    return matched;
+    return new Set(matched);
+  }
+
+  // 已访问的树可直接返回事件集合；首次访问只遍历可达子树的引用图。
+  eventsInTree(treeID: string): ReadonlySet<string> {
+    return this.directByTree.has(treeID) ? this.view(treeID).eventIDs : emptyEventIDs;
   }
 
   // 同一事件在一个节点上只计一次，便于删除确认和画布计数。
