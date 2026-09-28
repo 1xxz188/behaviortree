@@ -495,10 +495,20 @@ pre {
   line-height: 16px;
 }
 .bt-node-top b {
-  margin-left: auto;
   font-size: 8px;
   letter-spacing: 1px;
   color: #72a991;
+  flex-shrink: 0;
+}
+/* 节点 ID 始终靠右，长 ID 截断后仍可通过悬停查看完整内容。 */
+.bt-node-top .node-id {
+  margin-left: auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+  font-family: Consolas, monospace;
 }
 .bt-node strong {
   font-size: 14px;

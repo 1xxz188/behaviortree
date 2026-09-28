@@ -1697,13 +1697,21 @@ function focusDiagnostic(d: Diagnostic) {
   const p = tree.value?.layout?.[selected.value];
   if (p) setCenter(p.x + 90, p.y + 35, { zoom: 1, duration: 250 });
 }
-// 处理保存、撤销和删除快捷键，不干扰文本原生撤销。
+// 处理保存、撤销和删除快捷键；保存前先应用有效的节点代码名草稿。
 function keydown(e: KeyboardEvent) {
   if (workspaceChanging.value) return;
   if (catalogDialog.value || eventManagerOpen.value || projectDialog.value || importFailure.value || treeMenu.value || catalogMenu.value || canvasMenu.value || !projectReady.value) return;
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
     e.preventDefault();
     (e.target as HTMLElement)?.blur();
+    if (codeNamePending.value) {
+      applyCodeName();
+      // 校验失败时保留草稿与错误提示，不能继续保存旧代码名。
+      if (codeNamePending.value) {
+        codeNameInput.value?.focus();
+        return;
+      }
+    }
     void save();
     return;
   }
@@ -2129,6 +2137,7 @@ onUnmounted(() => toolLifecycle.abort());
                 data.kind.label
               }}</small
               ><b v-if="data.root">ROOT</b>
+              <small class="node-id" :title="data.node.id">{{ data.node.id }}</small>
             </div>
             <strong>{{
               data.node.name || data.kind.label

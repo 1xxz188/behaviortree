@@ -22,10 +22,10 @@ const source = readFileSync(new URL("./App.vue", import.meta.url), "utf8")
 const script = ts.createSourceFile("App.ts", source, ts.ScriptTarget.Latest, true);
 const functions = new Set([
   "applyTreeID", "cancelTreeID", "cancelNodeID", "installProject", "resetResults", "rebuildIDs",
-  "checkpoint", "mutate", "invalidateCode", "restore", "saveCurrent", "currentProjectRequest",
+  "checkpoint", "mutate", "invalidateCode", "restore", "saveCurrent", "save", "keydown", "currentProjectRequest",
   "ensureIdentityDraftsApplied", "generate", "cancelCodeName", "applyNodeID", "applyCodeName",
 ]);
-const variables = new Set(["tree", "nodeIdentity", "nodeIndex", "node", "treeIDError", "identityDraftPending"]);
+const variables = new Set(["tree", "nodeIdentity", "nodeIndex", "node", "treeIDError", "identityDraftPending", "codeNamePending"]);
 const handlers = script.statements.filter(statement => {
   if (ts.isFunctionDeclaration(statement)) return functions.has(statement.name?.text ?? "");
   if (ts.isVariableStatement(statement)) return statement.declarationList.declarations.some(
@@ -47,11 +47,12 @@ function session() {
   const context = {
     generationSaved: ref({ ...project.value.generation }), // 加载与保存共用生成设置基准。
     guardPendingNavigation: () => true, // 身份草稿由本测试原有状态单独校验。
-    codeNamePending: { value: false }, // 本测试分开覆盖代码名和节点 ID 应用。
+    workspaceChanging: ref(false), projectDialog: shallowRef(), importFailure: shallowRef(),
     computed, effect, reactive, ref, shallowRef, watch, NodeIdentityIndex, TreeIdentityIndex,
     normalizeCodeNames, captureSnapshot, restoreSnapshot, semanticSignature, clone, parseJSON, stringifyJSON,
     project, treeID, treeIDDraft: ref(treeID.value), selected: ref(""), selectedEdge: ref(), nodeIDDraft: ref(""),
     codeNameDraft: ref(""), codeNameError: ref(""),
+    codeNameInput: ref({ focus: () => {} }), // 无效快捷键提交时定位代码名输入。
     treeIdentity: shallowRef(new TreeIdentityIndex(project.value)), renamingTree: false,
     treeMenu: shallowRef(), catalogMenu: shallowRef(), catalogDialog: shallowRef(), canvasMenu: shallowRef(), editRevision: 0, occupiedIDs: new Set<string>(),
     eventManagerOpen: ref(false), highlightedEventIDs: shallowRef(new Set<string>()), eventScope: ref("tree"),
@@ -70,7 +71,7 @@ function session() {
     setTimeout: (callback: () => void) => callback(), nextTick: async (callback: () => void) => callback(),
     request: async (path: string, body: unknown) => { requests.push({ path, body }); return { workspace: "E:/fixture", version: "fixture" }; },
   };
-  const app = runInNewContext(`${js}\n({ tree, installProject, applyTreeID, applyNodeID, applyCodeName, restore, saveCurrent, currentProjectRequest, generate });`, context) as {
+  const app = runInNewContext(`${js}\n({ tree, installProject, applyTreeID, applyNodeID, applyCodeName, restore, saveCurrent, keydown, currentProjectRequest, generate });`, context) as {
     tree: { readonly value: Project["trees"][number] }; // 当前树计算属性。
     installProject: (loaded: Project, name: string) => void; // 真实文件安装入口。
     applyTreeID: () => void; // 属性面板提交入口。
@@ -78,6 +79,7 @@ function session() {
     applyCodeName: () => void; // 节点代码名草稿提交入口。
     restore: (snapshot: EditorSnapshot) => void; // 撤销恢复入口。
     saveCurrent: () => Promise<boolean>; // 工程保存入口。
+    keydown: (event: unknown) => void; // 页面快捷键入口。
     currentProjectRequest: (path: string) => Promise<unknown>; // 生成请求快照入口。
     generate: (write?: boolean) => Promise<void>; // 顶部生成及预览按钮入口。
   };
@@ -154,3 +156,29 @@ for (const kind of ["treeID", "nodeID", "codeName"] as const) {
     else assert.equal(generated.trees[0]!.nodes[0]!.codeName, "NPCRoot");
   });
 }
+
+// Ctrl+S 先提交有效代码名再保存；非法草稿须显示错误并阻止旧代码名落盘。
+test("Ctrl+S 自动应用节点代码名后保存，非法代码名阻止保存", async () => {
+  const valid = session();
+  valid.selected.value = valid.app.tree.value.root;
+  valid.codeNameDraft.value = "NPCRoot";
+  let prevented = 0;
+  let blurred = 0;
+  valid.app.keydown({ key: "s", ctrlKey: true, preventDefault: () => { prevented++; }, target: { blur: () => { blurred++; } } });
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(prevented, 1);
+  assert.equal(blurred, 1);
+  assert.equal(valid.requests.length, 1);
+  assert.equal((valid.requests[0]!.body as { project: Project }).project.trees[0]!.nodes[0]!.codeName, "NPCRoot");
+  assert.equal(valid.codeNameDraft.value, "NPCRoot");
+  assert.equal(valid.dirty.value, false);
+
+  const invalid = session();
+  invalid.selected.value = invalid.app.tree.value.root;
+  invalid.codeNameDraft.value = "bad-name";
+  invalid.app.keydown({ key: "s", ctrlKey: true, preventDefault: () => {}, target: { blur: () => {} } });
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(invalid.requests.length, 0);
+  assert.match(invalid.codeNameError.value, /代码名/);
+  assert.equal(invalid.codeNameDraft.value, "bad-name");
+});
