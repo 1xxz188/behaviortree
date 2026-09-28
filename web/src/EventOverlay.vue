@@ -174,15 +174,11 @@ watch(() => props.events, () => tooltip.value?.hide());
   <section ref="overlay" class="event-overlay nodrag nopan nowheel" :class="{ collapsed, resized: !!panelSize && !collapsed }" :style="!collapsed && panelSize ? { width: `${panelSize.width}px`, height: `${panelSize.height}px` } : undefined" aria-label="画布事件" @pointerdown.stop @mousedown.stop @click.stop @dblclick.stop @contextmenu.stop.prevent @wheel.stop @keydown="overlayKeydown">
     <header class="event-overlay-header">
       <input v-if="!collapsed && searching" ref="searchInput" v-model="query" class="event-search-input" aria-label="搜索事件" placeholder="名称、代码名或 ID" />
-      <button v-if="!collapsed && searching && highlightedIDs.size" type="button" class="event-overlay-summary" aria-label="清除事件高亮" title="清除事件高亮" @click="emit('clearHighlight')">已选 {{ highlightedIDs.size }} 项 ×</button>
-      <span v-if="!collapsed && searching && highlightedIDs.size" class="event-overlay-hit-count">命中 {{ matchedNodeCount }} 个节点</span>
       <button v-if="collapsed || !searching" type="button" class="event-overlay-toggle" :aria-expanded="!collapsed" aria-controls="event-overlay-content" @click="collapsed = !collapsed">{{ collapsed ? '▸' : '▾' }} 事件（{{ events.length }}）</button>
       <button v-if="!collapsed && !searching" type="button" class="event-icon-button" aria-label="事件管理" title="事件管理" @click="emit('manage')"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 2h4l.7 2.2 1.8.8 2.1-1 2.8 2.8-1 2.1.8 1.8L23 11v4l-2.2.7-.8 1.8 1 2.1-2.8 2.8-2.1-1-1.8.8L14 24h-4l-.7-2.2-1.8-.8-2.1 1-2.8-2.8 1-2.1-.8-1.8L.6 15v-4l2.2-.7.8-1.8-1-2.1L5.4 3.6l2.1 1 1.8-.8z" transform="translate(.2 -1) scale(.93)" /><circle cx="12" cy="12" r="3.2" /></svg></button>
       <button v-if="!collapsed && !searching" ref="enumButton" type="button" class="event-icon-button" aria-label="事件功能注释" title="事件功能注释" aria-controls="event-comment-tooltip" :aria-expanded="enumCommentOpen" @click="toggleEnumComment($event.currentTarget as HTMLElement)"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 11v6M12 7h.01" /></svg></button>
       <button v-if="!collapsed && !searching" type="button" class="event-icon-button" :aria-expanded="searching" aria-label="搜索事件" title="搜索事件" @click="toggleSearch"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m15.5 15.5 5 5" /></svg></button>
 
-      <button v-if="!collapsed && !searching && highlightedIDs.size" type="button" class="event-overlay-summary" aria-label="清除事件高亮" title="清除事件高亮" @click="emit('clearHighlight')">已选 {{ highlightedIDs.size }} 项 ×</button>
-      <span v-if="!collapsed && !searching && highlightedIDs.size" class="event-overlay-hit-count">命中 {{ matchedNodeCount }} 个节点</span>
     </header>
     <div v-show="!collapsed" id="event-overlay-content">
       <p v-if="!rows.length" class="event-overlay-empty">{{ events.length ? '没有匹配的事件' : '尚无事件，可在事件管理中创建' }}</p>
@@ -193,7 +189,13 @@ watch(() => props.events, () => tooltip.value?.hide());
         </label>
       </div>
     </div>
-    <button v-if="!collapsed" type="button" class="event-overlay-resize-handle" aria-label="调整事件列表窗口大小" title="按住拖动调整窗口大小" @pointerdown.prevent.stop="startResize" @pointermove.stop="resize" @pointerup.stop="stopResize" @pointercancel.stop="stopResize" @lostpointercapture="stopResize"><span aria-hidden="true">◢</span></button>
+    <div v-if="!collapsed" class="event-overlay-footer">
+      <div v-if="highlightedIDs.size" class="event-overlay-selection">
+        <button type="button" class="event-overlay-summary" aria-label="清除事件高亮" title="清除事件高亮" @click="emit('clearHighlight')">已选 {{ highlightedIDs.size }} 项 ×</button>
+        <span class="event-overlay-hit-count">命中 {{ matchedNodeCount }} 个节点</span>
+      </div>
+      <button type="button" class="event-overlay-resize-handle" aria-label="调整事件列表窗口大小" title="按住拖动调整窗口大小" @pointerdown.prevent.stop="startResize" @pointermove.stop="resize" @pointerup.stop="stopResize" @pointercancel.stop="stopResize" @lostpointercapture="stopResize"><span aria-hidden="true">◢</span></button>
+    </div>
     <CommentTooltip ref="tooltip" :context="project" :disabled="!!blocked" :auto-open="autoOpenComments" :allow-empty-on-hover="true" :commit="commitComment" :get-title="getTitle" :get-comment="getComment" label="事件注释" tooltip-id="event-comment-tooltip" />
   </section>
 </template>
@@ -201,12 +203,12 @@ watch(() => props.events, () => tooltip.value?.hide());
 <style scoped>
 .event-overlay{position:absolute;top:60px;left:12px;z-index:6;box-sizing:border-box;width:min(340px,calc(100% - 24px));max-width:calc(100% - 24px);max-height:calc(100% - 72px);display:flex;flex-direction:column;color:#e2f1f3;background:#14232de8;border:1px solid #54717a;border-radius:10px;box-shadow:0 8px 30px #0006;font:12px/1.4 system-ui,sans-serif}.event-overlay.collapsed{width:max-content}
 .event-overlay.resized #event-overlay-content{display:flex;flex:1;flex-direction:column;min-height:0}
-.event-overlay-header{display:flex;align-items:center;gap:4px;padding:8px}
+.event-overlay-header{display:flex;align-items:center;flex-wrap:wrap;gap:4px;padding:8px}
 .event-overlay button,.event-search-input{font:inherit;color:inherit;border:1px solid #49656c;border-radius:5px;background:#182c35;cursor:pointer}
 .event-overlay button:hover{border-color:#8fe2cb}.event-overlay button:focus-visible,.event-overlay input:focus-visible{outline:2px solid #8fe2cb;outline-offset:1px}
 .event-overlay-toggle{flex:none;padding:5px 7px;font-weight:700;white-space:nowrap}.event-search-input{flex:1;min-width:0;padding:5px 6px;box-sizing:border-box}
 .event-icon-button{width:27px;height:27px;flex:none;display:grid;place-items:center;padding:5px}.event-icon-button svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
-.event-overlay-summary{flex:none;margin-left:auto;padding:5px;color:#a9dfc9;white-space:nowrap}.event-overlay-hit-count{flex:none;color:#a9dfc9;white-space:nowrap}
+.event-overlay-footer{display:flex;align-items:flex-end;flex:none;gap:4px;min-width:0}.event-overlay-selection{display:flex;align-items:center;flex:1;flex-wrap:wrap;gap:4px;min-width:0;padding:4px 0 4px 8px}.event-overlay-summary{flex:none;padding:5px;color:#a9dfc9;white-space:nowrap}.event-overlay-hit-count{flex:none;color:#a9dfc9;white-space:nowrap}
 .event-overlay-list{max-height:min(360px,45vh);overflow-y:auto;overflow-x:hidden;padding:4px 8px 8px}.event-overlay-row{display:flex;align-items:center;gap:7px;min-width:0;min-height:30px;margin:3px 0;padding:0 8px;border:1px solid #49656c;border-radius:6px;background:#182c35;cursor:pointer}.event-overlay-row:hover{border-color:#8fe2cb}.event-overlay-row.selected{border-color:#68dfc6;background:#245047}.event-overlay-row input[type="checkbox"]{width:15px;height:15px;flex:0 0 15px;box-sizing:border-box;padding:0;margin:0;accent-color:#69ddbb}.event-overlay-details{display:flex;align-items:center;gap:6px;flex:1;min-width:0;overflow:hidden;white-space:nowrap}.event-overlay-name{flex:0 1 auto;max-width:45%;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}.event-overlay-code{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#b5cbd1}.event-overlay-id{flex:none;color:#b5cbd1;white-space:nowrap}.event-overlay-empty{padding:2px 9px 9px;color:#b3c8cf}
 /* 事件列表与注释窗口共用细轨道、圆角滑块及深色配色。 */
 .event-overlay-list{scrollbar-width:thin;scrollbar-color:#52716f #13222b}
@@ -221,6 +223,6 @@ watch(() => props.events, () => tooltip.value?.hide());
   .event-overlay-list::-webkit-scrollbar-corner{background:transparent}
 }
 .event-overlay.resized .event-overlay-list{flex:1;max-height:none;min-height:0}
-.event-overlay-resize-handle{align-self:flex-end;flex:none;width:19px;height:19px;margin:0 2px 2px 0;padding:0;border:0;background:transparent;color:#8eaaa9;cursor:nwse-resize;touch-action:none;font-size:13px;line-height:19px}
+.event-overlay-resize-handle{flex:none;width:19px;height:19px;margin:0 2px 2px auto;padding:0;border:0;background:transparent;color:#8eaaa9;cursor:nwse-resize;touch-action:none;font-size:13px;line-height:19px}
 @media(max-width:300px){.event-overlay-header{gap:2px;padding:6px}.event-overlay-toggle{padding:4px}.event-icon-button{width:24px;height:25px}.event-overlay-row{padding:0 5px}}
 </style>
