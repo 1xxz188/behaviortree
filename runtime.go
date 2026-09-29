@@ -392,7 +392,7 @@ func (i *Instance[C]) cancelTimer(node int) {
 	cancel()
 }
 
-// Abort 先调用活跃动作的单节点 Abort，再清理对应子树并使回调令牌失效。
+// Abort 沿已访问子树先取消节点定时器，再调用业务 Abort，最后清理状态并使回调令牌失效。
 func (f *Frame[C]) Abort(node int, reason string) {
 	f.abortActions(node, reason)
 	f.Reset(node)
@@ -434,12 +434,15 @@ func (f *Frame[C]) OnlyDirtyChild(node, child int) bool {
 // IsDirty 只读查询节点是否需要重评，供生成器确认当前优先级守卫仍可使用缓存。
 func (f *Frame[C]) IsDirty(node int) bool { return f.State(node).dirty }
 
-// abortActions 沿已访问子树取消动作；叶动作拥有自己的清理逻辑。
+// abortActions 在进入每个已访问节点时先停止其定时器，再递归并执行业务清理。
 func (f *Frame[C]) abortActions(node int, reason string) {
 	i := f.owner
 	s := i.state(node)
 	if !s.linked {
 		return
+	}
+	if s.cancel != nil {
+		i.cancelTimer(node)
 	}
 	for child := s.child; child >= 0; {
 		next := i.state(child).next

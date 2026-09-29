@@ -121,7 +121,7 @@ export const kinds: Record<
     label: "动作",
     icon: "▶",
     color: "blue",
-    help: "调用 Go 动作函数，支持开始、恢复和取消。",
+    help: "Start/Resume 决定结果；Abort 同步清理且忽略返回值。",
   },
   wait: {
     label: "等待",

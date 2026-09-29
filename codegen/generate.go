@@ -305,11 +305,11 @@ func Generate(project model.Project) (Result, error) {
 		g.line("case %s:return %s(f)", g.slot(i), g.nodes[i].function)
 	}
 	g.line("};return bt.Failure }")
-	g.line("// btAbort 仅清理当前动作；运行时负责活跃子树取消和状态失效。")
+	g.line("// btAbort 仅同步清理当前动作并忽略业务 Status；运行时负责定时器、子树和状态。")
 	g.line("func btAbort(f *bt.Frame[%s], node int) {switch node {", g.context)
 	for i, n := range g.nodes {
 		if n.node.Type == model.NodeAction {
-			g.line("case %s: %s(f,%s,bt.Abort,%s)", g.slot(i), g.defs[n.node.Binding].GoName, g.slot(i), g.params(n.node))
+			g.line("case %s: _=%s(f,%s,bt.Abort,%s)", g.slot(i), g.defs[n.node.Binding].GoName, g.slot(i), g.params(n.node))
 		}
 	}
 	g.line("}}")

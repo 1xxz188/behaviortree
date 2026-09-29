@@ -60,7 +60,7 @@ go run ./cmd/bttool serve --workspace ./.workspace
 - **生成到目录**：先保存当前工程，再校验并写入源码及映射，显示实际路径和版本；首次保存会要求选择文件名。取消保存、保存失败或保存期间继续编辑都会停止生成；已保存且没有修改时跳过重复保存。与预览使用相同生成逻辑。
 - **查看上次生成**：读取当前目标包的实际生成产物。重新打开已保存工程时也会自动读取，并核对是否对应当前工程；多个工程共用包名时，展示该目录最后一次生成的版本。
 - **生成代码面板**：选中节点定位并高亮对应函数；点击有链接的代码行号返回画布。同一子树节点的多个展开位置分页展示。长文件仅渲染可见行。
-- **业务骨架**：从目录和生成配置创建动作 Start/Resume/Abort、条件函数及 TODO。支持复制；“下载 actions.go”默认保存到当前工作目录的 `generation.packagePath` 下，同名文件需二次确认才会覆盖，取消则保留原文件。参数结构体来自 `glue.gen.go`。骨架在未完成时返回 Failure/false，需要手写实现后共同编译。
+- **业务骨架**：从目录和生成配置创建动作 Start/Resume/Abort、条件函数及 TODO。支持复制；“下载 actions.go”默认保存到当前工作目录的 `generation.packagePath` 下，同名文件需二次确认才会覆盖，取消则保留原文件。参数结构体来自 `glue.gen.go`。未完成骨架的 Start/Resume 返回 Failure，条件返回 false；Abort 的返回值仅为统一函数形状的占位并会被忽略。
 
 修改行为、参数、行为树 ID 或生成配置后，已有源码会标记过期并停用旧映射定位；仅修改行为树展示名、移动节点、自动布局及其撤销不会使源码过期。树展示名不参与运行时版本摘要；其他名称字段保持原有版本规则。撤销到原有内容时恢复有效标记。编辑期间的旧请求结果不能覆盖新工程，没有定时轮询或逐次输入自动生成。
 
@@ -118,7 +118,7 @@ go run ./examples/host
 
 可从 [Go 元数据声明](examples/definition/project.go)、[手写动作](examples/behavior/actions.go)、[公共生成代码](examples/behavior/glue.gen.go)、[树生成文件目录](examples/behavior) 和 [宿主示例](examples/host/main.go) 开始接入。`scripts/generate` 重建默认示例，不能用于保存你对示例 JSON 的修改；编辑后的工程应交给 `bttool generate`。
 
-动作函数的形状为 `func(*bt.Frame[Context], node int, phase bt.Phase, params ActionParams) bt.Status`；条件为 `func(*bt.Frame[Context], node int, params ConditionParams) bool`。参数结构体由 Go 元数据生成。`Start` 启动操作并快速返回 `Running`；`Resume` 用 `Frame.Consume(node)` 读取完成结果；`Abort` 撤销仍在进行的操作。动作需要主动捕获 `Frame.Token(node)`，外部完成事件携带该令牌回到宿主队列。
+动作函数的形状为 `func(*bt.Frame[Context], node int, phase bt.Phase, params ActionParams) bt.Status`；条件为 `func(*bt.Frame[Context], node int, params ConditionParams) bool`。参数结构体由 Go 元数据生成。`Start` 启动操作并快速返回 `Running`；`Resume` 用 `Frame.Consume(node)` 读取完成结果，二者返回的 `Status` 参与行为树判定。`Abort` 仅同步撤销仍在进行的操作；运行时会先取消相关框架定时器，再调用业务 `Abort`，最后重置节点状态。`Abort` 阶段返回的 `Status` 被忽略，不得启动新的异步工作或定时器。动作需要主动捕获 `Frame.Token(node)`，外部完成事件携带该令牌回到宿主队列。
 
 GoLand 直接打开本仓库根目录，使用 Go 1.26.7 工具链即可，无需额外构建标签。节点的 `id` 用于稳定引用，`name` 用于显示，`codeName` 用于可读代码，例如 `nodePatrolWaitMove`、`btNodePatrolWaitMove`。自动生成的常量和函数采用 Go MixedCaps 风格，名称分隔下划线转换为后续片段首字母大写，保留显式的 `NPC`、`ID` 等缩写；如树 `NPCTroop` 的节点 `NPCRoot` 生成 `nodeNPCTroopNPCRoot`。代码名为 1–40 个 ASCII 字符，字母开头，后续允许字母、数字和下划线，不能使用 Go 关键字，且在树内唯一；生成时转换不会改写持久 ID 或代码名。右侧“节点代码名”可单独应用修改；改显示名称不会改写代码名或 ID。
 
@@ -160,7 +160,7 @@ import bt "github.com/1xxz188/behaviortree"
 | `Instance.Notify(event bt.EventID)` | 在所属队列通知已声明的数值事件；使用生成的 `Event<CodeName>` 常量 |
 | `Instance.Complete(token, result)` | 在所属队列接收完成结果，拒绝重复、迟到、取消后和跨实例令牌 |
 | `Instance.Tick()` | 仅推进脏路径，通常由宿主就绪队列调用；无需周期遍历 AI |
-| `Instance.Abort(reason)` / `Close()` | 在所属队列取消当前轮，或关闭实例 |
+| `Instance.Abort(reason)` / `Close()` | 在所属队列先取消框架定时器，再同步执行业务 Abort 并重置当前轮，或关闭实例 |
 | `Registry.Publish(program, policy)` | 管理入口发布完整版本；兼容校验失败保留当前有效版本 |
 | `Registry.Stats()` / `Loader.LoadedCount()` | 分别查看各版本 Running 实例数和不可卸载插件数量 |
 
@@ -190,7 +190,7 @@ JSON 与日志仍使用 `"sequence"`、`"action"`、`"int64"` 等可读名称，
 | --- | --- |
 | Sequence / Selector | Running 时保留当前子节点；整体结束后下一次进入重新开始 |
 | priority | 前面的候选为 Sequence，首个子节点必须是 Condition；最后一个候选可为无条件 fallback。依赖变化时重评，高优先级分支进入前先 Abort 旧分支 |
-| Action / Condition | 动作支持 Start/Resume/Abort 和 Running；条件同步返回 bool |
+| Action / Condition | 动作支持 Start/Resume/Abort 和 Running；Abort 仅同步清理且忽略返回 Status；条件同步返回 bool |
 | Parallel | 同线程顺序启动，全部成功才成功，任一失败即失败并取消剩余 Running 分支；恢复只访问脏分支 |
 | Repeat / Retry | 有限次数，包含首次尝试；Running 不增加次数；Repeat 遇失败停止，Retry 遇成功停止 |
 | Wait / Timeout | 宿主一次性通知；Timeout 到期取消子节点并失败 |

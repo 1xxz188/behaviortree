@@ -82,12 +82,12 @@ func btStep(f *bt.Frame[*ctxpkg.Context], node int) bt.Status {
 	return bt.Failure
 }
 
-// btAbort 仅清理当前动作；运行时负责活跃子树取消和状态失效。
+// btAbort 仅同步清理当前动作并忽略业务 Status；运行时负责定时器、子树和状态。
 func btAbort(f *bt.Frame[*ctxpkg.Context], node int) {
 	switch node {
 	case nodeMainGate:
-		Gate(f, nodeMainGate, bt.Abort, GateParams{})
+		_ = Gate(f, nodeMainGate, bt.Abort, GateParams{})
 	case nodeMainRecord:
-		Record(f, nodeMainRecord, bt.Abort, RecordParams{Message: f.Board.String(0)})
+		_ = Record(f, nodeMainRecord, bt.Abort, RecordParams{Message: f.Board.String(0)})
 	}
 }

@@ -46,7 +46,7 @@ func Scaffold(project model.Project) ([]byte, error) {
 			fmt.Fprintf(&out, "// %s 判断业务条件；未实现时保守返回 false。\nfunc %s(f *bt.Frame[%s], node int, params %sParams) bool {\n// TODO：读取上下文和参数完成条件判断。\nreturn false\n}\n", definition.GoName, definition.GoName, context, definition.GoName)
 			continue
 		}
-		fmt.Fprintf(&out, "// %s 处理动作生命周期；未实现时保守返回 Failure。\nfunc %s(f *bt.Frame[%s], node int, phase bt.Phase, params %sParams) bt.Status {\nswitch phase {\ncase bt.Start:\n// TODO：启动业务动作；异步动作应保存 f.Token(node)，等待宿主完成通知。\nreturn bt.Failure\ncase bt.Resume:\n// TODO：消费宿主完成结果并返回状态，避免轮询。\nreturn bt.Failure\ncase bt.Abort:\n// TODO：取消外部任务并释放动作资源。\nreturn bt.Failure\n}\nreturn bt.Failure\n}\n", definition.GoName, definition.GoName, context, definition.GoName)
+		fmt.Fprintf(&out, "// %s 处理动作生命周期；未实现时保守返回 Failure。\nfunc %s(f *bt.Frame[%s], node int, phase bt.Phase, params %sParams) bt.Status {\nswitch phase {\ncase bt.Start:\n// TODO：启动业务动作；异步动作应保存 f.Token(node)，等待宿主完成通知。\nreturn bt.Failure\ncase bt.Resume:\n// TODO：消费宿主完成结果并返回状态，避免轮询。\nreturn bt.Failure\ncase bt.Abort:\n// TODO：同步取消外部任务并释放资源；不得启动新的异步工作，返回的 Status 会被忽略。\nreturn bt.Failure\n}\nreturn bt.Failure\n}\n", definition.GoName, definition.GoName, context, definition.GoName)
 	}
 	return format.Source(out.Bytes())
 }

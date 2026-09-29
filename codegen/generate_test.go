@@ -155,6 +155,10 @@ func TestGeneratedRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Abort 分派必须显式丢弃业务 Status，避免误解为清理结果。
+	if !strings.Contains(string(allGeneratedSource(result)), "_ = WriteEnum(") {
+		t.Fatal("Abort 分派未显式忽略业务 Status")
+	}
 	// 结构检查补足 Steps 计数：缓存探测不增加 Steps，快速路径也不能逐个调用 btNode。
 	for _, location := range result.SourceMap {
 		if location.TreeID == "priority1000" && location.NodeID == "root" {

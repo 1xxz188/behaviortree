@@ -243,6 +243,87 @@ func TestTimerCancellationAndLateDelivery(t *testing.T) {
 	}
 }
 
+// TestAbortCancelsTimerBeforeBusinessCleanup 验证 Abort 先取消父节点定时器，再在状态完整时执行子动作清理，最后重置子树。
+func TestAbortCancelsTimerBeforeBusinessCleanup(t *testing.T) {
+	q := &testQueue{}
+	p := &Program[int]{Version: "abort-order", Roots: map[string]int{"main": 0}, Nodes: []Node{{"timeout", "main", -1, 2}, {"action", "main", 0, 2}}}
+	var setupErr error
+	p.Step = func(f *Frame[int], _ int) Status {
+		f.Enter(0)
+		setupErr = f.After(0, time.Second)
+		f.Enter(1)
+		s := f.State(1)
+		s.Started = true
+		s.Data = "cleanup state"
+		f.Exit(1, Running)
+		return f.Exit(0, Running)
+	}
+	aborts := 0
+	timerCanceled, stateAvailable := false, false
+	p.Abort = func(f *Frame[int], node int) {
+		aborts++
+		timerCanceled = len(q.timers) == 1 && q.timers[0].canceled
+		s := f.State(node)
+		stateAvailable = s.Started && s.Status == Running && s.Data == "cleanup state"
+	}
+	i, err := NewInstance(p, "abort-order", "main", 0, q.opts())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if i.Start() != Running || setupErr != nil {
+		t.Fatalf("定时动作启动失败: status=%s err=%v", i.Status(), setupErr)
+	}
+	i.Abort("test order")
+	if aborts != 1 || !timerCanceled || !stateAvailable {
+		t.Fatalf("Abort 顺序或状态不符: aborts=%d timerCanceled=%v stateAvailable=%v", aborts, timerCanceled, stateAvailable)
+	}
+	if i.Status() != Invalid || i.state(0).linked || i.state(1).linked || i.state(1).Data != nil {
+		t.Fatal("Abort 完成后未重置子树状态")
+	}
+}
+
+// TestTimerCancelPanicStillRunsBusinessAbort 验证定时器取消 panic 不会跳过业务 Abort 或最终状态重置。
+func TestTimerCancelPanicStillRunsBusinessAbort(t *testing.T) {
+	p := &Program[int]{Version: "cancel-panic", Roots: map[string]int{"main": 0}, Nodes: []Node{{"action", "main", -1, 1}}}
+	p.Step = func(f *Frame[int], node int) Status {
+		f.Enter(node)
+		s := f.State(node)
+		s.Started = true
+		s.Data = "cleanup state"
+		if err := f.After(node, time.Second); err != nil {
+			return f.Exit(node, Failure)
+		}
+		return f.Exit(node, Running)
+	}
+	aborts, stateAvailable, cancelErrorVisible := 0, false, false
+	p.Abort = func(f *Frame[int], node int) {
+		aborts++
+		s := f.State(node)
+		stateAvailable = s.Started && s.Status == Running && s.Data == "cleanup state"
+		cancelErrorVisible = f.owner.err != nil
+	}
+	q := &testQueue{}
+	opts := q.opts()
+	opts.Logger = func(LogRecord) {}
+	opts.After = func(time.Duration, func()) CancelFunc {
+		return func() { panic("cancel failed") }
+	}
+	i, err := NewInstance(p, "cancel-panic", "main", 0, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if i.Start() != Running {
+		t.Fatal("定时动作未进入 Running")
+	}
+	i.Abort("test cancel panic")
+	if aborts != 1 || !stateAvailable || !cancelErrorVisible || i.Status() != Invalid || i.state(0).linked {
+		t.Fatalf("取消 panic 阻断了 Abort: aborts=%d stateAvailable=%v cancelErrorVisible=%v status=%s", aborts, stateAvailable, cancelErrorVisible, i.Status())
+	}
+	if i.Error() == nil || i.Error().Error() != `node "action" timer cancel panic: cancel failed` {
+		t.Fatalf("定时器取消 panic 未记录: %v", i.Error())
+	}
+}
+
 // TestGuardBeforeParentTouch 验证优先级节点先求值守卫不会破坏已访问子树的状态链接。
 func TestGuardBeforeParentTouch(t *testing.T) {
 	q, context := &testQueue{}, &probe{}

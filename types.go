@@ -34,7 +34,7 @@ type Phase uint8
 const (
 	Start  Phase = iota // Start 表示首次执行动作。
 	Resume              // Resume 表示收到通知后继续动作。
-	Abort               // Abort 表示取消仍在运行的动作。
+	Abort               // Abort 表示同步取消仍在运行的动作；不得启动新异步工作，返回的 Status 被忽略。
 )
 
 // Node 保存生成器产生的先序节点索引；End 是子树范围的排他上界。
@@ -71,7 +71,7 @@ type Program[C any] struct {
 	FieldDependencies    map[string][]int            // FieldDependencies 以黑板字段稳定 ID 为键。
 	EventDependencies    map[EventID][]int           // EventDependencies 以已声明事件 ID 为键。
 	Step                 func(*Frame[C], int) Status // Step 分发到生成的原生 Go 节点函数。
-	Abort                func(*Frame[C], int)        // Abort 只取消给定动作，不递归取消子节点。
+	Abort                func(*Frame[C], int)        // Abort 在框架定时器停止后同步清理给定动作，不递归取消子节点。
 }
 
 // NodeState 保存一个调用位置的独立执行状态。
