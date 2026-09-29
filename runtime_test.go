@@ -199,6 +199,7 @@ func TestBudgetProgressAtDepth(t *testing.T) {
 func TestTimerCancellationAndLateDelivery(t *testing.T) {
 	q := &testQueue{}
 	p := &Program[int]{Version: "v1", Roots: map[string]int{"main": 0}, Nodes: []Node{{"wait", "main", -1, 1}}}
+	var afterErr error
 	p.Step = func(f *Frame[int], n int) Status {
 		if cached, execute := f.Enter(n); !execute {
 			return cached
@@ -206,7 +207,7 @@ func TestTimerCancellationAndLateDelivery(t *testing.T) {
 		s := f.State(n)
 		if !s.Started {
 			s.Started = true
-			f.After(n, time.Second)
+			afterErr = f.After(n, time.Second)
 			return f.Exit(n, Running)
 		}
 		if s.Ready {
@@ -216,6 +217,10 @@ func TestTimerCancellationAndLateDelivery(t *testing.T) {
 	}
 	i, _ := NewInstance(p, "wait", "main", 0, q.opts())
 	i.Start()
+	// 同一节点已有活动定时器时，重复安排必须返回错误且不能创建第二个定时器。
+	if err := i.frame.After(0, time.Second); err == nil || len(q.timers) != 1 {
+		t.Fatalf("After 接受了重复定时器: err=%v timers=%d", err, len(q.timers))
+	}
 	q.timers[0].callback()
 	i.Abort("timer canceled after delivery")
 	q.drain(t)
@@ -231,6 +236,10 @@ func TestTimerCancellationAndLateDelivery(t *testing.T) {
 	broken, _ := NewInstance(p, "missing timer", "main", 0, Options{Post: q.post})
 	if broken.Start() != Failure || broken.Error() == nil {
 		t.Fatal("missing host timer must fail explicitly")
+	}
+	// 缺失宿主定时器时，After 需向调用方返回可检查的接入错误。
+	if afterErr == nil || afterErr.Error() != `node "wait" requires Options.After` {
+		t.Fatalf("After 未返回定时器接入错误: %v", afterErr)
 	}
 }
 

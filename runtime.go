@@ -328,20 +328,22 @@ func (f *Frame[C]) Consume(node int) Status {
 	return result
 }
 
-// After 为节点安排一次性宿主定时器，回调经 Post 后校验令牌。
-func (f *Frame[C]) After(node int, duration time.Duration) {
+// After 为节点安排一次性宿主定时器，回调经 Post 后校验令牌，并返回宿主接入错误。
+func (f *Frame[C]) After(node int, duration time.Duration) error {
 	i := f.owner
 	s := i.state(node)
 	if s.cancel != nil {
-		return
+		return fmt.Errorf("node %q already has an active timer", i.program.program.Nodes[node].ID)
 	}
 	if i.options.After == nil {
-		i.err = fmt.Errorf("node %q requires Options.After", i.program.program.Nodes[node].ID)
-		i.log(LogError, node, s.Status, Failure, i.err.Error())
-		return
+		err := fmt.Errorf("node %q requires Options.After", i.program.program.Nodes[node].ID)
+		i.err = err
+		i.log(LogError, node, s.Status, Failure, err.Error())
+		return err
 	}
 	token := f.Token(node)
 	s.cancel = i.options.After(duration, func() { i.options.Post(func() { i.Complete(token, Success) }) })
+	return nil
 }
 
 // Reset 只清理已实际访问的子树状态，未访问的静态节点不参与遍历。
