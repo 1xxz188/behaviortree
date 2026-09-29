@@ -404,11 +404,20 @@ pre {
   font-size: 11px;
   margin-left: 14px;
 }
+.canvas-toolbar > div:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .canvas-actions {
   display: flex;
   gap: 5px;
+  min-width: 0;
+  overflow-x: auto;
 }
 .canvas-actions button {
+  flex: 0 0 auto;
   padding: 4px 7px;
   font-size: 12px;
   background: #1b2b36;

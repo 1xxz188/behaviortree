@@ -6,6 +6,8 @@ const props = defineProps<{
   x: number; // 右键操作的视口横坐标。
   y: number; // 右键操作的视口纵坐标。
   node?: BTNode; // 有目标节点时展示节点操作，否则展示画布操作。
+  nodes?: readonly BTNode[]; // 由框选或全选捕获的批量删除目标。
+  deletesRoot?: boolean; // 删除批次包含根节点时提示后续设置根节点。
   edge?: {
     source: BTNode; // 连线的原父节点，用于确认文案和目标身份。
     target: BTNode; // 连线的原子节点，用于确认文案和目标身份。
@@ -18,6 +20,7 @@ const emit = defineEmits<{
   close: []; // 关闭整个菜单或取消确认。
   duplicate: []; // 复制当前右键目标节点。
   delete: []; // 仅在二次确认后提交节点删除。
+  deleteNodes: []; // 仅在二次确认后提交整组选中节点删除。
   deleteEdge: []; // 仅在二次确认后提交连线删除。
   comment: []; // 请求父组件打开节点旁的统一注释浮层。
   save: []; // 保存当前工程。
@@ -74,7 +77,7 @@ function closeExport() {
 
 // 切换到删除确认，默认选中确认按钮。
 async function openDelete() {
-  if (props.disabled || (!props.node && !props.edge)) return;
+  if (props.disabled || (!props.node && !props.nodes?.length && !props.edge)) return;
   mode.value = "delete";
   exportOpen.value = false;
   await nextTick();
@@ -94,6 +97,7 @@ function onDialogKeydown(event: KeyboardEvent) {
 function confirmDelete() {
   if (props.disabled) return;
   if (props.edge) emit("deleteEdge");
+  else if (props.nodes?.length) emit("deleteNodes");
   else if (props.node) emit("delete");
 }
 
@@ -194,14 +198,17 @@ onBeforeUnmount(() => {
     </div>
     <dialog v-if="mode === 'delete'" ref="dialog" class="project-dialog canvas-operation-dialog"
       aria-labelledby="canvas-delete-title" @keydown.stop="onDialogKeydown" @cancel.prevent="emit('close')">
-      <h2 id="canvas-delete-title">{{ edge ? '删除连线' : '删除节点' }}</h2>
+      <h2 id="canvas-delete-title">{{ edge ? '删除连线' : nodes?.length ? '批量删除节点' : '删除节点' }}</h2>
       <p v-if="edge">确定删除“{{ edge.source.name || edge.source.id }}”到“{{ edge.target.name || edge.target.id }}”的连线吗？</p>
+      <p v-else-if="nodes?.length">确定删除选中的 {{ nodes.length }} 个节点吗？</p>
       <p v-else>确定删除节点“{{ node?.name || node?.id }}”吗？</p>
       <p class="muted" v-if="edge">两端节点保留，此操作可撤销。</p>
+      <p class="muted" v-else-if="nodes?.length">未选中的节点保留，与删除节点相连的连线会断开。此操作可撤销。</p>
       <p class="muted" v-else>节点 ID：<span class="mono">{{ node?.id }}</span>。此操作可撤销。</p>
+      <p v-if="deletesRoot && !edge" class="muted">选区包含根节点，删除后需要重新设置根节点。</p>
       <div class="dialog-actions">
         <button ref="cancelButton" type="button" @click="emit('close')">取消</button>
-        <button ref="confirmButton" type="button" autofocus class="canvas-delete-action" :disabled="disabled || (!node && !edge)" @click="confirmDelete">确认删除</button>
+        <button ref="confirmButton" type="button" autofocus class="canvas-delete-action" :disabled="disabled || (!node && !nodes?.length && !edge)" @click="confirmDelete">确认删除</button>
       </div>
     </dialog>
   </Teleport>

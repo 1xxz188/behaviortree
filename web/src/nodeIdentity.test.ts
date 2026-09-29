@@ -79,6 +79,64 @@ test("拓扑修改后改号仍精确定位引用，删除清理相关边", () =>
   assert.equal(index.rename("pause", "last"), 0);
 });
 
+// 批量删除只清理被选节点及其重复入边，保留未选父节点的顺序、布局和可继续编辑的索引。
+test("批量删除一次清理重复入边与布局并保留未选节点", () => {
+  const tree = makeTree();
+  const index = new NodeIdentityIndex(tree);
+  const root = tree.nodes[0]!;
+  const attack = tree.nodes[1]!;
+  const pause = tree.nodes[2]!;
+  index.removeNodes([attack, pause]);
+  assert.deepEqual(tree.nodes, [root]);
+  assert.deepEqual(root.children, []);
+  assert.equal(tree.root, "root");
+  assert.deepEqual(tree.layout!.root, { x: 1, y: 2 });
+  assert.equal(Object.hasOwn(tree.layout!, "attack"), false);
+  assert.equal(index.byID.has("attack"), false);
+  assert.equal(index.byID.has("pause"), false);
+  const replacement = { id: "attack", type: "wait" as const };
+  tree.nodes.push(replacement);
+  index.addNode(replacement);
+  assert.equal(index.rename("attack", "fresh"), 0);
+  assert.deepEqual(root.children, []);
+});
+
+// 存活父节点原有的未选兄弟、重复引用和悬挂 ID 保持原顺序，只删除命中的子节点 ID。
+test("批量删除保留存活父节点的兄弟和悬挂引用顺序", () => {
+  const tree = makeTree();
+  const index = new NodeIdentityIndex(tree);
+  const root = tree.nodes[0]!;
+  const attack = tree.nodes[1]!;
+  const pause = tree.nodes[2]!;
+  index.setChildren(root, ["pause", "attack", "future", "attack", "pause"]);
+  index.removeNodes([attack]);
+  assert.deepEqual(tree.nodes, [root, pause]);
+  assert.deepEqual(root.children, ["pause", "future", "pause"]);
+  assert.equal(index.byID.get("pause"), pause);
+  assert.equal(index.rename("pause", "break"), 2);
+  assert.deepEqual(root.children, ["break", "future", "break"]);
+  const replacement = { id: "attack", type: "wait" as const };
+  tree.nodes.push(replacement);
+  index.addNode(replacement);
+  assert.equal(index.rename("attack", "fresh"), 0);
+  assert.deepEqual(root.children, ["break", "future", "break"]);
+});
+
+// 同批移除父节点和根节点时，未选节点保留，根与已删除父节点的出边索引同时失效。
+test("批量删除包含根节点时保留未选草稿节点", () => {
+  const tree = makeTree();
+  const index = new NodeIdentityIndex(tree);
+  const pause = tree.nodes[2]!;
+  index.removeNodes([tree.nodes[0]!, tree.nodes[1]!]);
+  assert.deepEqual(tree.nodes, [pause]);
+  assert.equal(tree.root, "");
+  assert.equal(Object.hasOwn(tree.layout!, "root"), false);
+  assert.equal(Object.hasOwn(tree.layout!, "attack"), false);
+  assert.equal(index.byID.get("pause"), pause);
+  assert.equal(index.rename("pause", "remaining"), 0);
+  assert.equal(tree.nodes[0]!.id, "remaining");
+});
+
 // 新 ID 的悬挂引用与旧入边合并，删除或连续改号不会留下失效桶。
 test("改号合并悬挂引用且支持自引用草稿", () => {
   const tree = makeTree();

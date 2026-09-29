@@ -21,7 +21,7 @@ const source = readFileSync(new URL("./App.vue", import.meta.url), "utf8")
   .split('<script setup lang="ts">')[1]!.split("</script>")[0]!;
 const script = ts.createSourceFile("App.ts", source, ts.ScriptTarget.Latest, true);
 const names = new Set([
-  "moveNode", "deleteSelected", "confirmDeleteCanvasNode", "confirmDeleteCanvasEdge", "openCanvasNodeMenu", "openCanvasEdgeMenu", "openCanvasPaneMenu",
+  "moveNode", "deleteSelected", "confirmDeleteCanvasNode", "confirmDeleteCanvasNodes", "confirmDeleteCanvasEdge", "openCanvasNodeMenu", "openCanvasEdgeMenu", "openCanvasPaneMenu",
   "syncCanvasSelection", "finishCanvasSelection", "selectCanvasNode", "keydown",
   "selectCanvasEdge",
   "checkpoint", "mutate", "restore", "undo", "redo", "rebuildIDs",
@@ -45,6 +45,9 @@ interface CanvasNode {
 interface CanvasMenu {
   tree: Tree; // 打开菜单时的实际树。
   node?: BTNode; // 打开菜单时的实际节点。
+  nodes?: BTNode[]; // 打开批量删除确认时捕获的实际节点对象。
+  deletesRoot?: boolean; // 确认提示标记选区包含根节点。
+  instance?: number; // 每次批量确认使用独立组件键。
   edge?: { source: BTNode; target: BTNode }; // 打开菜单时捕获的连线两端节点。
   anchor?: CanvasElement; // 右键节点对应的真实 DOM 锚点。
   x: number; // 菜单横坐标。
@@ -133,10 +136,11 @@ function session() {
       y: (point.y - bounds.top - viewport.y) / viewport.zoom,
     }),
   };
-  const app = runInNewContext(`let canvasPointer; let pendingPastedSelection;\n${js}\n({ ${[...names].join(", ")} });`, context) as {
+  const app = runInNewContext(`let canvasPointer; let pendingPastedSelection; let canvasMenuInstance = 0;\n${js}\n({ ${[...names].join(", ")} });`, context) as {
     moveNode: (event: { nodes: CanvasNode[] }) => void; // 一次拖动只产生一个历史边界。
     deleteSelected: () => void; // 只请求确认，不直接删除。
     confirmDeleteCanvasNode: () => void; // 确认后校验捕获目标并删除。
+    confirmDeleteCanvasNodes: () => void; // 确认后一次删除捕获的节点组。
     confirmDeleteCanvasEdge: () => void; // 确认后只删除捕获的连线。
     openCanvasNodeMenu: (event: { event: unknown; node: { id: string } }) => void; // 节点右键入口。
     openCanvasEdgeMenu: (event: { event: { clientX: number; clientY: number; preventDefault: () => void; stopPropagation: () => void }; edge: { source: string; target: string } }) => void; // 连线右键入口。
@@ -550,6 +554,7 @@ test("批量移动兼容特殊节点 ID 并隔离画布位置对象", () => {
 // 删除按钮只打开二次确认，取消对应关闭菜单，不产生任何工程或历史修改。
 test("请求删除和取消确认均不修改工程", () => {
   const s = session();
+  s.flowNodes.value[1]!.selected = false;
   const before = stringifyJSON(s.project.value);
   s.app.deleteSelected();
   assert.equal(s.canvasMenu.value?.initialMode, "delete");
@@ -564,6 +569,7 @@ test("请求删除和取消确认均不修改工程", () => {
 // 确认删除捕获的节点而非后来选中的节点，并在同一历史边界维护相关连线。
 test("确认删除固定目标、断开入边且撤销恢复节点及连线", () => {
   const s = session();
+  s.flowNodes.value[0]!.selected = false;
   s.selected.value = "2";
   s.app.deleteSelected();
   s.selected.value = s.tree.value.root;
@@ -583,6 +589,7 @@ test("确认删除固定目标、断开入边且撤销恢复节点及连线", ()
 test("删除确认拒绝过期对象、过期树和切换中的工作目录", () => {
   for (const stale of ["node", "tree", "workspace"] as const) {
     const s = session();
+    s.flowNodes.value[1]!.selected = false;
     s.app.deleteSelected();
     if (stale === "node") s.canvasMenu.value!.node = clone(s.node.value!);
     else if (stale === "tree") s.canvasMenu.value!.tree = clone(s.tree.value);
@@ -593,6 +600,132 @@ test("删除确认拒绝过期对象、过期树和切换中的工作目录", ()
     assert.equal(s.undoStack.value.length, 0);
     assert.equal(s.canvasMenu.value, undefined);
   }
+});
+
+// 框选多个节点只生成删除确认；取消后节点、连线、布局和历史均保持原样。
+test("批量删除请求和取消确认不修改工程", () => {
+  const s = session();
+  const before = stringifyJSON(s.project.value);
+  s.app.finishCanvasSelection();
+  s.app.deleteSelected();
+  assert.equal(s.canvasMenu.value?.initialMode, "delete");
+  assert.deepEqual(s.canvasMenu.value?.nodes?.map(item => item.id), ["1", "2"]);
+  assert.equal(s.canvasMenu.value?.deletesRoot, true);
+  assert.equal(s.canvasMenu.value?.nodes?.[0], s.tree.value.nodes[0]);
+  assert.equal(s.canvasMenu.value?.nodes?.[1], s.tree.value.nodes[1]);
+  assert.equal(s.undoStack.value.length, 0);
+  s.canvasMenu.value = undefined;
+  s.app.confirmDeleteCanvasNodes();
+  assert.equal(stringifyJSON(s.project.value), before);
+  assert.equal(s.undoStack.value.length, 0);
+});
+
+// 多选期间右键节点仍只捕获右键目标，确认后不删除选区中的其他节点。
+test("多选期间右键删除只移除右键节点", () => {
+  const s = session();
+  s.app.openCanvasNodeMenu({
+    event: { target: new CanvasElement(), preventDefault() {}, stopPropagation() {} },
+    node: { id: "2" },
+  });
+  assert.equal(s.canvasMenu.value?.node?.id, "2");
+  assert.equal(s.canvasMenu.value?.nodes, undefined);
+  s.app.confirmDeleteCanvasNode();
+  assert.deepEqual(s.tree.value.nodes.map(item => item.id), ["1"]);
+  assert.equal(s.tree.value.root, "1");
+  assert.equal(s.undoStack.value.length, 1);
+});
+
+// Delete 与 Backspace 对多选节点都只打开同一批量确认，不提前改变工程或保存状态。
+test("多选节点的两个删除快捷键只请求批量确认", () => {
+  for (const key of ["Delete", "Backspace"]) {
+    const s = session();
+    const before = stringifyJSON(s.project.value);
+    s.saveState.reset(before);
+    let prevented = 0;
+    s.app.keydown({ key, target: { closest: () => null }, preventDefault: () => { prevented++; } });
+    assert.equal(prevented, 1);
+    assert.equal(s.canvasMenu.value?.initialMode, "delete");
+    assert.deepEqual(s.canvasMenu.value?.nodes?.map(item => item.id), ["1", "2"]);
+    assert.equal(stringifyJSON(s.project.value), before);
+    assert.equal(s.undoStack.value.length, 0);
+    assert.equal(s.saveState.dirty, false);
+  }
+});
+
+// 批量确认仅移除框选快照，未选子节点保留为草稿；根、布局和索引一次更新且可撤销重做。
+test("批量确认仅删除选中节点并在一次历史边界恢复拓扑", () => {
+  const s = session();
+  const third: BTNode = { id: "3", type: "wait", durationMs: 2 };
+  s.tree.value.nodes.push(third);
+  s.nodeIdentity.value.addNode(third);
+  s.tree.value.nodes[1]!.type = "sequence";
+  s.nodeIdentity.value.setChildren(s.tree.value.nodes[1]!, ["3"]);
+  s.tree.value.layout!["3"] = { x: 200, y: 220 };
+  s.flowNodes.value.push({ id: "3", position: { x: 200, y: 220 }, selected: false });
+  const before = stringifyJSON(s.project.value);
+  s.saveState.reset(before);
+  s.app.deleteSelected();
+  assert.deepEqual(s.canvasMenu.value?.nodes?.map(item => item.id), ["1", "2"]);
+  s.app.confirmDeleteCanvasNodes();
+  const after = stringifyJSON(s.project.value);
+  assert.notEqual(after, before);
+  assert.deepEqual(s.tree.value.nodes.map(item => item.id), ["3"]);
+  assert.equal(s.tree.value.root, "");
+  assert.equal(Object.hasOwn(s.tree.value.layout!, "1"), false);
+  assert.equal(Object.hasOwn(s.tree.value.layout!, "2"), false);
+  assert.deepEqual(s.tree.value.layout!["3"], { x: 200, y: 220 });
+  assert.equal(s.nodeIndex.value.has("1"), false);
+  assert.equal(s.nodeIndex.value.has("2"), false);
+  assert.equal(s.nodeIndex.value.get("3"), third);
+  assert.equal(s.nodeIdentity.value.validateRename("3", "survivor"), null);
+  assert.equal(s.undoStack.value.length, 1);
+  assert.equal(s.semanticRevision.value, 1);
+  assert.equal(s.saveState.dirty, true);
+  s.app.undo();
+  assert.equal(stringifyJSON(s.project.value), before);
+  assert.equal(s.saveState.dirty, false);
+  s.app.redo();
+  assert.equal(stringifyJSON(s.project.value), after);
+});
+
+// 确认前若任一目标对象、所属树或工作区失效，则整组拒绝，不能部分删除。
+test("批量删除确认拒绝过期对象、树和工作区", () => {
+  for (const stale of ["node", "tree", "workspace"] as const) {
+    const s = session();
+    s.app.deleteSelected();
+    if (stale === "node") s.canvasMenu.value!.nodes![1] = clone(s.tree.value.nodes[1]!);
+    else if (stale === "tree") s.canvasMenu.value!.tree = clone(s.tree.value);
+    else s.workspaceChanging.value = true;
+    const before = stringifyJSON(s.project.value);
+    s.app.confirmDeleteCanvasNodes();
+    assert.equal(stringifyJSON(s.project.value), before);
+    assert.equal(s.undoStack.value.length, 0);
+    assert.equal(s.canvasMenu.value, undefined);
+  }
+});
+
+// 删除的子树节点须从跨树引用索引移除，后续树 ID 改号只更新仍存活的引用。
+test("批量删除子树节点后树 ID 改号不访问旧引用", () => {
+  const s = session();
+  const target: Tree = { id: "branch", name: "分支", root: "leaf", nodes: [{ id: "leaf", type: "wait" }] };
+  s.project.value.trees.push(target);
+  s.treeIdentity.value.addTree(target);
+  const deletedReference = s.tree.value.nodes[1]!;
+  deletedReference.type = "subtree";
+  deletedReference.tree = "branch";
+  s.treeIdentity.value.addNode(deletedReference);
+  const survivingReference: BTNode = { id: "3", type: "subtree", tree: "branch" };
+  s.tree.value.nodes.push(survivingReference);
+  s.nodeIdentity.value.addNode(survivingReference);
+  s.treeIdentity.value.addNode(survivingReference);
+  s.flowNodes.value.push({ id: "3", position: { x: 200, y: 220 }, selected: false });
+  s.app.deleteSelected();
+  assert.deepEqual(s.canvasMenu.value?.nodes?.map(item => item.id), ["1", "2"]);
+  s.app.confirmDeleteCanvasNodes();
+  assert.equal(s.treeIdentity.value.rename("branch", "branch_next"), 1);
+  assert.equal(survivingReference.tree, "branch_next");
+  assert.equal(deletedReference.tree, "branch");
+  assert.deepEqual(s.tree.value.nodes, [survivingReference]);
 });
 
 // Delete 与 Backspace 删除选中连线时都先请求确认；取消不会改变工程或撤销历史。
@@ -706,6 +839,7 @@ test("Ctrl+A 仅在画布生效且确认框阻止后续删除快捷键", () => {
   assert.equal(s.getSelectedNodes.value.length, 2);
   s.app.keydown({ ...event, key: "Delete", ctrlKey: false });
   assert.equal(s.canvasMenu.value?.initialMode, "delete");
+  assert.deepEqual(s.canvasMenu.value?.nodes?.map(item => item.id), ["1", "2"]);
   s.app.keydown({ ...event, key: "Delete", ctrlKey: false });
   assert.equal(s.undoStack.value.length, 0);
   assert.equal(s.tree.value.nodes.length, 2);

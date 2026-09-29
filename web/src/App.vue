@@ -259,6 +259,9 @@ const treeMenu = shallowRef<{
 const canvasMenu = shallowRef<{
   tree: Tree; // 菜单所属的树，用于排除过期操作。
   node?: BTNode; // 为空表示画布空白菜单。
+  nodes?: BTNode[]; // 批量确认捕获的节点对象，后续选区变化不改变目标。
+  deletesRoot?: boolean; // 确认文案提示当前批次包含根节点。
+  instance?: number; // 批量确认的常数时间组件键，避免渲染时反复遍历选区。
   edge?: {
     source: BTNode; // 右击或按键时捕获的原父节点对象。
     target: BTNode; // 右击或按键时捕获的原子节点对象。
@@ -268,6 +271,7 @@ const canvasMenu = shallowRef<{
   initialMode?: "menu" | "delete"; // 属性面板和删除键直接进入确认。
   anchor?: HTMLElement; // 右键目标的节点 DOM，直接作为注释浮层锚点。
 }>();
+let canvasMenuInstance = 0; // 每次打开批量确认递增，确保旧弹窗状态不会复用。
 const treeContextMenu = ref<InstanceType<typeof TreeContextMenu>>(); // 检查重命名弹窗的未应用名称。
 const nodeCommentTooltip = ref<InstanceType<typeof NodeCommentTooltip>>(); // 全画布共享一个注释浮层。
 const autoOpenComments = ref(true); // 默认开启，仅当前页面会话有效，不持久化。
@@ -780,7 +784,7 @@ function moveNode({ nodes }: NodeDragEvent) {
 // 所有删除入口只打开确认框，取消不会修改工程和历史。
 function deleteSelected() {
   if (!guardPendingNavigation()) return;
-  if (workspaceChanging.value) return;
+  if (workspaceChanging.value || !projectReady.value) return;
   if (selectedEdge.value) {
     const source = nodeIndex.value.get(selectedEdge.value.source);
     const target = nodeIndex.value.get(selectedEdge.value.target);
@@ -788,8 +792,20 @@ function deleteSelected() {
     canvasMenu.value = { tree: tree.value, edge: { source, target }, x: 0, y: 0, initialMode: "delete" };
     return;
   }
-  if (!node.value) return;
-  canvasMenu.value = { tree: tree.value, node: node.value, x: 0, y: 0, initialMode: "delete" };
+  // Vue Flow 持有整组选区；属性面板的 selected 只代表其中的主节点。
+  const selectedItems = getSelectedNodes.value;
+  const targets = selectedItems.map(item => nodeIndex.value.get(item.id));
+  if (targets.some(item => !item)) return;
+  if (targets.length > 1) {
+    const nodes = targets as BTNode[];
+    canvasMenu.value = { tree: tree.value, nodes, deletesRoot: nodes.some(item => item.id === tree.value.root),
+      instance: ++canvasMenuInstance, x: 0, y: 0, initialMode: "delete" };
+    return;
+  }
+  const target = targets[0] ?? node.value;
+  if (!target) return;
+  canvasMenu.value = { tree: tree.value, node: target, deletesRoot: target.id === tree.value.root,
+    x: 0, y: 0, initialMode: "delete" };
 }
 // 右击节点仅捕获操作对象，不改变已有多选和属性草稿。
 function openCanvasNodeMenu({ event, node: item }: NodeMouseEvent) {
@@ -876,6 +892,23 @@ function confirmDeleteCanvasNode() {
     treeIdentity.value.removeNode(target);
     nodeIdentity.value.removeNode(target);
     if (selected.value === target.id) selected.value = "";
+  });
+}
+// 确认时整组复核身份，只在一个历史边界内清理节点及相关索引。
+function confirmDeleteCanvasNodes() {
+  const menu = canvasMenu.value;
+  canvasMenu.value = undefined;
+  const targets = menu?.nodes;
+  if (!targets?.length || menu?.tree !== tree.value || workspaceChanging.value || !projectReady.value) return;
+  if (targets.some(target => nodeIndex.value.get(target.id) !== target)) return;
+  if (targets.some(target => target.id === selected.value) && !guardPendingNavigation()) return;
+  const removed = new Set(targets.map(target => target.id));
+  mutate(() => {
+    for (const target of targets) treeIdentity.value.removeNode(target);
+    nodeIdentity.value.removeNodes(targets);
+    if (removed.has(selected.value)) selected.value = "";
+    if (selectedEdge.value && (removed.has(selectedEdge.value.source) || removed.has(selectedEdge.value.target)))
+      selectedEdge.value = undefined;
   });
 }
 // 二次确认后只断开捕获的连线；目标变化或引用失效时不创建历史。
@@ -2184,6 +2217,8 @@ onUnmounted(() => toolLifecycle.abort());
             @click="redo"
           >
             ↷</button
+          ><button type="button" class="danger" :disabled="!getSelectedNodes.length || !!selectedEdge || workspaceChanging"
+            @click="deleteSelected">删除选中节点（{{ getSelectedNodes.length }}）</button
           ><button @click="layout">自动布局</button
           ><button type="button" @click="openEventManager">事件</button
           ><button @click="fitView({ padding: 0.18 })">适应画布</button>
@@ -2292,7 +2327,7 @@ onUnmounted(() => toolLifecycle.abort());
         </template>
       </VueFlow>
       <EventOverlay ref="eventOverlay" :project="project" :events="project.events" :tree-event-i-ds="currentTreeEventIDs" :scope="eventScope" :enum-description="project.eventEnumDescription" :highlighted-i-ds="highlightedEventIDs" :matched-node-count="eventMatchedNodes.size" :auto-open-comments="autoOpenComments" :blocked="eventManagerOpen || !!catalogDialog || !!projectDialog" :commit="commitEventComment" @manage="openEventManager" @scope="setEventScope" @highlight="toggleEventHighlight" @clear-highlight="highlightedEventIDs = new Set()" />
-      <div class="canvas-hint">左键框选 / 拖动选中节点批量移动 · Ctrl+C 复制选区 / Ctrl+V 粘贴到鼠标位置 · 点击连线后拖动靠近节点的线段改连 · 空白处右键拖动画布 · 右键打开菜单 · Ctrl+A 全选</div>
+      <div class="canvas-hint">左键框选 / 拖动选中节点批量移动 · Delete 删除选区（需确认）· Ctrl+C 复制选区 / Ctrl+V 粘贴到鼠标位置 · 点击连线后拖动靠近节点的线段改连 · 空白处右键拖动画布 · 右键打开菜单 · Ctrl+A 全选</div>
     </main>
 
     <aside v-show="projectReady" :class="['inspector', { opened: inspectorOpen }]">
@@ -2486,7 +2521,7 @@ onUnmounted(() => toolLifecycle.abort());
           <button @click="mutate(() => (tree.root = selected))">
             设为根节点</button
           ><button @click="duplicate">复制节点</button
-          ><button class="danger" @click="deleteSelected">删除节点</button>
+          ><button class="danger" @click="deleteSelected">{{ getSelectedNodes.length > 1 ? `删除选中节点（${getSelectedNodes.length}）` : '删除节点' }}</button>
         </div>
       </template>
       <template v-else>
@@ -2674,10 +2709,10 @@ onUnmounted(() => toolLifecycle.abort());
     <ScaffoldOverwriteDialog v-if="scaffoldOverwrite" :path="scaffoldOverwrite.path" @close="closeScaffoldOverwrite" />
     <NodeCommentTooltip ref="nodeCommentTooltip" :tree="tree" :commit="commitNodeComment" :auto-open="autoOpenComments"
       :disabled="!projectReady || busy || workspaceChanging || canvasMoving || !!(canvasMenu || treeMenu || catalogMenu || catalogDialog || projectDialog || importFailure || nodeHelp || catalogCopy || scaffoldOverwrite)" />
-    <CanvasContextMenu v-if="canvasMenu" :key="`${canvasMenu.node?.id ?? (canvasMenu.edge ? `${canvasMenu.edge.source.id}/${canvasMenu.edge.target.id}` : 'pane')}:${canvasMenu.x}:${canvasMenu.y}:${canvasMenu.initialMode ?? 'menu'}`"
-      :node="canvasMenu.node" :edge="canvasMenu.edge" :x="canvasMenu.x" :y="canvasMenu.y" :initial-mode="canvasMenu.initialMode"
+    <CanvasContextMenu v-if="canvasMenu" :key="canvasMenu.instance ?? `${canvasMenu.node?.id ?? (canvasMenu.edge ? `${canvasMenu.edge.source.id}/${canvasMenu.edge.target.id}` : 'pane')}:${canvasMenu.x}:${canvasMenu.y}:${canvasMenu.initialMode ?? 'menu'}`"
+      :node="canvasMenu.node" :nodes="canvasMenu.nodes" :edge="canvasMenu.edge" :deletes-root="canvasMenu.deletesRoot" :x="canvasMenu.x" :y="canvasMenu.y" :initial-mode="canvasMenu.initialMode"
       :disabled="!projectReady || busy || workspaceChanging" :png-busy="pngExportBusy"
-      @close="canvasMenu = undefined" @duplicate="duplicateCanvasNode" @delete="confirmDeleteCanvasNode" @delete-edge="confirmDeleteCanvasEdge" @comment="editCanvasMenuComment"
+      @close="canvasMenu = undefined" @duplicate="duplicateCanvasNode" @delete="confirmDeleteCanvasNode" @delete-nodes="confirmDeleteCanvasNodes" @delete-edge="confirmDeleteCanvasEdge" @comment="editCanvasMenuComment"
       @save="canvasMenu = undefined; save()" @save-as="canvasMenu = undefined; save(true)"
       @json="canvasMenu = undefined; exportJSON()" @png="canvasMenu = undefined; exportPNG()" />
     <TreeContextMenu v-if="treeMenu" ref="treeContextMenu" :key="`${treeMenu.tree.id}:${treeMenu.x}:${treeMenu.y}:${treeMenu.initialMode ?? 'menu'}`"

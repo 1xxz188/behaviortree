@@ -177,18 +177,33 @@ export class NodeIdentityIndex {
     this.tree.root = plan.root;
   }
 
-  // 删除只访问相关父节点及当前节点；数组删除仍保持原有节点顺序。
+  // 单节点删除复用批量入口，统一维护连线、身份和布局索引。
   removeNode(node: BTNode): void {
-    const parents = new Set([...this.references.get(node.id) ?? []].map((edge) => edge.parent));
+    this.removeNodes([node]);
+  }
+
+  // 批量删除只扫描一次节点数组；每个受影响的存活父节点只重建一次出边。
+  removeNodes(nodes: readonly BTNode[]): void {
+    if (!nodes.length || nodes.some(node => this.byID.get(node.id) !== node)) return;
+    const removed = new Set(nodes.map(node => node.id));
+    const parents = new Set<BTNode>();
+    for (const node of nodes) {
+      for (const edge of this.references.get(node.id) ?? []) {
+        if (!removed.has(edge.parent.id)) parents.add(edge.parent);
+      }
+    }
+    // 存活父节点保留未选中的孩子；被删父节点的全部出边随后统一撤销。
     for (const parent of parents)
-      this.setChildren(parent, parent.children!.filter((id) => id !== node.id));
-    this.unindexChildren(node);
-    this.byID.delete(node.id);
-    this.codeNames.remove(node);
-    const position = this.tree.nodes.indexOf(node);
-    if (position >= 0) this.tree.nodes.splice(position, 1);
-    if (this.tree.root === node.id) this.tree.root = "";
-    if (this.tree.layout) delete this.tree.layout[node.id];
+      this.setChildren(parent, parent.children!.filter(id => !removed.has(id)));
+    for (const node of nodes) {
+      this.unindexChildren(node);
+      this.byID.delete(node.id);
+      this.codeNames.remove(node);
+      if (this.tree.layout) delete this.tree.layout[node.id];
+    }
+    for (const id of removed) this.references.delete(id);
+    this.tree.nodes = this.tree.nodes.filter(node => !removed.has(node.id));
+    if (removed.has(this.tree.root)) this.tree.root = "";
   }
 
   // 草稿输入及显式提交共用常数时间校验，原值不变为合法无操作。
