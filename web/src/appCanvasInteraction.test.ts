@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { computed, nextTick, reactive, ref, shallowRef, watch } from "vue";
-import { blankProject, clone } from "./project.ts";
+import { blankProject, clone, kinds } from "./project.ts";
 import type { BTNode, Tree } from "./project.ts";
 import { NodeIdentityIndex } from "./nodeIdentity.ts";
 import { TreeIdentityIndex, captureSnapshot, restoreSnapshot } from "./treeIdentity.ts";
@@ -14,6 +14,7 @@ import { semanticSignature } from "./generation.ts";
 import { stringifyJSON } from "./json.ts";
 import { pruneHighlightedEvents } from "./eventHighlight.ts";
 import { EventRegistryIndex } from "./eventRegistry.ts";
+import { decodeCanvasSelection, encodeCanvasSelection } from "./canvasClipboard.ts";
 
 // 运行真实画布处理和历史恢复函数，仅替换 Vue Flow 与浏览器事件边界。
 const source = readFileSync(new URL("./App.vue", import.meta.url), "utf8")
@@ -26,6 +27,8 @@ const names = new Set([
   "checkpoint", "mutate", "restore", "undo", "redo", "rebuildIDs",
   "editCanvasMenuComment", "commitNodeComment",
   "reconnectEdge",
+  "canvasClipboardAvailable", "copyCanvasSelection", "missingCanvasReferences", "canvasPasteAnchor", "pasteCanvasSelection",
+  "rememberCanvasPointer", "clearCanvasPointer", "selectPastedNodes",
 ]);
 const handlers = script.statements.filter(statement => ts.isFunctionDeclaration(statement)
   && names.has(statement.name?.text ?? "")).map(statement => statement.getText(script)).join("\n");
@@ -86,9 +89,15 @@ function session() {
   const semanticRevision = ref(0);
   const commentEdits: { node: BTNode; anchor: CanvasElement }[] = [];
   const notices: { text: string; failed: boolean }[] = [];
+  const navigationAllowed = ref(true);
+  const bounds = { left: 100, top: 50, right: 700, bottom: 450, width: 600, height: 400 };
+  const viewport = { x: 0, y: 0, zoom: 1 };
+  let selectedText = "";
   const context = {
-    guardPendingNavigation: () => true, // 画布既有交互测试在无草稿场景运行。
+    guardPendingNavigation: () => navigationAllowed.value, // 可模拟未应用草稿拦截。
     nextTick, reactive, captureSnapshot, restoreSnapshot, semanticSignature,
+    encodeCanvasSelection, decodeCanvasSelection, kinds,
+    window: { getSelection: () => ({ toString: () => selectedText }) },
     Element: CanvasElement,
     nodeCommentTooltip: { value: { edit: (node: BTNode, anchor: CanvasElement) => { commentEdits.push({ node, anchor }); } } },
     notice: (text: string, failed = false) => { notices.push({ text, failed }); },
@@ -99,7 +108,9 @@ function session() {
     catalogMenu: shallowRef(), catalogDialog: shallowRef(), treeMenu: shallowRef(),
     eventManagerOpen: ref(false), highlightedEventIDs: shallowRef(new Set<string>()),
     eventIndex: computed(() => new EventRegistryIndex(project.value)), pruneHighlightedEvents,
+    definitionIndex: computed(() => new Map(project.value.catalog.map(item => [item.id, item]))),
     projectDialog: shallowRef(), importFailure: shallowRef(),
+    nodeHelp: ref<string>(), catalogCopy: ref<string>(), scaffoldOverwrite: shallowRef<string>(),
     codeSnapshot: shallowRef(), scaffoldSnapshot: shallowRef(),
     cancelTreeID: () => {}, cancelNodeID: () => {}, followSourceSelection: () => {},
     getNodes: flowNodes, getSelectedNodes,
@@ -113,9 +124,16 @@ function session() {
       selectionCalls.push([]);
       for (const item of flowNodes.value) item.selected = false;
     },
-    vueFlowRef: { value: { contains: (target: { onCanvas?: boolean }) => target.onCanvas === true } },
+    vueFlowRef: { value: {
+      contains: (target: { onCanvas?: boolean }) => target.onCanvas === true,
+      getBoundingClientRect: () => bounds,
+    } },
+    screenToFlowCoordinate: (point: { x: number; y: number }) => ({
+      x: (point.x - bounds.left - viewport.x) / viewport.zoom,
+      y: (point.y - bounds.top - viewport.y) / viewport.zoom,
+    }),
   };
-  const app = runInNewContext(`${js}\n({ ${[...names].join(", ")} });`, context) as {
+  const app = runInNewContext(`let canvasPointer; let pendingPastedSelection;\n${js}\n({ ${[...names].join(", ")} });`, context) as {
     moveNode: (event: { nodes: CanvasNode[] }) => void; // 一次拖动只产生一个历史边界。
     deleteSelected: () => void; // 只请求确认，不直接删除。
     confirmDeleteCanvasNode: () => void; // 确认后校验捕获目标并删除。
@@ -133,9 +151,303 @@ function session() {
     editCanvasMenuComment: () => Promise<void>; // 菜单关闭后打开统一注释浮层。
     commitNodeComment: (tree: Tree, node: BTNode, value: string) => boolean; // 统一提交并核验目标身份。
     reconnectEdge: (event: { edge: { source: string; target: string }; connection: { source: string; target: string } }) => void; // 已有连线的端点拖动入口。
+    copyCanvasSelection: (event: unknown) => void; // 将图层选区写入系统剪贴板。
+    pasteCanvasSelection: (event: unknown) => void; // 从系统剪贴板一次提交复制组。
+    canvasPasteAnchor: () => { x: number; y: number } | undefined; // 鼠标或视口中心的画布落点。
+    rememberCanvasPointer: (event: { clientX: number; clientY: number }) => void; // 更新画布内鼠标落点。
+    clearCanvasPointer: () => void; // 离开画布后回退至视口中心。
+    selectPastedNodes: () => Promise<void>; // 新图节点就绪后恢复整组选区。
   };
-  return { ...context, app, flowNodes, selectionCalls, commentEdits, notices };
+  return { ...context, app, flowNodes, selectionCalls, commentEdits, notices, bounds, viewport,
+    navigationAllowed, setSelectedText: (value: string) => { selectedText = value; } };
 }
+
+// 使用 text/plain 模拟浏览器同步剪贴板事件，并记录是否拦截原生操作。
+function clipboardEvent(text = "", target: { closest: (selector: string) => unknown } = { closest: () => null }) {
+  const data = new Map([["text/plain", text]]);
+  let prevented = 0;
+  return {
+    event: {
+      target,
+      clipboardData: {
+        getData: (type: string) => data.get(type) ?? "",
+        setData: (type: string, value: string) => { data.set(type, value); },
+      },
+      preventDefault: () => { prevented++; },
+    },
+    get text() { return data.get("text/plain") ?? ""; },
+    get prevented() { return prevented; },
+  };
+}
+
+// 单选只复制当前节点，粘贴后分配新身份并用一次历史边界恢复工程。
+test("单节点复制粘贴分配唯一身份且整次操作可撤销重做", async () => {
+  const s = session();
+  s.flowNodes.value[0]!.selected = false;
+  const copy = clipboardEvent();
+  s.app.copyCanvasSelection(copy.event);
+  assert.equal(copy.prevented, 1);
+  const payload = decodeCanvasSelection(copy.text)!;
+  assert.equal(payload.nodes.length, 1);
+  assert.equal(payload.nodes[0]!.node.id, "2");
+  assert.equal(payload.nodes[0]!.position.x, 0);
+  assert.equal(payload.nodes[0]!.position.y, 0);
+  assert.equal(s.undoStack.value.length, 0);
+
+  const before = stringifyJSON(s.project.value);
+  s.saveState.reset(before);
+  s.app.rememberCanvasPointer({ clientX: 350, clientY: 250 });
+  const paste = clipboardEvent(copy.text);
+  s.app.pasteCanvasSelection(paste.event);
+  assert.equal(paste.prevented, 1);
+  assert.equal(s.undoStack.value.length, 1);
+  assert.equal(s.semanticRevision.value, 1);
+  assert.equal(s.saveState.dirty, true);
+  const copied = s.tree.value.nodes.at(-1)!;
+  assert.equal(copied.id, "3");
+  assert.equal(copied.codeName, "Wait1");
+  assert.deepEqual({ ...s.tree.value.layout![copied.id] }, { x: 250, y: 200 });
+  assert.deepEqual(Array.from(copied.children ?? []), []);
+  s.flowNodes.value.push({ id: copied.id, position: { x: 250, y: 200 }, selected: false });
+  await s.app.selectPastedNodes();
+  assert.deepEqual(s.getSelectedNodes.value.map(item => item.id), [copied.id]);
+  assert.equal(s.selected.value, copied.id);
+
+  const after = stringifyJSON(s.project.value);
+  s.app.undo();
+  assert.equal(stringifyJSON(s.project.value), before);
+  assert.equal(s.saveState.dirty, false);
+  s.app.redo();
+  assert.equal(stringifyJSON(s.project.value), after);
+  assert.equal(s.saveState.dirty, true);
+});
+
+// 框选快照保留组内连线及相对布局，排除指向未选节点的外部连线。
+test("框选复制只保留组内连线并按落点平移整个节点组", async () => {
+  const s = session();
+  const external: BTNode = { id: "3", type: "wait", codeName: "Other", durationMs: 5 };
+  s.tree.value.nodes.push(external);
+  s.nodeIdentity.value.addNode(external);
+  s.nodeIdentity.value.setChildren(s.tree.value.nodes[0]!, ["2", "3"]);
+  s.tree.value.layout!["3"] = { x: 900, y: 900 };
+  s.flowNodes.value.push({ id: "3", position: { x: 900, y: 900 }, selected: false });
+  const copy = clipboardEvent();
+  s.app.copyCanvasSelection(copy.event);
+  const payload = decodeCanvasSelection(copy.text)!;
+  assert.deepEqual(Array.from(payload.nodes[0]!.node.children!), ["2"]);
+  assert.deepEqual({ ...payload.nodes[0]!.position }, { x: 0, y: 0 });
+  assert.deepEqual({ ...payload.nodes[1]!.position }, { x: 90, y: 100 });
+  assert.equal(payload.root, "1");
+
+  s.app.rememberCanvasPointer({ clientX: 450, clientY: 300 });
+  s.app.pasteCanvasSelection(clipboardEvent(copy.text).event);
+  const [parent, child] = s.tree.value.nodes.slice(-2);
+  assert.ok(parent && child);
+  assert.deepEqual(Array.from(parent.children!), [child.id]);
+  assert.equal(parent.children!.includes(external.id), false);
+  assert.deepEqual({ ...s.tree.value.layout![parent.id] }, { x: 350, y: 250 });
+  assert.deepEqual({ ...s.tree.value.layout![child.id] }, { x: 440, y: 350 });
+  for (const node of [parent, child])
+    s.flowNodes.value.push({ id: node.id, position: { ...s.tree.value.layout![node.id]! }, selected: false });
+  await s.app.selectPastedNodes();
+  assert.deepEqual(s.getSelectedNodes.value.map(item => item.id), [parent.id, child.id]);
+  assert.equal(s.undoStack.value.length, 1);
+});
+
+// 鼠标、越界鼠标及离开画布后的中心落点均经过当前平移和缩放换算。
+test("粘贴落点使用画布鼠标或视口中心并换算缩放", () => {
+  const s = session();
+  s.viewport.x = 20;
+  s.viewport.y = -30;
+  s.viewport.zoom = 2;
+  s.app.rememberCanvasPointer({ clientX: 250, clientY: 150 });
+  assert.deepEqual({ ...s.app.canvasPasteAnchor()! }, { x: 65, y: 65 });
+  s.app.rememberCanvasPointer({ clientX: 50, clientY: 150 });
+  assert.deepEqual({ ...s.app.canvasPasteAnchor()! }, { x: 140, y: 115 });
+  s.app.rememberCanvasPointer({ clientX: 250, clientY: 150 });
+  s.app.clearCanvasPointer();
+  assert.deepEqual({ ...s.app.canvasPasteAnchor()! }, { x: 140, y: 115 });
+});
+
+// 同一载荷可反复粘贴，节点 ID、代码名各自递增且不会覆盖已有节点。
+test("重复粘贴分配不同节点身份与树内唯一代码名", () => {
+  const s = session();
+  s.flowNodes.value[0]!.selected = false;
+  const copy = clipboardEvent();
+  s.app.copyCanvasSelection(copy.event);
+  s.app.pasteCanvasSelection(clipboardEvent(copy.text).event);
+  s.app.pasteCanvasSelection(clipboardEvent(copy.text).event);
+  assert.deepEqual(s.tree.value.nodes.slice(-2).map(item => item.id), ["3", "4"]);
+  assert.deepEqual(s.tree.value.nodes.slice(-2).map(item => item.codeName), ["Wait1", "Wait2"]);
+  assert.equal(s.undoStack.value.length, 2);
+  assert.deepEqual({ ...s.tree.value.layout!["3"] }, { ...s.tree.value.layout!["4"] });
+});
+
+// 跨工程复制保留原有引用与配置，并对目标缺失的依赖只发一次提示。
+test("跨工程粘贴保留业务、黑板和子树引用并提示缺失项", () => {
+  const s = session();
+  const action = s.tree.value.nodes[1]!;
+  action.type = "action";
+  action.binding = "business-action";
+  action.params = { Target: { field: "field-id" } };
+  const subtree: BTNode = { id: "3", type: "subtree", codeName: "Branch", tree: "missing-tree" };
+  s.tree.value.nodes.push(subtree);
+  s.nodeIdentity.value.addNode(subtree);
+  s.flowNodes.value[0]!.selected = false;
+  s.flowNodes.value.push({ id: "3", position: { x: 220, y: 150 }, selected: true });
+  const copy = clipboardEvent();
+  s.app.copyCanvasSelection(copy.event);
+
+  s.project.value = blankProject();
+  s.treeIdentity.value = new TreeIdentityIndex(s.project.value);
+  s.treeID.value = s.project.value.trees[0]!.id;
+  s.nodeIdentity.value = new NodeIdentityIndex(s.tree.value);
+  s.flowNodes.value = [{ id: "1", position: { x: 80, y: 80 }, selected: true }];
+  const paste = clipboardEvent(copy.text);
+  s.app.pasteCanvasSelection(paste.event);
+  assert.equal(paste.prevented, 1);
+  assert.equal(s.tree.value.nodes.length, 3);
+  const [copiedAction, copiedSubtree] = s.tree.value.nodes.slice(-2);
+  assert.equal(copiedAction!.binding, "business-action");
+  assert.equal(copiedAction!.params!.Target!.field, "field-id");
+  assert.equal(copiedSubtree!.tree, "missing-tree");
+  assert.equal(s.notices.length, 2);
+  assert.match(s.notices.at(-1)!.text, /缺少 3 项引用/);
+  assert.equal(s.notices.at(-1)!.failed, false);
+});
+
+// 空树粘贴将复制组的原根节点设为入口，并在图节点就绪后选中整组。
+test("空树粘贴建立根节点并等待新图节点就绪后选中", async () => {
+  const s = session();
+  const copy = clipboardEvent();
+  s.app.copyCanvasSelection(copy.event);
+  s.tree.value.nodes.splice(0);
+  s.tree.value.root = "";
+  s.tree.value.layout = {};
+  s.nodeIdentity.value = new NodeIdentityIndex(s.tree.value);
+  s.flowNodes.value = [];
+  s.selected.value = "";
+
+  s.app.pasteCanvasSelection(clipboardEvent(copy.text).event);
+  const [root, child] = s.tree.value.nodes;
+  assert.ok(root && child);
+  assert.equal(s.tree.value.root, root.id);
+  assert.deepEqual(Array.from(root.children ?? []), [child.id]);
+  await s.app.selectPastedNodes();
+  assert.equal(s.getSelectedNodes.value.length, 0);
+  for (const item of [root, child])
+    s.flowNodes.value.push({ id: item.id, position: { ...s.tree.value.layout![item.id]! }, selected: false });
+  await s.app.selectPastedNodes();
+  assert.deepEqual(s.getSelectedNodes.value.map(item => item.id), [root.id, child.id]);
+});
+
+// 选区没有原树根节点且子节点排在前面时，空树入口仍应指向组内父节点。
+test("空树粘贴子节点先于父节点的非根选区仍选父节点为入口", () => {
+  const s = session();
+  const parent: BTNode = { id: "3", type: "sequence", codeName: "Branch", children: ["2"] };
+  s.tree.value.nodes.push(parent);
+  s.nodeIdentity.value.addNode(parent);
+  s.nodeIdentity.value.setChildren(s.tree.value.nodes[0]!, ["3"]);
+  s.flowNodes.value[0]!.selected = false;
+  s.flowNodes.value.push({ id: "3", position: { x: 40, y: 60 }, selected: true });
+  const copy = clipboardEvent();
+  s.app.copyCanvasSelection(copy.event);
+  const payload = decodeCanvasSelection(copy.text)!;
+  assert.equal(payload.root, undefined);
+  assert.deepEqual(payload.nodes.map(entry => entry.node.id), ["2", "3"]);
+  assert.deepEqual(Array.from(payload.nodes[1]!.node.children ?? []), ["2"]);
+
+  s.tree.value.nodes.splice(0);
+  s.tree.value.root = "";
+  s.tree.value.layout = {};
+  s.nodeIdentity.value = new NodeIdentityIndex(s.tree.value);
+  s.flowNodes.value = [];
+  s.selected.value = "";
+  s.app.pasteCanvasSelection(clipboardEvent(copy.text).event);
+  const [copiedChild, copiedParent] = s.tree.value.nodes;
+  assert.ok(copiedChild && copiedParent);
+  assert.equal(copiedChild.type, "wait");
+  assert.equal(copiedParent.type, "sequence");
+  assert.equal(s.tree.value.root, copiedParent.id);
+  assert.deepEqual(Array.from(copiedParent.children ?? []), [copiedChild.id]);
+});
+
+// 未应用草稿阻止粘贴提交，已打开菜单也不接管复制粘贴。
+test("未应用草稿及弹窗阻止剪贴板修改", () => {
+  const s = session();
+  const copy = clipboardEvent();
+  s.app.copyCanvasSelection(copy.event);
+  const before = stringifyJSON(s.project.value);
+  s.navigationAllowed.value = false;
+  const pending = clipboardEvent(copy.text);
+  s.app.pasteCanvasSelection(pending.event);
+  assert.equal(pending.prevented, 1);
+  assert.equal(stringifyJSON(s.project.value), before);
+  assert.equal(s.undoStack.value.length, 0);
+
+  s.navigationAllowed.value = true;
+  s.canvasMenu.value = { tree: s.tree.value, x: 0, y: 0 };
+  const menuCopy = clipboardEvent("已有文本");
+  const menuPaste = clipboardEvent(copy.text);
+  s.app.copyCanvasSelection(menuCopy.event);
+  s.app.pasteCanvasSelection(menuPaste.event);
+  assert.equal(menuCopy.prevented, 0);
+  assert.equal(menuCopy.text, "已有文本");
+  assert.equal(menuPaste.prevented, 0);
+  assert.equal(stringifyJSON(s.project.value), before);
+});
+
+// 节点帮助、目录复制文本和骨架覆盖确认打开时，快捷键交给对应浮层或浏览器。
+test("帮助和复制覆盖浮层保留原生复制粘贴且不改工程", () => {
+  for (const state of ["nodeHelp", "catalogCopy", "scaffoldOverwrite"] as const) {
+    const s = session();
+    const source = clipboardEvent();
+    s.app.copyCanvasSelection(source.event);
+    const before = stringifyJSON(s.project.value);
+    s[state].value = "打开";
+    const copy = clipboardEvent("原有文本");
+    const paste = clipboardEvent(source.text);
+    s.app.copyCanvasSelection(copy.event);
+    s.app.pasteCanvasSelection(paste.event);
+    assert.equal(copy.prevented, 0, state);
+    assert.equal(copy.text, "原有文本", state);
+    assert.equal(paste.prevented, 0, state);
+    assert.equal(stringifyJSON(s.project.value), before, state);
+    assert.equal(s.undoStack.value.length, 0, state);
+    assert.equal(s.notices.length, 1, state);
+  }
+});
+
+// 输入框、浏览器文本选区、空节点选区和无效剪贴板保留原生操作且不改工程。
+test("输入框与无效剪贴板不接管复制粘贴或修改工程", () => {
+  const s = session();
+  const before = stringifyJSON(s.project.value);
+  const input = { closest: () => ({}) };
+  const copyInput = clipboardEvent("原有文本", input);
+  s.app.copyCanvasSelection(copyInput.event);
+  assert.equal(copyInput.prevented, 0);
+  assert.equal(copyInput.text, "原有文本");
+  const pasteInput = clipboardEvent("原有文本", input);
+  s.app.pasteCanvasSelection(pasteInput.event);
+  assert.equal(pasteInput.prevented, 0);
+  s.setSelectedText("浏览器文本");
+  const copyText = clipboardEvent();
+  s.app.copyCanvasSelection(copyText.event);
+  assert.equal(copyText.prevented, 0);
+  s.setSelectedText("");
+  for (const item of s.flowNodes.value) item.selected = false;
+  const copyEmpty = clipboardEvent("原有文本");
+  s.app.copyCanvasSelection(copyEmpty.event);
+  assert.equal(copyEmpty.prevented, 0);
+  assert.equal(copyEmpty.text, "原有文本");
+  for (const text of ["普通文本", "{", '{"kind":"behaviortree/nodes","version":2,"nodes":[]}']) {
+    const paste = clipboardEvent(text);
+    s.app.pasteCanvasSelection(paste.event);
+    assert.equal(paste.prevented, 0);
+  }
+  assert.equal(stringifyJSON(s.project.value), before);
+  assert.equal(s.undoStack.value.length, 0);
+});
 
 // 真实事件处理只产生一个撤销边界，恢复、重做和保存状态跟随拓扑变化。
 test("拖动已有连线端点一次提交且支持撤销重做", () => {

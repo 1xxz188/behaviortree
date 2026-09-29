@@ -24,6 +24,7 @@ import ExportMenu from "./ExportMenu.vue";
 import CanvasContextMenu from "./CanvasContextMenu.vue";
 import NodeCommentTooltip from "./NodeCommentTooltip.vue";
 import { exportCanvasPNG } from "./canvasExport";
+import { decodeCanvasSelection, encodeCanvasSelection } from "./canvasClipboard";
 import { startupProject, readTabSession, rememberTabSession, rememberProject, selectNativeDirectory } from "./workspace";
 import type { WorkspaceFiles, SessionStorage, ProjectDialogResult } from "./workspace";
 import { ProjectSaveState } from "./saveState";
@@ -224,6 +225,18 @@ async function syncCanvasSelection() {
   if (target && !target.selected) addSelectedNodes([target]);
   else if (!selected.value && !selectedEdge.value) removeSelectedElements();
 }
+// 新节点进入 Vue Flow 后一次选中整组；初始化事件可补偿首次渲染尚未就绪的情况。
+async function selectPastedNodes() {
+  const ids = pendingPastedSelection;
+  if (!ids) return;
+  await nextTick();
+  if (pendingPastedSelection !== ids) return;
+  const nodes = ids.map(id => findNode(id));
+  if (nodes.some(item => !item)) return;
+  removeSelectedElements();
+  addSelectedNodes(nodes.filter(item => item !== undefined));
+  pendingPastedSelection = undefined;
+}
 const catalogDialog = ref<{
   mode: "create" | "edit" | "import" | "manage"; // 区分新建、编辑和目录操作。
   kind?: DefinitionKind; // 新建时可绑定当前节点的种类。
@@ -344,6 +357,8 @@ const redoStack = ref<EditorSnapshot[]>([]);
 const importInput = ref<HTMLInputElement>();
 const { fitView, setCenter, screenToFlowCoordinate, getNodes, getSelectedNodes, findNode,
   addSelectedNodes, removeSelectedElements, vueFlowRef } = useVueFlow();
+let canvasPointer: { x: number; y: number } | undefined; // 鼠标在画布内的视口坐标，用于确定粘贴落点。
+let pendingPastedSelection: string[] | undefined; // 等待 Vue Flow 建立的新节点组选择。
 const pngExportBusy = ref(false); // 图片编码期间禁止重复创建画布副本。
 let pendingCanvasFit = 0; // 工程或行为树切换后，只在节点和视口就绪时适应一次。
 
@@ -1697,6 +1712,108 @@ function focusDiagnostic(d: Diagnostic) {
   const p = tree.value?.layout?.[selected.value];
   if (p) setCenter(p.x + 90, p.y + 35, { zoom: 1, duration: 250 });
 }
+// 只记录最近的画布内指针坐标，不在鼠标移动时读取工程或转换视口。
+function rememberCanvasPointer(event: PointerEvent) {
+  canvasPointer = { x: event.clientX, y: event.clientY };
+}
+// 鼠标离开画布后，粘贴默认以当前视口中心为落点。
+function clearCanvasPointer() { canvasPointer = undefined; }
+// 剪贴板快捷键沿用编辑器的弹窗和输入框边界，不接管原生文本编辑。
+function canvasClipboardAvailable(event: ClipboardEvent): boolean {
+  if (workspaceChanging.value || !projectReady.value || catalogDialog.value || eventManagerOpen.value
+    || projectDialog.value || importFailure.value || treeMenu.value || catalogMenu.value || canvasMenu.value
+    || nodeHelp.value || catalogCopy.value !== undefined || scaffoldOverwrite.value) return false;
+  return !(event.target as HTMLElement | null)?.closest?.("input,textarea,select,[contenteditable]");
+}
+// 将 Vue Flow 的完整选区写入系统剪贴板；普通文本选择仍交给浏览器复制。
+function copyCanvasSelection(event: ClipboardEvent) {
+  if (!canvasClipboardAvailable(event) || !event.clipboardData || window.getSelection()?.toString()) return;
+  const entries: { node: BTNode; position: NodePosition }[] = [];
+  for (const item of getSelectedNodes.value) {
+    const source = nodeIndex.value.get(item.id);
+    if (source) entries.push({ node: source, position: item.position });
+  }
+  const text = encodeCanvasSelection(entries, tree.value.root);
+  if (!text) return;
+  try {
+    event.clipboardData.setData("text/plain", text);
+    event.preventDefault();
+    notice(`已复制 ${entries.length} 个节点`);
+  } catch (error) { notice(`复制节点失败：${String(error)}`, true); }
+}
+// 检查剪贴板中的跨工程引用，仅提示目标工程缺失的身份，不静默改变节点配置。
+function missingCanvasReferences(nodes: readonly BTNode[]): number {
+  const missing = new Set<string>();
+  const fields = new Set(project.value.blackboard.map(field => field.id));
+  for (const item of nodes) {
+    if (item.binding) {
+      const definition = definitionIndex.value.get(item.binding);
+      if (!definition || definition.kind !== item.type) missing.add(`binding:${item.binding}`);
+    }
+    if (item.tree && !treeIdentity.value.byID.has(item.tree)) missing.add(`tree:${item.tree}`);
+    for (const value of Object.values(item.params ?? {}))
+      if (value.field && !fields.has(value.field)) missing.add(`field:${value.field}`);
+  }
+  return missing.size;
+}
+// 当前指针投影到画布坐标；没有画布内指针时使用视口中心。
+function canvasPasteAnchor(): NodePosition | undefined {
+  const bounds = vueFlowRef.value?.getBoundingClientRect();
+  if (!bounds) return undefined;
+  const point = canvasPointer && canvasPointer.x >= bounds.left && canvasPointer.x <= bounds.right
+    && canvasPointer.y >= bounds.top && canvasPointer.y <= bounds.bottom
+    ? canvasPointer : { x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 };
+  return screenToFlowCoordinate(point);
+}
+// 一次提交整组选中节点和组内连线，并分配目标树中的新身份。
+function pasteCanvasSelection(event: ClipboardEvent) {
+  if (!canvasClipboardAvailable(event) || !event.clipboardData) return;
+  const payload = decodeCanvasSelection(event.clipboardData.getData("text/plain"));
+  if (!payload) return;
+  event.preventDefault();
+  if (!guardPendingNavigation()) return;
+  const anchor = canvasPasteAnchor();
+  if (!anchor) return notice("画布尚未就绪，无法粘贴节点", true);
+  if (!Number.isFinite(anchor.x) || !Number.isFinite(anchor.y) || payload.nodes.some(entry =>
+    !Number.isFinite(anchor.x + entry.position.x) || !Number.isFinite(anchor.y + entry.position.y)))
+    return notice("粘贴坐标无效，无法创建节点", true);
+  const missing = missingCanvasReferences(payload.nodes.map(entry => entry.node));
+  const internalChildren = new Set(payload.nodes.flatMap(entry => entry.node.children ?? []));
+  const sourceRoot = payload.root ?? payload.nodes.find(entry => !internalChildren.has(entry.node.id))?.node.id
+    ?? payload.nodes[0]!.node.id;
+  const ids: string[] = [];
+  mutate(() => {
+    const remapped = new Map<string, string>();
+    for (const entry of payload.nodes) remapped.set(entry.node.id, nodeIdentity.value.allocateID());
+    tree.value.layout ??= {};
+    for (const entry of payload.nodes) {
+      const source = entry.node;
+      const id = remapped.get(source.id)!;
+      const copied: BTNode = {
+        ...source,
+        id,
+        codeName: nodeIdentity.value.codeNames.allocateCopy(source.codeName ?? source.type),
+        name: `${source.name ?? kinds[source.type].label} 副本`,
+        children: (source.children ?? []).map(child => remapped.get(child)!),
+      };
+      tree.value.nodes.push(copied);
+      treeIdentity.value.addNode(copied);
+      nodeIdentity.value.addNode(copied);
+      Object.defineProperty(tree.value.layout, id, {
+        value: { x: anchor.x + entry.position.x, y: anchor.y + entry.position.y },
+        enumerable: true, configurable: true, writable: true,
+      });
+      ids.push(id);
+    }
+    if (!tree.value.root) tree.value.root = remapped.get(sourceRoot)!;
+    selectedEdge.value = undefined;
+    selected.value = ids[0]!;
+  });
+  pendingPastedSelection = ids;
+  void selectPastedNodes();
+  notice(missing ? `已粘贴 ${ids.length} 个节点；目标工程缺少 ${missing} 项引用，请重新绑定后校验`
+    : `已粘贴 ${ids.length} 个节点`);
+}
 // 处理保存、撤销和删除快捷键；保存前先应用有效的节点代码名草稿。
 function keydown(e: KeyboardEvent) {
   if (workspaceChanging.value) return;
@@ -1743,6 +1860,7 @@ function beforeUnload(e: BeforeUnloadEvent) {
 watch(tree, (current) => {
   selectedEdge.value = undefined;
   canvasMenu.value = undefined;
+  pendingPastedSelection = undefined;
   nodeIdentity.value = reactive(new NodeIdentityIndex(current));
   cancelNodeID();
 }, { flush: "sync" });
@@ -1773,11 +1891,15 @@ onMounted(() => {
   updateOutputBounds();
   void initializeWorkspace();
   window.addEventListener("keydown", keydown);
+  window.addEventListener("copy", copyCanvasSelection);
+  window.addEventListener("paste", pasteCanvasSelection);
   window.addEventListener("beforeunload", beforeUnload);
 });
 onUnmounted(() => {
   outputResizeObserver?.disconnect();
   window.removeEventListener("keydown", keydown);
+  window.removeEventListener("copy", copyCanvasSelection);
+  window.removeEventListener("paste", pasteCanvasSelection);
   window.removeEventListener("beforeunload", beforeUnload);
 });
 
@@ -2090,13 +2212,15 @@ onUnmounted(() => toolLifecycle.abort());
         :selection-mode="SelectionMode.Partial"
         :node-drag-threshold="3"
         :pane-click-distance="3"
+        @pointermove="rememberCanvasPointer"
+        @pointerleave="clearCanvasPointer"
         @pane-ready="fitCanvasWhenReady"
         @connect="link"
         @edge-update="reconnectEdge"
         @edge-click="selectCanvasEdge"
         @edge-context-menu="openCanvasEdgeMenu"
         @node-click="selectCanvasNode"
-        @nodes-initialized="syncCanvasSelection(); fitCanvasWhenReady()"
+        @nodes-initialized="syncCanvasSelection(); selectPastedNodes(); fitCanvasWhenReady()"
         @selection-end="finishCanvasSelection"
         @node-context-menu="openCanvasNodeMenu"
         @node-mouse-enter="showCanvasNodeComment"
@@ -2168,7 +2292,7 @@ onUnmounted(() => toolLifecycle.abort());
         </template>
       </VueFlow>
       <EventOverlay ref="eventOverlay" :project="project" :events="project.events" :tree-event-i-ds="currentTreeEventIDs" :scope="eventScope" :enum-description="project.eventEnumDescription" :highlighted-i-ds="highlightedEventIDs" :matched-node-count="eventMatchedNodes.size" :auto-open-comments="autoOpenComments" :blocked="eventManagerOpen || !!catalogDialog || !!projectDialog" :commit="commitEventComment" @manage="openEventManager" @scope="setEventScope" @highlight="toggleEventHighlight" @clear-highlight="highlightedEventIDs = new Set()" />
-      <div class="canvas-hint">左键框选 / 拖动选中节点批量移动 · 点击连线后拖动靠近节点的线段改连 · 空白处右键拖动画布 · 右键打开菜单 · Ctrl+A 全选</div>
+      <div class="canvas-hint">左键框选 / 拖动选中节点批量移动 · Ctrl+C 复制选区 / Ctrl+V 粘贴到鼠标位置 · 点击连线后拖动靠近节点的线段改连 · 空白处右键拖动画布 · 右键打开菜单 · Ctrl+A 全选</div>
     </main>
 
     <aside v-show="projectReady" :class="['inspector', { opened: inspectorOpen }]">
