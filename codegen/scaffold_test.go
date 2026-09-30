@@ -12,7 +12,7 @@ import (
 	"github.com/1xxz188/behaviortree/model"
 )
 
-// TestScaffoldCompilesWithGeneratedParameters 验证默认、同包和跨包上下文骨架能与生成参数共同编译并保守返回失败。
+// TestScaffoldCompilesWithGeneratedParameters 验证不同上下文骨架可编译，未实现的启动与取消分支保守返回失败。
 func TestScaffoldCompilesWithGeneratedParameters(t *testing.T) {
 	moduleRoot, err := filepath.Abs("..")
 	if err != nil {
@@ -41,8 +41,40 @@ func TestScaffoldCompilesWithGeneratedParameters(t *testing.T) {
 			}
 			dir := t.TempDir()
 			gomod := "module scaffold.test\n\ngo 1.26.7\n\nrequire github.com/1xxz188/behaviortree v0.0.0\nreplace github.com/1xxz188/behaviortree => " + strconv.Quote(filepath.ToSlash(moduleRoot)) + "\n"
-			// 编译之外直接执行所有生命周期分支，保证未完成骨架不会误报业务成功。
-			testSource := "package behavior\nimport (\"testing\"; bt \"github.com/1xxz188/behaviortree\")\n// TestDefaults 验证骨架未实现时保守失败。\nfunc TestDefaults(t *testing.T) {for _, phase := range []bt.Phase{bt.Start,bt.Resume,bt.Abort}{if Move(nil,0,phase,MoveParams{})!=bt.Failure{t.Fatal(\"动作误报成功\")}};if Ready(nil,0,ReadyParams{}){t.Fatal(\"条件误报成立\")}}\n"
+			// 启动与取消尚无业务实现，可直接验证其保守默认值。
+			testSource := "package behavior\nimport (\"testing\"; bt \"github.com/1xxz188/behaviortree\")\n// TestDefaults 验证骨架未实现时保守失败。\nfunc TestDefaults(t *testing.T) {for _, phase := range []bt.Phase{bt.Start,bt.Abort}{if Move(nil,0,phase,MoveParams{})!=bt.Failure{t.Fatal(\"动作误报成功\")}};if Ready(nil,0,ReadyParams{}){t.Fatal(\"条件误报成立\")}}\n"
+			if context == "any" {
+				// 使用真实运行时帧验证恢复分支会消费结果，且无结果时继续等待。
+				testSource += `
+// TestResumeResult 验证骨架恢复分支处理空通知、成功和失败，并清空已消费状态。
+func TestResumeResult(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		result bt.Status
+		want bt.Status
+	}{
+		{name: "无结果", result: bt.Invalid, want: bt.Running},
+		{name: "成功", result: bt.Success, want: bt.Success},
+		{name: "失败", result: bt.Failure, want: bt.Failure},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			program := NewProgram("")
+			program.Step = func(f *bt.Frame[any], node int) bt.Status {
+				f.State(node).Ready = tc.result != bt.Invalid
+				f.State(node).Result = tc.result
+				got := Move(f, node, bt.Resume, MoveParams{})
+				if got != tc.want { t.Fatalf("恢复状态 = %v，期望 %v", got, tc.want) }
+				if state := f.State(node); state.Ready || state.Result != bt.Invalid { t.Fatal("结果未被消费") }
+				return got
+			}
+			instance, err := bt.NewInstance(program, "test", "main", nil, bt.Options{Post: func(fn func()) { fn() }})
+			if err != nil { t.Fatal(err) }
+			if got := instance.Start(); got != tc.want { t.Fatalf("运行时状态 = %v，期望 %v；错误：%v", got, tc.want, instance.Error()) }
+		})
+	}
+}
+`
+			}
 			if context == "*LocalContext" {
 				testSource += "// LocalContext 是同包上下文测试替身。\ntype LocalContext struct{}\n"
 			}

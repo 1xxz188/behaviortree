@@ -2084,7 +2084,7 @@ onUnmounted(() => toolLifecycle.abort());
           节点库</button
         ><button :class="{ active: tab === 'board' }" @click="navigateTab('board')">
           黑板
-        </button><button type="button" @click="openEventManager">事件</button>
+        </button>
       </div>
       <template v-if="tab === 'nodes'">
         <input
@@ -2220,7 +2220,6 @@ onUnmounted(() => toolLifecycle.abort());
           ><button type="button" class="danger" :disabled="!getSelectedNodes.length || !!selectedEdge || workspaceChanging"
             @click="deleteSelected">删除选中节点（{{ getSelectedNodes.length }}）</button
           ><button @click="layout">自动布局</button
-          ><button type="button" @click="openEventManager">事件</button
           ><button @click="fitView({ padding: 0.18 })">适应画布</button>
           <button type="button" role="switch" :aria-checked="autoOpenComments" class="comment-hover-switch"
             title="关闭后仍可通过节点气泡、事件信息图标或右键菜单查看注释" @click="autoOpenComments = !autoOpenComments">
