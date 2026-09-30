@@ -424,6 +424,11 @@ func (f *Frame[C]) PopDirtyChild(node int) int {
 	return child
 }
 
+// SkipDirtyChild 在 O(1) 时间消费已被守卫拒绝的候选在父节点中的待处理项。
+// 保留候选及后代的缓存失效和异步状态；新通知仍会沿祖先路径重新入队。
+// 仅在守卫明确 Failure 后调用，预算让出或尚未判定的候选不能跳过。
+func (f *Frame[C]) SkipDirtyChild(child int) { f.owner.unqueue(child) }
+
 // OnlyDirtyChild 在 O(1) 时间判断是否只有指定直接子分支待处理，不消费队列。
 // 生成的优先级选择器可据此直接续跑当前动作，避免无关事件重新检查全部高优先守卫。
 func (f *Frame[C]) OnlyDirtyChild(node, child int) bool {

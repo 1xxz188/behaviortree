@@ -694,6 +694,8 @@ func (g *generator) emitNode(i int) {
 				g.line("previousGuard%d:=f.State(%s).Status;guard%d:=%s(f);if guard%d==bt.Running{return f.Exit(node,bt.Running)}", j, g.slot(guard), j, g.nodes[guard].function, j)
 				// 失败候选只在守卫从真变假后重新待命，不因低优先动作事件反复重试。
 				g.line("if previousGuard%d==bt.Success&&guard%d==bt.Failure&&f.State(%s).Status==bt.Failure{f.Reset(%s)}", j, j, g.slot(child), g.slot(child))
+				// 守卫已拒绝候选，消费父队列中的调度项；后代失效状态留待真正进入时处理。
+				g.line("if guard%d==bt.Failure{f.SkipDirtyChild(%s)}", j, g.slot(child))
 				g.line("if guard%d==bt.Success {", j)
 			} else {
 				g.line("{")

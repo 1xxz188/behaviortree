@@ -145,7 +145,7 @@ func TestNodeSlotsAreSymbolic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	methods := map[string]bool{"Enter": true, "State": true, "Exit": true, "Abort": true, "AbortChildren": true, "Reset": true, "Consume": true, "After": true, "OnlyDirtyChild": true, "IsDirty": true, "PopDirtyChild": true}
+	methods := map[string]bool{"Enter": true, "State": true, "Exit": true, "Abort": true, "AbortChildren": true, "Reset": true, "Consume": true, "After": true, "OnlyDirtyChild": true, "IsDirty": true, "PopDirtyChild": true, "SkipDirtyChild": true}
 	for _, file := range r.Files {
 		f, err := parser.ParseFile(token.NewFileSet(), file.Name, file.Source, 0)
 		if err != nil {

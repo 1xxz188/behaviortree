@@ -1,6 +1,8 @@
 package behaviortree
 
 import (
+	"fmt"
+	"reflect"
 	"testing"
 )
 
@@ -351,4 +353,73 @@ func TestDirtyChildReadOnlyQueries(t *testing.T) {
 		t.Fatal("query changed dirty queue order")
 	}
 	i.Close()
+}
+
+// TestSkipDirtyChild 验证拒绝候选可从队列任意位置摘除，同时保留失效状态并允许后续通知重新入队。
+func TestSkipDirtyChild(t *testing.T) {
+	for _, order := range [][]int{{1}, {1, 4, 5}, {4, 1, 5}, {4, 5, 1}} {
+		t.Run(fmt.Sprint(order), func(t *testing.T) {
+			q := &testQueue{}
+			p := &Program[int]{Version: "skip-dirty", Roots: map[string]int{"main": 0}, Nodes: []Node{
+				{ID: "root", TreeID: "main", Parent: -1, End: 6},
+				{ID: "candidate", TreeID: "main", Parent: 0, End: 4},
+				{ID: "guard", TreeID: "main", Parent: 1, End: 3},
+				{ID: "work", TreeID: "main", Parent: 1, End: 4},
+				{ID: "before", TreeID: "main", Parent: 0, End: 5},
+				{ID: "after", TreeID: "main", Parent: 0, End: 6},
+			}, Step: func(f *Frame[int], node int) Status {
+				if cached, run := f.Enter(node); !run {
+					return cached
+				}
+				return f.Exit(node, Running)
+			}}
+			i, err := NewInstance(p, "one", "main", 0, q.opts())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(i.Close)
+			i.Start()
+			for _, child := range order {
+				if child == 1 {
+					i.markDirty(3)
+				} else {
+					i.markDirty(child)
+				}
+			}
+			candidate, work := i.state(1), i.state(3)
+			candidate.Status, candidate.Data = Failure, "候选缓存"
+			work.Status, work.Started, work.Ready, work.Result, work.Token = Success, true, true, Failure, 123
+			workBefore, steps := *work, i.Steps()
+			i.frame.SkipDirtyChild(1)
+			i.frame.SkipDirtyChild(1) // 重复消费必须保持幂等，不破坏兄弟队列。
+			if !reflect.DeepEqual(*work, workBefore) || !candidate.dirty || candidate.Status != Failure || candidate.Data != "候选缓存" || candidate.dirtyHead != 3 || candidate.dirtyTail != 3 || i.Steps() != steps {
+				t.Fatal("消费队列项改变了子树失效、异步状态或缓存", *candidate, *work)
+			}
+			for _, child := range order {
+				if child != 1 && i.frame.PopDirtyChild(0) != child {
+					t.Fatal("摘除候选改变了兄弟队列顺序")
+				}
+			}
+			if i.frame.PopDirtyChild(0) != -1 {
+				t.Fatal("已拒绝候选仍占据父队列")
+			}
+			if _, run := i.frame.Enter(0); !run {
+				t.Fatal("无法消费根节点通知")
+			}
+			// 后代本来已脏，新通知仍须传播到刚消费过的根，而不能提前停止。
+			i.markDirty(3)
+			if !i.frame.OnlyDirtyChild(0, 1) || !i.frame.IsDirty(0) {
+				t.Fatal("新通知未重新唤醒被拒绝候选")
+			}
+			if _, run := i.frame.Enter(3); !run {
+				t.Fatal("进入候选时使用了已经失效的动作缓存")
+			}
+			if allocs := testing.AllocsPerRun(100, func() {
+				i.markDirty(3)
+				i.frame.SkipDirtyChild(1)
+			}); allocs != 0 {
+				t.Fatal("队列摘除或重新入队出现分配", allocs)
+			}
+		})
+	}
 }
