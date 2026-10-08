@@ -47,6 +47,7 @@ export interface BTNode {
   tree?: string;
   count?: number;
   durationMs?: number;
+  reselectOnCompletion?: boolean; // priority 候选结束后按最新条件重新选择后续行为。
 }
 export interface Position {
   x: number;

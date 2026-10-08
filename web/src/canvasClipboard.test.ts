@@ -33,6 +33,18 @@ test("单节点复制生成独立快照", () => {
   assert.equal(entry.node.params!.Count!.value, 3);
 });
 
+// 模式配置需要随复制粘贴完整保留，外部载荷不能给其他节点开启或伪造开关类型。
+test("复制粘贴保留并校验优先级完成后重选", () => {
+  const node: BTNode = { id: "one", type: "priority", reselectOnCompletion: true };
+  const payload = decodeCanvasSelection(encodeCanvasSelection([{ node, position: { x: 0, y: 0 } }])!);
+  assert.equal(payload?.nodes[0]?.node.reselectOnCompletion, true);
+  for (const candidate of [{ ...node, type: "sequence" }, { ...node, reselectOnCompletion: "true" }]) {
+    assert.equal(decodeCanvasSelection(stringifyJSON({ kind: "behaviortree/nodes", version: 1,
+      nodes: [{ node: candidate, position: { x: 0, y: 0 } }],
+    })), undefined);
+  }
+});
+
 // 无损 JSON 往返必须保留参数里的 uint64，不能经原生 JSON 转为不精确的 number。
 test("复制粘贴保留 64 位整数参数", () => {
   const large = parseJSON("18446744073709551615");

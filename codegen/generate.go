@@ -70,17 +70,19 @@ type occurrence struct {
 
 // generator 只存在于代码生成阶段，不进入游戏运行时。
 type generator struct {
-	buf            bytes.Buffer                // 生成文本。
-	p              model.Project               // 规范化的工程。
-	nodes          []occurrence                // 前序展开后的节点。
-	roots          map[string]int              // 各独立树的入口。
-	defs           map[string]model.Definition // 业务函数声明。
-	fields         map[string]int              // 黑板字段槽位。
-	eventNames     map[string]string           // 稳定事件 ID 到生成常量名的索引。
-	context        string                      // 生成的上下文类型表达式。
-	packageName    string                      // 由生成包路径末级目录推导的包名。
-	countSymbol    string                      // 节点总数及最后一个子树的排他上界常量。
-	noParentSymbol string                      // 根节点无父槽位的哨兵常量。
+	buf                     bytes.Buffer                // 生成文本。
+	p                       model.Project               // 规范化的工程。
+	nodes                   []occurrence                // 前序展开后的节点。
+	roots                   map[string]int              // 各独立树的入口。
+	defs                    map[string]model.Definition // 业务函数声明。
+	fields                  map[string]int              // 黑板字段槽位。
+	eventNames              map[string]string           // 稳定事件 ID 到生成常量名的索引。
+	context                 string                      // 生成的上下文类型表达式。
+	packageName             string                      // 由生成包路径末级目录推导的包名。
+	countSymbol             string                      // 节点总数及最后一个子树的排他上界常量。
+	noParentSymbol          string                      // 根节点无父槽位的哨兵常量。
+	reselectStateSymbol     string                      // 完成后重选的私有续跑状态类型。
+	reselectCandidateSymbol string                      // 完成候选的私有激活状态类型。
 }
 
 // Generate 按定义树生成确定性的多个 Go 文件，不读写手写业务文件。
@@ -313,6 +315,7 @@ func Generate(project model.Project) (Result, error) {
 		}
 	}
 	g.line("}}")
+	g.emitPriorityReselectSupport()
 	source, err := format.Source(g.buf.Bytes())
 	if err != nil {
 		return Result{}, fmt.Errorf("格式化生成代码: %w", err)
@@ -487,6 +490,14 @@ func (g *generator) assignSymbols() error {
 	}
 	g.countSymbol = claim("btNodeCount")
 	g.noParentSymbol = claim("btNodeNoParent")
+	for _, n := range g.nodes {
+		if n.node.ReselectOnCompletion {
+			used["btRearmPriorityCandidate"] = true
+			g.reselectStateSymbol = claim("btPriorityReselectState")
+			g.reselectCandidateSymbol = claim("btPriorityReselectCandidate")
+			break
+		}
+	}
 	identities := make(map[string]bool, len(g.nodes))
 	shortChains := make(map[string]string)
 	bases := make([]string, len(g.nodes))
@@ -674,6 +685,10 @@ func (g *generator) emitNode(i int) {
 		}
 		g.line("}}")
 	case model.NodePriority:
+		if n.node.ReselectOnCompletion {
+			g.emitReselectPriority(i)
+			break
+		}
 		// 只有当前分支被唤醒且其首守卫未变时，直接续跑，避免探测所有高优先守卫。
 		g.line("if s.Count!=0&&f.State(s.Cursor).Status==bt.Running&&f.OnlyDirtyChild(node,s.Cursor){guardDirty:=false;switch s.Cursor{")
 		for _, child := range n.children {

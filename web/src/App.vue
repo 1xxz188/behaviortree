@@ -894,6 +894,16 @@ function confirmDeleteCanvasNode() {
     if (selected.value === target.id) selected.value = "";
   });
 }
+// 开关只适用于优先级节点，关闭时省略可选字段；变更进入历史并使生成预览过期。
+function changePriorityCompletion(event: Event) {
+  if (node.value?.type !== "priority") return;
+  const enabled = (event.target as HTMLInputElement).checked;
+  if (enabled === !!node.value.reselectOnCompletion) return;
+  mutate(() => {
+    if (enabled) node.value!.reselectOnCompletion = true;
+    else delete node.value!.reselectOnCompletion;
+  });
+}
 // 确认时整组复核身份，只在一个历史边界内清理节点及相关索引。
 function confirmDeleteCanvasNodes() {
   const menu = canvasMenu.value;
@@ -2303,6 +2313,7 @@ onUnmounted(() => toolLifecycle.abort());
             <div class="node-detail">
               <!-- 画布读取已提交代码名；业务绑定 ID 由属性面板独立管理。 -->
               <span v-if="data.node.codeName" class="node-code-name" :title="data.node.comment ? undefined : data.node.codeName">{{ data.node.codeName }}</span>
+              <span v-if="data.node.type === 'priority' && data.node.reselectOnCompletion" class="priority-completion">完成后重选</span>
               <span v-if="['wait', 'timeout'].includes(data.node.type)"
                 >{{ data.node.durationMs ?? 0 }} ms</span
               ><span v-else-if="['repeat', 'retry'].includes(data.node.type)"
@@ -2348,6 +2359,13 @@ onUnmounted(() => toolLifecycle.abort());
           各优先分支为 Sequence，首节点为
           Condition；最后一个分支可以作为无条件回退。
         </p>
+        <template v-if="node.type === 'priority'">
+          <label class="priority-completion-option">
+            <input type="checkbox" :checked="!!node.reselectOnCompletion" aria-describedby="priority-completion-help" @change="changePriorityCompletion" />
+            完成后重选
+          </label>
+          <p id="priority-completion-help" class="muted identity-help">候选成功或失败后，按最新条件重选后续行为；例如采集完成后进入停留。已结束候选在条件重新成立或新指令重置前不会重复执行；没有后续候选时返回最近结束的结果。</p>
+        </template>
         <label class="field-label"
           >名称<input
             :value="node.name"

@@ -112,6 +112,12 @@ export function validateProjectTypes(value: unknown): void {
       if (node.comment !== undefined && typeof node.comment !== "string") {
         throw new Error(`${nodePath}.comment: 应为字符串`);
       }
+      if (node.reselectOnCompletion !== undefined && typeof node.reselectOnCompletion !== "boolean") {
+        throw new Error(`${nodePath}.reselectOnCompletion: 应为布尔值`);
+      }
+      if (node.reselectOnCompletion === true && node.type !== "priority") {
+        throw new Error(`${nodePath}.reselectOnCompletion: 完成后重选仅适用于 priority 节点`);
+      }
     });
   });
 }

@@ -537,6 +537,9 @@ pre {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.priority-completion { color: #68dfc6; }
+.priority-completion-option { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.priority-completion-option input { width: auto; margin: 0; }
 .vue-flow__handle {
   width: 9px;
   height: 9px;

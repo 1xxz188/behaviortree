@@ -72,6 +72,8 @@ export function decodeCanvasSelection(text: string): CanvasClipboardPayload | un
         }
       }
       if (node.count !== undefined && !isGoInt64(node.count)) return undefined;
+      if (node.reselectOnCompletion !== undefined && (typeof node.reselectOnCompletion !== "boolean"
+        || node.reselectOnCompletion && node.type !== "priority")) return undefined;
       if (node.durationMs !== undefined && (typeof node.durationMs !== "number"
         || !Number.isSafeInteger(node.durationMs) || node.durationMs < 0 || node.durationMs > 9_223_372_036_854)) return undefined;
       ids.add(node.id);

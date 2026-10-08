@@ -131,6 +131,20 @@ test("干净工程直接生成，未保存工程预览只请求预览接口", as
   assert.equal(preview.context.dirty.value, true);
 });
 
+// 保存和代码预览均发送完成后重选配置，不能在请求快照中丢失新属性。
+test("完成后重选配置完整进入保存和预览请求", async () => {
+  const s = editor();
+  const root = s.context.project.value.trees[0]!.nodes[0]!;
+  root.type = "priority";
+  root.reselectOnCompletion = true;
+  s.context.saveState.changed();
+  await s.saveCurrent();
+  await s.generate(false);
+  assert.deepEqual(s.calls.map(call => call.path), ["/api/project", "/api/preview"]);
+  assert.equal(s.calls[0]!.body.project.trees[0].nodes[0].reselectOnCompletion, true);
+  assert.equal(s.calls[1]!.body.trees[0].nodes[0].reselectOnCompletion, true);
+});
+
 // 保存失败必须保留未保存标记、显示错误，并终止生成。
 test("生成前保存失败不会写入生成目录", async () => {
   const { context, calls, generate } = editor({ dirty: true, saveError: true });

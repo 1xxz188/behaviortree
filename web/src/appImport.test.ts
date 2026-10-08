@@ -185,3 +185,15 @@ test("未提供错误回调的操作仍在状态栏显示错误", async () => {
   assert.equal(s.context.importFailure.value, undefined);
   assert.equal(s.context.busy.value, false);
 });
+
+// 导入通过真实请求和安装过程保留可选配置，旧格式无需新增默认字段。
+test("导入保留 Priority 完成后重选配置", async () => {
+  const s = session();
+  const incoming = blankProject();
+  incoming.trees[0]!.nodes[0]!.type = "priority";
+  incoming.trees[0]!.nodes[0]!.reselectOnCompletion = true;
+  await s.workflow.importProject(fileInput(stringifyJSON(incoming)).event);
+  assert.equal(s.context.importFailure.value, undefined);
+  assert.equal(s.context.project.value.trees[0]!.nodes[0]!.reselectOnCompletion, true);
+  assert.equal((s.requests[0] as typeof incoming).trees[0]!.nodes[0]!.reselectOnCompletion, true);
+});

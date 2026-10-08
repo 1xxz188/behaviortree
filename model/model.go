@@ -87,17 +87,18 @@ type Position struct {
 
 // Node 是内建节点或 Go 业务节点的一次使用。
 type Node struct {
-	ID         string           `json:"id"`                   // 树内稳定节点 ID。
-	CodeName   string           `json:"codeName,omitempty"`   // 树内唯一的持久化代码名，与显示名称和运行身份独立。
-	Type       NodeType         `json:"type"`                 // 内建节点种类。
-	Name       string           `json:"name,omitempty"`       // 可选显示名。
-	Comment    string           `json:"comment,omitempty"`    // 节点实例的多行注释，供画布悬浮展示并生成到 Go 节点函数。
-	Children   []string         `json:"children,omitempty"`   // 有序子节点 ID。
-	Binding    string           `json:"binding,omitempty"`    // 业务节点目录 ID。
-	Params     map[string]Value `json:"params,omitempty"`     // 参数常量或字段绑定。
-	Tree       string           `json:"tree,omitempty"`       // subtree 引用的树 ID。
-	Count      int              `json:"count,omitempty"`      // repeat/retry 的有限次数。
-	DurationMS int64            `json:"durationMs,omitempty"` // wait/timeout 的非负毫秒数。
+	ID                   string           `json:"id"`                             // 树内稳定节点 ID。
+	CodeName             string           `json:"codeName,omitempty"`             // 树内唯一的持久化代码名，与显示名称和运行身份独立。
+	Type                 NodeType         `json:"type"`                           // 内建节点种类。
+	Name                 string           `json:"name,omitempty"`                 // 可选显示名。
+	Comment              string           `json:"comment,omitempty"`              // 节点实例的多行注释，供画布悬浮展示并生成到 Go 节点函数。
+	Children             []string         `json:"children,omitempty"`             // 有序子节点 ID。
+	Binding              string           `json:"binding,omitempty"`              // 业务节点目录 ID。
+	Params               map[string]Value `json:"params,omitempty"`               // 参数常量或字段绑定。
+	Tree                 string           `json:"tree,omitempty"`                 // subtree 引用的树 ID。
+	Count                int              `json:"count,omitempty"`                // repeat/retry 的有限次数。
+	DurationMS           int64            `json:"durationMs,omitempty"`           // wait/timeout 的非负毫秒数。
+	ReselectOnCompletion bool             `json:"reselectOnCompletion,omitempty"` // priority 候选结束后按最新条件重新选路，缺省沿用候选结果。
 }
 
 // Diagnostic 定位可在画布上显示的校验错误。

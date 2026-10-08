@@ -168,7 +168,20 @@ func Validate(p Project) []Diagnostic {
 		add("", "", "generation.contextType", "跨包上下文必须使用导出的 Go 类型")
 	}
 	symbols := map[string]bool{"NewProgram": true, "btStep": true, "btAbort": true, "btDuration": true, "bt": true, "time": true, "ctxpkg": true, "init": true, "f": true, "s": true, "phase": true, "node": true}
+	// 仅开启完成后重选的工程生成该固定 helper；发现首个配置后停止扫描，保留旧工程命名兼容。
+priorityReselection:
+	for _, tree := range p.Trees {
+		for _, node := range tree.Nodes {
+			if node.ReselectOnCompletion {
+				symbols["btRearmPriorityCandidate"] = true
+				break priorityReselection
+			}
+		}
+	}
 	if p.Generation.ContextImport == "" {
+		if contextType == "btRearmPriorityCandidate" && symbols[contextType] {
+			add("", "", "generation.contextType", "上下文类型与生成的 btRearmPriorityCandidate 函数重名")
+		}
 		symbols[contextType] = true
 	}
 	fields := map[string]Field{}
@@ -297,6 +310,9 @@ func Validate(p Project) []Diagnostic {
 			}
 			if len(n.Children) < min || max >= 0 && len(n.Children) > max {
 				add(tree.ID, n.ID, "children", "子节点数量不符合节点类型要求")
+			}
+			if n.ReselectOnCompletion && n.Type != NodePriority {
+				add(tree.ID, n.ID, "reselectOnCompletion", "完成后重选仅适用于 priority 节点")
 			}
 			for _, id := range n.Children {
 				parents[id]++
