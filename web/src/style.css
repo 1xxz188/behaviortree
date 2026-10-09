@@ -423,14 +423,6 @@ pre {
   background: #1b2b36;
   border-color: #344854;
 }
-.canvas-hint {
-  position: absolute;
-  bottom: 14px;
-  right: 16px;
-  font-size: 11px;
-  color: #5e788a;
-  pointer-events: none;
-}
 .bt-node {
   position: relative;
   width: 188px;
@@ -690,6 +682,10 @@ pre {
   font-size: 12px;
   white-space: nowrap;
 }
+/* 隐藏阅读区时保留挂载及滚动位置，重新展开后按可用高度显示。 */
+.output-body { display: flex; flex: 1; flex-direction: column; min-height: 0; overflow: hidden; }
+.output-tabs .output-toggle { display: flex; align-items: center; gap: 5px; }
+.output-toggle span { font-size: 16px; }
 .output-path {
   font-size: 10px;
   overflow: hidden;

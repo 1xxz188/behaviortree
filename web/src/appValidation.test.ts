@@ -36,7 +36,7 @@ function session() {
     semanticRevision: ref(1), generationRequests: new GenerationRequests(),
     diagnostics: ref<Diagnostic[]>([]), validationResult: ref<{ revision: number; count: number }>(),
     busy: ref(false), message: ref(""), error: ref(false), bottomTab: ref("source"),
-    outputHeight: ref<number>(),
+    outputHeight: ref<number>(), outputCollapsed: ref(true), // 校验必须重新打开已最小化的输出区。
     ensureIdentityDraftsApplied: () => true,
     nextTick: (callback: () => void) => callback(), fitView: () => {},
     setOutputHeight: (height: number) => { context.outputHeight.value = height; },
@@ -63,6 +63,7 @@ test("校验通过后显示明确结果而不是点击校验占位提示", async
   await s.validate();
   assert.deepEqual(s.calls, ["/api/validate"]);
   assert.equal(s.context.bottomTab.value, "diagnostics");
+  assert.equal(s.context.outputCollapsed.value, false);
   const html = await s.render();
   assert.match(html, /校验通过/);
   assert.doesNotMatch(html, /点击「校验」/);

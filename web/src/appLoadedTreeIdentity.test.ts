@@ -54,7 +54,7 @@ function session() {
     codeNameDraft: ref(""), codeNameError: ref(""),
     codeNameInput: ref({ focus: () => {} }), // 无效快捷键提交时定位代码名输入。
     treeIdentity: shallowRef(new TreeIdentityIndex(project.value)), renamingTree: false,
-    treeMenu: shallowRef(), catalogMenu: shallowRef(), catalogDialog: shallowRef(), canvasMenu: shallowRef(), editRevision: 0, occupiedIDs: new Set<string>(),
+    treeMenu: shallowRef(), catalogMenu: shallowRef(), catalogDialog: shallowRef(), canvasMenu: shallowRef(), canvasHelpOpen: ref(false), editRevision: 0, occupiedIDs: new Set<string>(),
     eventManagerOpen: ref(false), highlightedEventIDs: shallowRef(new Set<string>()), eventScope: ref("tree"),
     eventIndex: computed(() => new EventRegistryIndex(project.value)), pruneHighlightedEvents,
     codeSnapshot: shallowRef(), scaffoldSnapshot: shallowRef(), semanticRevision: ref(0),

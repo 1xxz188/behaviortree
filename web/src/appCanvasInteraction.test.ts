@@ -29,6 +29,8 @@ const names = new Set([
   "reconnectEdge",
   "canvasClipboardAvailable", "copyCanvasSelection", "missingCanvasReferences", "canvasPasteAnchor", "pasteCanvasSelection",
   "rememberCanvasPointer", "clearCanvasPointer", "selectPastedNodes",
+  "resetCanvasContextGesture", "startCanvasContextGesture", "isCanvasContextDrag", "moveCanvasContextGesture",
+  "finishCanvasContextGesture", "cancelCanvasContextGesture", "preventDraggedCanvasContextMenu",
 ]);
 const handlers = script.statements.filter(statement => ts.isFunctionDeclaration(statement)
   && names.has(statement.name?.text ?? "")).map(statement => statement.getText(script)).join("\n");
@@ -113,7 +115,7 @@ function session() {
     eventIndex: computed(() => new EventRegistryIndex(project.value)), pruneHighlightedEvents,
     definitionIndex: computed(() => new Map(project.value.catalog.map(item => [item.id, item]))),
     projectDialog: shallowRef(), importFailure: shallowRef(),
-    nodeHelp: ref<string>(), catalogCopy: ref<string>(), scaffoldOverwrite: shallowRef<string>(),
+    nodeHelp: ref<string>(), canvasHelpOpen: ref(false), catalogCopy: ref<string>(), scaffoldOverwrite: shallowRef<string>(),
     codeSnapshot: shallowRef(), scaffoldSnapshot: shallowRef(),
     cancelTreeID: () => {}, cancelNodeID: () => {}, followSourceSelection: () => {},
     getNodes: flowNodes, getSelectedNodes,
@@ -136,7 +138,7 @@ function session() {
       y: (point.y - bounds.top - viewport.y) / viewport.zoom,
     }),
   };
-  const app = runInNewContext(`let canvasPointer; let pendingPastedSelection; let canvasMenuInstance = 0;\n${js}\n({ ${[...names].join(", ")} });`, context) as {
+  const app = runInNewContext(`let canvasPointer; let pendingPastedSelection; let canvasMenuInstance = 0; let canvasContextGesture;\n${js}\n({ ${[...names].join(", ")} });`, context) as {
     moveNode: (event: { nodes: CanvasNode[] }) => void; // 一次拖动只产生一个历史边界。
     deleteSelected: () => void; // 只请求确认，不直接删除。
     confirmDeleteCanvasNode: () => void; // 确认后校验捕获目标并删除。
@@ -145,6 +147,12 @@ function session() {
     openCanvasNodeMenu: (event: { event: unknown; node: { id: string } }) => void; // 节点右键入口。
     openCanvasEdgeMenu: (event: { event: { clientX: number; clientY: number; preventDefault: () => void; stopPropagation: () => void }; edge: { source: string; target: string } }) => void; // 连线右键入口。
     openCanvasPaneMenu: (event: unknown) => void; // 空白右键入口。
+    resetCanvasContextGesture: () => void; // 任意新按下结束上一右键手势。
+    startCanvasContextGesture: (event: unknown) => void; // 捕获画布右键起点。
+    moveCanvasContextGesture: (event: unknown) => void; // 全局跟踪拖动路径。
+    finishCanvasContextGesture: (event: unknown) => void; // 释放前更新最终位移。
+    cancelCanvasContextGesture: () => void; // 模拟浏览器失焦或指针取消。
+    preventDraggedCanvasContextMenu: (event: unknown) => void; // 拦截本次拖动产生的原生菜单。
     syncCanvasSelection: () => Promise<void>; // 程序化选择同步。
     finishCanvasSelection: () => void; // 框选结束时同步属性面板。
     selectCanvasNode: (event: { node: CanvasNode }) => void; // 单击更新属性主节点。
@@ -427,14 +435,15 @@ test("未应用草稿及弹窗阻止剪贴板修改", () => {
   assert.equal(stringifyJSON(s.project.value), before);
 });
 
-// 节点帮助、目录复制文本和骨架覆盖确认打开时，快捷键交给对应浮层或浏览器。
+// 画布与节点帮助、目录复制文本和骨架覆盖确认打开时，快捷键交给浮层或浏览器。
 test("帮助和复制覆盖浮层保留原生复制粘贴且不改工程", () => {
-  for (const state of ["nodeHelp", "catalogCopy", "scaffoldOverwrite"] as const) {
+  for (const state of ["nodeHelp", "canvasHelpOpen", "catalogCopy", "scaffoldOverwrite"] as const) {
     const s = session();
     const source = clipboardEvent();
     s.app.copyCanvasSelection(source.event);
     const before = stringifyJSON(s.project.value);
-    s[state].value = "打开";
+    if (state === "canvasHelpOpen") s.canvasHelpOpen.value = true;
+    else s[state].value = "打开";
     const copy = clipboardEvent("原有文本");
     const paste = clipboardEvent(source.text);
     s.app.copyCanvasSelection(copy.event);
@@ -954,6 +963,74 @@ test("注释提交拒绝过期目标及不可编辑工程", () => {
     assert.equal(s.undoStack.value.length, 0);
     assert.equal(s.canvasMenu.value, undefined);
   }
+});
+
+// Vue Flow 在漏发中间移动事件时会把外部释放误判为单击，菜单必须检查实际画布边界。
+test("右键在画布外释放不会弹出画布功能菜单", () => {
+  const s = session();
+  for (const [clientX, clientY] of [[760, 250], [90, 250], [300, 40], [300, 460]]) {
+    s.app.openCanvasPaneMenu({ button: 2, clientX, clientY, preventDefault: () => {} });
+    assert.equal(s.canvasMenu.value, undefined, `外部释放坐标 ${clientX},${clientY}`);
+  }
+});
+
+// 菜单事件本身也提供最终位移，即使宿主漏发移动和释放仍不能把拖动当作单击。
+test("漏发移动或释放事件的右键拖动不会打开画布节点连线菜单", () => {
+  for (const target of ["pane", "node", "edge"] as const) {
+    const s = session();
+    s.app.startCanvasContextGesture({ button: 2, clientX: 120, clientY: 230 });
+    const event = { button: 2, clientX: 160, clientY: 230, preventDefault: () => {}, stopPropagation: () => {} };
+    if (target === "pane") s.app.openCanvasPaneMenu(event);
+    else if (target === "node") s.app.openCanvasNodeMenu({ event, node: { id: "2" } });
+    else s.app.openCanvasEdgeMenu({ event, edge: { source: "1", target: "2" } });
+    assert.equal(s.canvasMenu.value, undefined, target);
+  }
+});
+
+// 曾离开画布的拖动在回到原点后释放，仍属于同一次拖动而非新的单击。
+test("右键拖出画布再返回起点释放仍不弹菜单", () => {
+  const s = session();
+  const origin = { button: 2, clientX: 120, clientY: 230, preventDefault: () => {} };
+  s.app.startCanvasContextGesture(origin);
+  s.app.moveCanvasContextGesture({ clientX: 760, clientY: 230 });
+  s.app.moveCanvasContextGesture(origin);
+  s.app.finishCanvasContextGesture(origin);
+  s.app.openCanvasPaneMenu(origin);
+  assert.equal(s.canvasMenu.value, undefined);
+});
+
+// 失焦取消只影响当前手势，重新按下后的正常右键和三像素以内的抖动仍可打开菜单。
+test("取消右键拖动后下一次独立右键单击恢复菜单", () => {
+  const s = session();
+  const menu = () => s.canvasMenu.value; // 每次读取回调更新后的菜单，不沿用先前空值的类型收窄。
+  const origin = { button: 2, clientX: 120, clientY: 230, preventDefault: () => {} };
+  s.app.startCanvasContextGesture(origin);
+  s.app.cancelCanvasContextGesture();
+  s.app.openCanvasPaneMenu(origin);
+  assert.equal(menu(), undefined);
+  s.app.resetCanvasContextGesture();
+  s.app.startCanvasContextGesture(origin);
+  const click = { ...origin, clientX: 122 };
+  s.app.finishCanvasContextGesture(click);
+  s.app.openCanvasPaneMenu(click);
+  assert.equal(menu()?.x, 122);
+});
+
+// 原生菜单晚于释放事件也要拦截，新按下则保留画布外的正常浏览器菜单行为。
+test("外部释放后原生菜单被拦截且不影响新的画布外右键", () => {
+  const s = session();
+  s.app.startCanvasContextGesture({ button: 2, clientX: 120, clientY: 230 });
+  s.app.finishCanvasContextGesture({ button: 2, clientX: 760, clientY: 230 });
+  let prevented = 0;
+  let stopped = 0;
+  const event = { clientX: 760, clientY: 230, preventDefault: () => { prevented++; }, stopPropagation: () => { stopped++; } };
+  s.app.preventDraggedCanvasContextMenu(event);
+  assert.equal(prevented, 1);
+  assert.equal(stopped, 1);
+  s.app.resetCanvasContextGesture();
+  s.app.preventDraggedCanvasContextMenu(event);
+  assert.equal(prevented, 1);
+  assert.equal(stopped, 1);
 });
 
 // 菜单入口只将捕获目标交给统一浮层，不提交内容或改动多选与主节点。

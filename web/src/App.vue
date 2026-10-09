@@ -8,6 +8,7 @@ import type { EventScope } from "./eventRegistry";
 import { matchedEventNodes, pruneHighlightedEvents, toggleHighlightedEvent } from "./eventHighlight";
 import CatalogBrowser from "./CatalogBrowser.vue";
 import NodeHelpDialog from "./NodeHelpDialog.vue";
+import CanvasHelpDialog from "./CanvasHelpDialog.vue";
 import CatalogCopyDialog from "./CatalogCopyDialog.vue";
 import { CatalogOrganizationIndex } from "./catalogOrganization";
 import { validatedCatalogJSON } from "./catalogTransfer";
@@ -38,7 +39,6 @@ import { businessNamePrefix } from "./businessNames";
 import { VueFlow, Handle, Position, SelectionMode, ConnectionMode, useVueFlow, getRectOfNodes } from "@vue-flow/core";
 import type { Connection, EdgeMouseEvent, EdgeUpdateEvent, NodeDragEvent, NodeMouseEvent } from "@vue-flow/core";
 import { Background } from "@vue-flow/background";
-import { Controls } from "@vue-flow/controls";
 import {
   autoLayout,
   clone,
@@ -277,12 +277,23 @@ const treeContextMenu = ref<InstanceType<typeof TreeContextMenu>>(); // 检查�
 const nodeCommentTooltip = ref<InstanceType<typeof NodeCommentTooltip>>(); // 全画布共享一个注释浮层。
 const autoOpenComments = ref(true); // 默认开启，仅当前页面会话有效，不持久化。
 const canvasMoving = ref(false); // 视口移动及缩放动画期间禁止新悬浮，结束事件解除。
+// 右键手势独立于 Vue Flow 的平移事件，覆盖越界释放和宿主漏发移动事件。
+interface CanvasContextGesture {
+  x: number; // 按下时的视口横坐标。
+  y: number; // 按下时的视口纵坐标。
+  pressed: boolean; // 是否仍处于按住右键的阶段。
+  moved: boolean; // 曾超出单击容差或被取消，释放后的菜单事件也应拦截。
+}
+let canvasContextGesture: CanvasContextGesture | undefined;
 // 加载工程时一次建立黑板字段占用集合；树和节点使用各自的递增索引。
 let occupiedIDs = new Set<string>();
 const treeIdentity = shallowRef(new TreeIdentityIndex(project.value)); // 索引持有响应式树和节点。
 rebuildIDs();
 const tab = ref("nodes");
 const bottomTab = ref("diagnostics");
+const canvasHelpOpen = ref(false); // 操作说明仅在用户打开帮助时展示。
+const outputCollapsed = ref(false); // 输出区默认展开，最小化时保留标签入口。
+const collapsedOutputHeight = 42; // 包含标签栏和边框的最小化高度。
 const workbench = ref<HTMLElement>();
 const outputPanel = ref<HTMLElement>();
 const outputHeight = ref<number>();
@@ -293,7 +304,10 @@ const resizingOutput = ref(false);
 let outputResizeObserver: ResizeObserver | undefined;
 let outputDrag: { pointerId: number; startY: number; startHeight: number } | undefined;
 
+// 向下拖过阅读区最小高度时收起，展开高度独立保留供再次打开。
 function setOutputHeight(height: number) {
+  outputCollapsed.value = height < minOutputHeight;
+  if (outputCollapsed.value) return;
   outputHeight.value = Math.round(
     Math.max(minOutputHeight, Math.min(maxOutputHeight.value, height)),
   );
@@ -313,10 +327,11 @@ function updateOutputBounds() {
       workbench.value.clientHeight - rows[0]! - rows[3]! - minCanvasHeight,
     ),
   );
-  if (outputHeight.value !== undefined) setOutputHeight(outputHeight.value);
+  if (!outputCollapsed.value && outputHeight.value !== undefined) setOutputHeight(outputHeight.value);
   renderedOutputHeight.value = Math.round(outputPanel.value.getBoundingClientRect().height);
 }
 
+// 捕获调整手势，使指针离开分隔线后仍能拖动和结束。
 function startOutputResize(event: PointerEvent) {
   if (event.button !== 0 || outputDrag || !outputPanel.value) return;
   event.preventDefault();
@@ -332,11 +347,13 @@ function startOutputResize(event: PointerEvent) {
   resizingOutput.value = true;
 }
 
+// 按本次手势的起点计算高度，避免累计移动误差。
 function resizeOutput(event: PointerEvent) {
   if (!outputDrag || outputDrag.pointerId !== event.pointerId) return;
   setOutputHeight(outputDrag.startHeight + outputDrag.startY - event.clientY);
 }
 
+// 释放或取消手势时清理指针捕获和调整状态。
 function stopOutputResize(event: PointerEvent) {
   if (!outputDrag || outputDrag.pointerId !== event.pointerId) return;
   outputDrag = undefined;
@@ -346,16 +363,25 @@ function stopOutputResize(event: PointerEvent) {
     handle.releasePointerCapture(event.pointerId);
 }
 
+// 分隔线支持键盘调整，Home 收起、End 展开到允许的最大高度。
 function resizeOutputWithKeyboard(event: KeyboardEvent) {
   if (!["ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
   event.preventDefault();
   updateOutputBounds();
   const height = outputPanel.value?.getBoundingClientRect().height ?? 170;
   setOutputHeight(
-    event.key === "Home" ? minOutputHeight :
+    event.key === "Home" ? collapsedOutputHeight :
     event.key === "End" ? maxOutputHeight.value :
+    outputCollapsed.value && event.key === "ArrowUp" ? minOutputHeight :
     height + (event.key === "ArrowUp" ? 20 : -20),
   );
+}
+// 最小化按钮不覆盖用户之前选择的展开高度。
+function toggleOutputPanel() { outputCollapsed.value = !outputCollapsed.value; }
+// 双击分隔线恢复默认展开布局。
+function resetOutputHeight() {
+  outputCollapsed.value = false;
+  outputHeight.value = undefined;
 }
 const undoStack = ref<EditorSnapshot[]>([]);
 const redoStack = ref<EditorSnapshot[]>([]);
@@ -808,10 +834,47 @@ function deleteSelected() {
   canvasMenu.value = { tree: tree.value, node: target, deletesRoot: target.id === tree.value.root,
     x: 0, y: 0, initialMode: "delete" };
 }
+// 任意新的鼠标按下都结束旧手势，避免影响画布外的后续独立右键操作。
+function resetCanvasContextGesture() { canvasContextGesture = undefined; }
+// 使用与 Vue Flow 平移相同的鼠标事件流记录起点，不抢占其拖动捕获。
+function startCanvasContextGesture(event: MouseEvent) {
+  if (event.button === 2) canvasContextGesture = { x: event.clientX, y: event.clientY, pressed: true, moved: false };
+}
+// 同时检查菜单事件的最终坐标，漏发中间移动及释放事件时也能识别拖动。
+function isCanvasContextDrag(event: MouseEvent): boolean {
+  if (!canvasContextGesture) return false;
+  const dx = event.clientX - canvasContextGesture.x;
+  const dy = event.clientY - canvasContextGesture.y;
+  if (dx * dx + dy * dy > 9) canvasContextGesture.moved = true;
+  return canvasContextGesture.moved;
+}
+// 捕获阶段跟踪画布外的移动，返回原点也不会把拖动重新当成单击。
+function moveCanvasContextGesture(event: MouseEvent) {
+  if (canvasContextGesture?.pressed) isCanvasContextDrag(event);
+}
+// 在 Vue Flow 的释放回调前确认最终位移，保留判定供随后原生菜单事件使用。
+function finishCanvasContextGesture(event: MouseEvent) {
+  if (event.button !== 2 || !canvasContextGesture) return;
+  isCanvasContextDrag(event);
+  canvasContextGesture.pressed = false;
+}
+// 浏览器失焦或取消时不再允许这次未完整结束的手势打开菜单。
+function cancelCanvasContextGesture() {
+  if (!canvasContextGesture?.pressed) return;
+  canvasContextGesture.pressed = false;
+  canvasContextGesture.moved = true;
+}
+// 仅拦截源自画布拖动的菜单事件，画布外的新右键操作保持浏览器行为。
+function preventDraggedCanvasContextMenu(event: MouseEvent) {
+  if (!isCanvasContextDrag(event)) return;
+  event.preventDefault();
+  event.stopPropagation();
+}
 // 右击节点仅捕获操作对象，不改变已有多选和属性草稿。
 function openCanvasNodeMenu({ event, node: item }: NodeMouseEvent) {
   event.preventDefault();
   event.stopPropagation();
+  if (isCanvasContextDrag(event as MouseEvent)) return;
   const target = nodeIndex.value.get(item.id);
   if (!target || workspaceChanging.value) return;
   const anchor = event.target instanceof Element ? event.target.closest<HTMLElement>(".vue-flow__node") ?? undefined : undefined;
@@ -821,6 +884,7 @@ function openCanvasNodeMenu({ event, node: item }: NodeMouseEvent) {
 function openCanvasEdgeMenu({ event, edge }: EdgeMouseEvent) {
   event.preventDefault();
   event.stopPropagation();
+  if (isCanvasContextDrag(event as MouseEvent)) return;
   if (workspaceChanging.value || !projectReady.value) return;
   const source = nodeIndex.value.get(edge.source);
   const target = nodeIndex.value.get(edge.target);
@@ -829,10 +893,13 @@ function openCanvasEdgeMenu({ event, edge }: EdgeMouseEvent) {
   selected.value = "";
   canvasMenu.value = { tree: tree.value, edge: { source, target }, x: (event as MouseEvent).clientX, y: (event as MouseEvent).clientY };
 }
-// Vue Flow 仅在右键未发生平移时派发此事件，拖动画布不会误弹菜单。
+// Vue Flow 可能把越界释放合成为菜单事件，必须同时核验手势和实际释放位置。
 function openCanvasPaneMenu(event: MouseEvent) {
   event.preventDefault();
-  if (workspaceChanging.value || !projectReady.value) return;
+  if (workspaceChanging.value || !projectReady.value || isCanvasContextDrag(event)) return;
+  const bounds = vueFlowRef.value?.getBoundingClientRect();
+  if (!bounds || event.clientX < bounds.left || event.clientX > bounds.right
+    || event.clientY < bounds.top || event.clientY > bounds.bottom) return;
   canvasMenu.value = { tree: tree.value, x: event.clientX, y: event.clientY };
 }
 // 悬浮时通过节点索引定位正文，只测量事件对应的节点元素。
@@ -1297,6 +1364,7 @@ async function loadProject(load: () => Promise<Project>) {
 // 第一次查看输出时提供足够的阅读高度，后续尊重手动调整。
 function showOutput(tab: string) {
   bottomTab.value = tab;
+  outputCollapsed.value = false;
   if (outputHeight.value === undefined) {
     setOutputHeight(320);
     void nextTick(() => fitView({ padding: 0.18 }));
@@ -1766,7 +1834,7 @@ function clearCanvasPointer() { canvasPointer = undefined; }
 function canvasClipboardAvailable(event: ClipboardEvent): boolean {
   if (workspaceChanging.value || !projectReady.value || catalogDialog.value || eventManagerOpen.value
     || projectDialog.value || importFailure.value || treeMenu.value || catalogMenu.value || canvasMenu.value
-    || nodeHelp.value || catalogCopy.value !== undefined || scaffoldOverwrite.value) return false;
+    || nodeHelp.value || canvasHelpOpen.value || catalogCopy.value !== undefined || scaffoldOverwrite.value) return false;
   return !(event.target as HTMLElement | null)?.closest?.("input,textarea,select,[contenteditable]");
 }
 // 将 Vue Flow 的完整选区写入系统剪贴板；普通文本选择仍交给浏览器复制。
@@ -1860,8 +1928,9 @@ function pasteCanvasSelection(event: ClipboardEvent) {
 }
 // 处理保存、撤销和删除快捷键；保存前先应用有效的节点代码名草稿。
 function keydown(e: KeyboardEvent) {
+  if (e.key === "ContextMenu" || e.shiftKey && e.key === "F10") resetCanvasContextGesture();
   if (workspaceChanging.value) return;
-  if (catalogDialog.value || eventManagerOpen.value || projectDialog.value || importFailure.value || treeMenu.value || catalogMenu.value || canvasMenu.value || !projectReady.value) return;
+  if (catalogDialog.value || eventManagerOpen.value || projectDialog.value || importFailure.value || treeMenu.value || catalogMenu.value || canvasMenu.value || canvasHelpOpen.value || !projectReady.value) return;
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
     e.preventDefault();
     (e.target as HTMLElement)?.blur();
@@ -1938,6 +2007,12 @@ onMounted(() => {
   window.addEventListener("copy", copyCanvasSelection);
   window.addEventListener("paste", pasteCanvasSelection);
   window.addEventListener("beforeunload", beforeUnload);
+  window.addEventListener("mousedown", resetCanvasContextGesture, true);
+  window.addEventListener("mousemove", moveCanvasContextGesture, true);
+  window.addEventListener("mouseup", finishCanvasContextGesture, true);
+  window.addEventListener("contextmenu", preventDraggedCanvasContextMenu, true);
+  window.addEventListener("blur", cancelCanvasContextGesture);
+  window.addEventListener("pointercancel", cancelCanvasContextGesture, true);
 });
 onUnmounted(() => {
   outputResizeObserver?.disconnect();
@@ -1945,6 +2020,12 @@ onUnmounted(() => {
   window.removeEventListener("copy", copyCanvasSelection);
   window.removeEventListener("paste", pasteCanvasSelection);
   window.removeEventListener("beforeunload", beforeUnload);
+  window.removeEventListener("mousedown", resetCanvasContextGesture, true);
+  window.removeEventListener("mousemove", moveCanvasContextGesture, true);
+  window.removeEventListener("mouseup", finishCanvasContextGesture, true);
+  window.removeEventListener("contextmenu", preventDraggedCanvasContextMenu, true);
+  window.removeEventListener("blur", cancelCanvasContextGesture);
+  window.removeEventListener("pointercancel", cancelCanvasContextGesture, true);
 });
 
 // 在支持 WebMCP 的浏览器内复用同一组编辑、校验动作；普通浏览器不受影响。
@@ -2010,7 +2091,7 @@ onUnmounted(() => toolLifecycle.abort());
     :inert="workspaceChanging"
     @input="nativeHistory"
     :class="{ 'resizing-output': resizingOutput }"
-    :style="outputHeight === undefined ? {} : { '--output-height': `${outputHeight}px` }"
+    :style="outputCollapsed ? { '--output-height': `${collapsedOutputHeight}px` } : outputHeight === undefined ? {} : { '--output-height': `${outputHeight}px` }"
   >
     <header class="topbar">
       <div class="brand">
@@ -2232,6 +2313,7 @@ onUnmounted(() => toolLifecycle.abort());
             @click="deleteSelected">删除选中节点（{{ getSelectedNodes.length }}）</button
           ><button @click="layout">自动布局</button
           ><button @click="fitView({ padding: 0.18 })">适应画布</button>
+          <button type="button" aria-haspopup="dialog" @click="canvasHelpOpen = true">帮助</button>
           <button type="button" role="switch" :aria-checked="autoOpenComments" class="comment-hover-switch"
             title="关闭后仍可通过节点气泡、事件信息图标或右键菜单查看注释" @click="autoOpenComments = !autoOpenComments">
             <span class="switch-track" aria-hidden="true"><span /></span>悬浮展开注释
@@ -2257,6 +2339,7 @@ onUnmounted(() => toolLifecycle.abort());
         :selection-mode="SelectionMode.Partial"
         :node-drag-threshold="3"
         :pane-click-distance="3"
+        @mousedown.capture="startCanvasContextGesture"
         @pointermove="rememberCanvasPointer"
         @pointerleave="clearCanvasPointer"
         @pane-ready="fitCanvasWhenReady"
@@ -2282,7 +2365,6 @@ onUnmounted(() => toolLifecycle.abort());
         @drop="dropPaletteNode"
       >
         <Background pattern-color="#34434f" :gap="22" :size="1" />
-        <Controls position="bottom-left" :show-interactive="false" />
         <template #node-behavior="{ data }">
           <div
             :class="[
@@ -2337,8 +2419,7 @@ onUnmounted(() => toolLifecycle.abort());
           </div>
         </template>
       </VueFlow>
-      <EventOverlay ref="eventOverlay" :project="project" :events="project.events" :tree-event-i-ds="currentTreeEventIDs" :scope="eventScope" :enum-description="project.eventEnumDescription" :highlighted-i-ds="highlightedEventIDs" :matched-node-count="eventMatchedNodes.size" :auto-open-comments="autoOpenComments" :blocked="eventManagerOpen || !!catalogDialog || !!projectDialog" :commit="commitEventComment" @manage="openEventManager" @scope="setEventScope" @highlight="toggleEventHighlight" @clear-highlight="highlightedEventIDs = new Set()" />
-      <div class="canvas-hint">左键框选 / 拖动选中节点批量移动 · Delete 删除选区（需确认）· Ctrl+C 复制选区 / Ctrl+V 粘贴到鼠标位置 · 点击连线后拖动靠近节点的线段改连 · 空白处右键拖动画布 · 右键打开菜单 · Ctrl+A 全选</div>
+      <EventOverlay ref="eventOverlay" :project="project" :events="project.events" :tree-event-i-ds="currentTreeEventIDs" :scope="eventScope" :enum-description="project.eventEnumDescription" :highlighted-i-ds="highlightedEventIDs" :matched-node-count="eventMatchedNodes.size" :auto-open-comments="autoOpenComments" :blocked="eventManagerOpen || !!catalogDialog || !!projectDialog || canvasHelpOpen" :commit="commitEventComment" @manage="openEventManager" @scope="setEventScope" @highlight="toggleEventHighlight" @clear-highlight="highlightedEventIDs = new Set()" />
     </main>
 
     <aside v-show="projectReady" :class="['inspector', { opened: inspectorOpen }]">
@@ -2612,22 +2693,23 @@ onUnmounted(() => toolLifecycle.abort());
         aria-label="调整输出面板高度"
         aria-orientation="horizontal"
         aria-controls="output-panel"
-        :aria-valuemin="minOutputHeight"
+        :aria-valuemin="collapsedOutputHeight"
         :aria-valuemax="maxOutputHeight"
         :aria-valuenow="renderedOutputHeight"
-        title="上下拖动调整高度，双击恢复默认高度"
+        :aria-valuetext="outputCollapsed ? '已最小化' : `${renderedOutputHeight} 像素`"
+        title="上下拖动调整高度，向下拖动可最小化，双击恢复默认高度"
         @pointerdown="startOutputResize"
         @pointermove="resizeOutput"
         @pointerup="stopOutputResize"
         @pointercancel="stopOutputResize"
         @lostpointercapture="stopOutputResize"
         @keydown="resizeOutputWithKeyboard"
-        @dblclick="outputHeight = undefined"
+        @dblclick="resetOutputHeight"
       ></div>
       <div class="output-tabs">
         <button
           :class="{ active: bottomTab === 'diagnostics' }"
-          @click="bottomTab = 'diagnostics'"
+          @click="showOutput('diagnostics')"
         >
           校验结果
           <span v-if="diagnostics.length">{{
@@ -2635,13 +2717,17 @@ onUnmounted(() => toolLifecycle.abort());
           }}</span></button
         ><button
           :class="{ active: bottomTab === 'source' }"
-          @click="bottomTab = 'source'"
+          @click="showOutput('source')"
         >
           生成代码</button
-        ><button :class="{ active: bottomTab === 'scaffold' }" @click="bottomTab = 'scaffold'">业务骨架</button>
+        ><button :class="{ active: bottomTab === 'scaffold' }" @click="showOutput('scaffold')">业务骨架</button>
         <span class="output-tab-spacer"></span>
         <button :disabled="busy" @click="() => action(() => readGenerated())">查看上次生成</button>
+        <button type="button" class="output-toggle" :aria-expanded="!outputCollapsed" aria-controls="output-body"
+          :aria-label="outputCollapsed ? '展开输出面板' : '最小化输出面板'" :title="outputCollapsed ? '展开输出面板' : '最小化输出面板'"
+          @click="toggleOutputPanel"><span aria-hidden="true">{{ outputCollapsed ? '▴' : '▾' }}</span>{{ outputCollapsed ? '展开' : '最小化' }}</button>
       </div>
+      <div v-show="!outputCollapsed" id="output-body" class="output-body">
       <div v-if="bottomTab !== 'diagnostics'" class="code-toolbar">
         <button :disabled="busy" @click="bottomTab === 'scaffold' ? previewScaffold() : generate(false)">
           {{ bottomTab === 'scaffold' ? '更新业务骨架' : '更新预览' }}
@@ -2692,6 +2778,7 @@ onUnmounted(() => toolLifecycle.abort());
         <p>{{ bottomTab === 'scaffold' ? '根据动作、条件和上下文生成函数签名及 TODO；可复制或下载为独立手写文件。' : '预览使用当前工程生成完整 Go 源码，不写文件。选中节点可定位对应函数，点击代码行号可返回画布。' }}</p>
         <button :disabled="busy" @click="bottomTab === 'scaffold' ? previewScaffold() : generate(false)">{{ bottomTab === 'scaffold' ? '生成业务骨架' : '预览当前工程' }}</button>
       </div>
+      </div>
     </section>
     <footer :class="['statusbar', { error }]">
       <span><i :class="{ busy }"></i>{{ message }}</span
@@ -2710,6 +2797,7 @@ onUnmounted(() => toolLifecycle.abort());
       @change="importProject"
     />
     <NodeHelpDialog v-if="nodeHelp" :type="nodeHelp" @close="nodeHelp = undefined" />
+    <CanvasHelpDialog v-if="canvasHelpOpen" @close="canvasHelpOpen = false" />
     <EventManager v-if="eventManagerOpen" ref="eventManager" :project="project" :index="eventIndex" :revision="editRevision" :commit="commitEventChange" @close="eventManagerOpen = false" />
     <CatalogManager v-if="catalogDialog" ref="catalogManager" :catalog="project.catalog" :project="project" :project-revision="editRevision" :initial-mode="catalogDialog.mode" :initial-kind="catalogDialog.kind"
       :initial-definition="catalogDialog.definition" :initial-folder="catalogDialog.folderId"
@@ -2727,7 +2815,7 @@ onUnmounted(() => toolLifecycle.abort());
     <ImportErrorDialog v-if="importFailure" :name="importFailure.name" :message="importFailure.message" @close="importFailure = undefined" />
     <ScaffoldOverwriteDialog v-if="scaffoldOverwrite" :path="scaffoldOverwrite.path" @close="closeScaffoldOverwrite" />
     <NodeCommentTooltip ref="nodeCommentTooltip" :tree="tree" :commit="commitNodeComment" :auto-open="autoOpenComments"
-      :disabled="!projectReady || busy || workspaceChanging || canvasMoving || !!(canvasMenu || treeMenu || catalogMenu || catalogDialog || projectDialog || importFailure || nodeHelp || catalogCopy || scaffoldOverwrite)" />
+      :disabled="!projectReady || busy || workspaceChanging || canvasMoving || canvasHelpOpen || !!(canvasMenu || treeMenu || catalogMenu || catalogDialog || projectDialog || importFailure || nodeHelp || catalogCopy || scaffoldOverwrite)" />
     <CanvasContextMenu v-if="canvasMenu" :key="canvasMenu.instance ?? `${canvasMenu.node?.id ?? (canvasMenu.edge ? `${canvasMenu.edge.source.id}/${canvasMenu.edge.target.id}` : 'pane')}:${canvasMenu.x}:${canvasMenu.y}:${canvasMenu.initialMode ?? 'menu'}`"
       :node="canvasMenu.node" :nodes="canvasMenu.nodes" :edge="canvasMenu.edge" :deletes-root="canvasMenu.deletesRoot" :x="canvasMenu.x" :y="canvasMenu.y" :initial-mode="canvasMenu.initialMode"
       :disabled="!projectReady || busy || workspaceChanging" :png-busy="pngExportBusy"
