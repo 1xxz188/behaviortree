@@ -540,6 +540,8 @@ pre {
 .priority-completion { color: #68dfc6; }
 .priority-completion-option { display: flex; align-items: center; gap: 8px; font-size: 12px; }
 .priority-completion-option input { width: auto; margin: 0; }
+/* 复选框说明保留正间距，覆盖身份字段帮助文字的负上边距。 */
+.priority-completion-option + .identity-help { margin-top: 8px; }
 .vue-flow__handle {
   width: 9px;
   height: 9px;
