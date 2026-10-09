@@ -45,6 +45,11 @@ func opaqueNodeID(id string) bool {
 
 // defaultCodeName 优先复用简短语义 ID；随机或非法 ID 则返回类型基名，并要求追加数字。
 func defaultCodeName(n Node) (string, bool) {
+	if n.NamingVersion == PrefixedBusinessNaming {
+		if prefix := businessNamePrefix(n.Type.String()); prefix != "" {
+			return prefix, true
+		}
+	}
 	name := n.ID
 	forceNumber := !ValidCodeName(name) || opaqueNodeID(name)
 	if forceNumber {

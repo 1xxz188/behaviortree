@@ -108,3 +108,44 @@ test("拒绝伪造的节点字段", () => {
     })), undefined);
   }
 });
+
+// 剪贴板快照保留新旧命名身份；复制本身不迁移原节点，只有粘贴出的新实例执行新规则。
+test("业务节点剪贴板往返保留旧名称及新前缀规则元数据", () => {
+  const originals: BTNode[] = [
+    { id: "old", type: "condition", codeName: "LegacyCheck", namingVersion: 0 },
+    { id: "new-action", type: "action", codeName: "ActionMove", namingVersion: 1 },
+    { id: "new-condition", type: "condition", codeName: "IsReady", namingVersion: 1 },
+    { id: "old-missing", type: "condition" },
+    { id: "new-missing", type: "condition", namingVersion: 1 },
+  ];
+  const entries = originals.map(node => ({ node, position: { x: 10, y: 20 } }));
+  const text = encodeCanvasSelection(entries)!;
+  const payload = decodeCanvasSelection(text)!;
+  assert.deepEqual(payload.nodes.map(entry => entry.node), originals);
+  payload.nodes[1]!.node.codeName = "ActionMoveAgain";
+  assert.equal(originals[1]!.codeName, "ActionMove");
+  assert.equal(originals[0]!.codeName, "LegacyCheck");
+  assert.equal(originals[0]!.namingVersion, 0);
+});
+
+// 外部剪贴板无法伪造新规则；前缀、ASCII 格式、版本类型和适用节点种类必须同时合法。
+test("剪贴板拒绝错误的新业务前缀及伪造规则版本", () => {
+  for (const node of [
+    { id: "one", type: "action", codeName: "Move", namingVersion: 1 },
+    { id: "one", type: "action", codeName: "IsReady", namingVersion: 1 },
+    { id: "one", type: "condition", codeName: "ActionMove", namingVersion: 1 },
+    { id: "one", type: "action", codeName: "Action", namingVersion: 1 },
+    { id: "one", type: "condition", codeName: "Is", namingVersion: 1 },
+    { id: "one", type: "condition", codeName: "isReady", namingVersion: 1 },
+    { id: "one", type: "action", codeName: "ActionMove\n", namingVersion: 1 },
+    { id: "one", type: "action", codeName: "Action移动", namingVersion: 1 },
+    { id: "one", type: "action", codeName: "ActionMove", namingVersion: null },
+    { id: "one", type: "action", codeName: "ActionMove", namingVersion: "1" },
+    { id: "one", type: "action", codeName: "ActionMove", namingVersion: 2 },
+    { id: "one", type: "action", namingVersion: false },
+    { id: "one", type: "sequence", codeName: "Sequence1", namingVersion: 1 },
+  ]) assert.equal(decodeCanvasSelection(stringifyJSON({
+    kind: "behaviortree/nodes", version: 1,
+    nodes: [{ node, position: { x: 0, y: 0 } }],
+  })), undefined);
+});

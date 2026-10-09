@@ -3,6 +3,7 @@ import { validCodeName } from "./codeNames.ts";
 import { isNodeType } from "./enums.ts";
 import { parseJSON, stringifyJSON } from "./json.ts";
 import type { BTNode, Position } from "./project.ts";
+import { businessNameError, businessNamePrefix } from "./businessNames.ts";
 
 // 复制条目保存节点快照和相对选区左上角的位置。
 export interface CanvasClipboardEntry {
@@ -61,6 +62,7 @@ export function decodeCanvasSelection(text: string): CanvasClipboardPayload | un
         || typeof position.x !== "number" || !Number.isFinite(position.x)
         || typeof position.y !== "number" || !Number.isFinite(position.y)) return undefined;
       if (node.codeName !== undefined && !validCodeName(node.codeName)) return undefined;
+      if (businessNameError(node.type, node.codeName ?? businessNamePrefix(node.type) + "1", node.namingVersion)) return undefined;
       for (const field of ["name", "comment", "binding", "tree"] as const) {
         if (node[field] !== undefined && typeof node[field] !== "string") return undefined;
       }

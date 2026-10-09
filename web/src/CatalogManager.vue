@@ -12,6 +12,7 @@ import { normalizeEventDescription, validateEventRegistry } from "./eventRegistr
 import EventMultiSelect from "./EventMultiSelect.vue";
 import CatalogBrowser from "./CatalogBrowser.vue";
 import type { CatalogOrganizationIndex } from "./catalogOrganization";
+import { BUSINESS_NAMING_VERSION, businessNameError, businessNamePrefix } from "./businessNames";
 
 const props = withDefaults(defineProps<{
   catalog: Definition[]; // 当前工程目录；提交成功前不修改。
@@ -90,7 +91,23 @@ function transfer(operation: "copy" | "download") {
   emit("transfer", operation);
 }
 const editingID = ref("");
-const draft = ref({ id: "", name: "", kind: props.initialKind ?? "action", goName: "", eventIds: [] as string[] });
+const draft = ref<Definition & { eventIds: string[] }>({ id: "", name: "", kind: props.initialKind ?? "action", goName: businessNamePrefix(props.initialKind ?? "action"), namingVersion: BUSINESS_NAMING_VERSION, eventIds: [] });
+const functionPrefix = computed(() => businessNamePrefix(draft.value.kind)); // 当前种类的固定前缀。
+const prefixedNaming = computed(() => draft.value.namingVersion === BUSINESS_NAMING_VERSION); // 旧定义仍可原名编辑。
+// 输入框只编辑后缀，固定前缀不进入可删除的输入区域。
+const functionSuffix = computed({
+  get: () => draft.value.goName.startsWith(functionPrefix.value) ? draft.value.goName.slice(functionPrefix.value.length) : draft.value.goName,
+  set: (value: string) => { draft.value.goName = functionPrefix.value + value; },
+});
+const functionNameError = computed(() => businessNameError(draft.value.kind, draft.value.goName, draft.value.namingVersion)); // 提交前显示规则错误。
+// 新规则切换种类只替换前缀并保留后缀，编辑历史定义不隐式改名。
+watch(() => draft.value.kind, (kind, previous) => {
+  if (!prefixedNaming.value) return;
+  const oldPrefix = businessNamePrefix(previous), prefix = businessNamePrefix(kind);
+  if (draft.value.goName.startsWith(prefix)) return;
+  const suffix = draft.value.goName.startsWith(oldPrefix) ? draft.value.goName.slice(oldPrefix.length) : draft.value.goName;
+  draft.value.goName = prefix + suffix;
+}, { flush: "sync" });
 const draftRevision = ref(props.projectRevision); // 提交时拒绝工程或注册表变化后的旧表单。
 const parameters = ref<ParameterDraft[]>([]);
 let parameterKey = 0;
@@ -193,7 +210,7 @@ function changeMode(next: "create" | "edit" | "import" | "manage", discard = fal
   acknowledged.value = false;
   error.value = "";
   editingID.value = "";
-  draft.value = { id: "", name: "", kind: props.initialKind ?? "action", goName: "", eventIds: [] };
+  draft.value = { id: "", name: "", kind: props.initialKind ?? "action", goName: businessNamePrefix(props.initialKind ?? "action"), namingVersion: BUSINESS_NAMING_VERSION, eventIds: [] };
   draftRevision.value = props.projectRevision;
   parameters.value = [];
   fileLabel.value = "";
@@ -212,7 +229,7 @@ function editDefinition(item: Definition) {
   if (busy.value || props.disabled) return;
   if (!changeMode("edit")) return;
   editingID.value = item.id;
-  draft.value = { id: item.id, name: item.name, kind: item.kind, goName: item.goName, eventIds: [...(item.eventIds ?? [])] };
+  draft.value = { id: item.id, name: item.name, kind: item.kind, goName: item.goName, namingVersion: item.namingVersion ?? 0, eventIds: [...(item.eventIds ?? [])] };
   draftRevision.value = props.projectRevision;
   parameters.value = (item.params ?? []).map((parameter) => ({
     key: parameterKey++, name: parameter.name, type: parameter.type, comment: parameter.comment ?? "",
@@ -253,6 +270,7 @@ function draftDefinition(): Definition {
   return {
     id: draft.value.id.trim(), name: draft.value.name.trim(), kind: draft.value.kind,
     goName: draft.value.goName.trim(), eventIds: [...draft.value.eventIds],
+    ...(draft.value.namingVersion ? { namingVersion: draft.value.namingVersion } : {}),
     params: parameters.value.map((parameter): Parameter => ({
       name: parameter.name.trim(), type: parameter.type,
       ...(parameter.comment.trim() ? { comment: parameter.comment.trim() } : {}),
@@ -285,7 +303,7 @@ async function readCatalog(event: Event) {
 // 已有输入时禁用示例按钮，避免无提示地覆盖用户尚未解析的 JSON。
 function fillExample() {
   if (busy.value || importText.value.trim()) return;
-  importText.value = stringifyJSON({ kind: "behaviortree.catalog", schemaVersion: 4, events: [], catalog: [{ id: "move_to", name: "移动到目标", kind: "action", goName: "MoveTo", params: [{ name: "Speed", type: "float64", default: 1.5, comment: "移动速度" }] }] }, 2);
+  importText.value = stringifyJSON({ kind: "behaviortree.catalog", schemaVersion: 4, events: [], catalog: [{ id: "move_to", name: "移动到目标", kind: "action", goName: "ActionMoveTo", namingVersion: BUSINESS_NAMING_VERSION, params: [{ name: "Speed", type: "float64", default: 1.5, comment: "移动速度" }] }] }, 2);
 }
 
 // 显式解析并验证待导入数组，成功后才展示新增、相同和冲突列表。
@@ -345,6 +363,8 @@ async function applyCatalog() {
     for (const [id, choice] of Object.entries(choices.value)) if (choice) decisions.set(id, choice);
     if (mode.value === "create" || mode.value === "edit") {
       const definition = draftDefinition();
+      const failure = businessNameError(definition.kind, definition.goName, definition.namingVersion);
+      if (failure) throw new Error(failure);
       if (!editingID.value && props.catalog.some((item) => item.id === definition.id)) {
         throw new Error(`ID ${definition.id} 已存在，请在“已有定义”中编辑或使用新的 ID`);
       }
@@ -454,10 +474,15 @@ onUnmounted(() => { importRevision.value++; previousFocus?.focus(); });
           </div>
           <form v-else-if="mode === 'create' || mode === 'edit'" id="catalog-form" :class="{ 'pending-form': hasPending }" @submit.prevent="applyCatalog">
             <div class="catalog-grid">
-              <label>定义 ID<input v-model="draft.id" :readonly="Boolean(editingID)" :disabled="busy" placeholder="move_to" required /><small>绑定使用的稳定 ID{{ editingID ? '，编辑时保持固定' : '，请使用未占用的标识' }}。</small></label>
+              <label>定义 ID<input v-model="draft.id" :readonly="Boolean(editingID)" :disabled="busy" placeholder="MoveTo" required /><small>绑定使用的稳定 ID{{ editingID ? '，编辑时保持固定' : '，请使用未占用的标识' }}。</small></label>
               <label>显示名称<input v-model="draft.name" :disabled="busy" placeholder="移动到目标" required /></label>
               <label>种类<select v-model="draft.kind" :disabled="busy"><option value="action">动作</option><option value="condition">条件</option></select></label>
-              <label>业务实现函数<input v-model="draft.goName" :disabled="busy" placeholder="MoveTo" required /><small>同包中的手写 Go 函数，目录内名称必须唯一，可被多个节点复用。节点代码名独立保存。</small></label>
+              <label>业务实现函数
+                <span v-if="prefixedNaming" class="catalog-function-name"><span class="catalog-function-prefix" aria-label="固定函数前缀">{{ functionPrefix }}</span><input v-model="functionSuffix" :disabled="busy" :placeholder="draft.kind === 'action' ? 'MoveTo' : 'Ready'" aria-label="业务函数名称后缀" :aria-invalid="!!functionNameError" aria-describedby="catalog-function-help" required /></span>
+                <input v-else v-model="draft.goName" :disabled="busy" placeholder="MoveTo" required />
+                <small id="catalog-function-help">{{ prefixedNaming ? `固定前缀 ${functionPrefix}，完整函数名：${draft.goName}。` : '历史定义保留原函数名。' }}同包中的手写 Go 函数，目录内名称必须唯一，可被多个节点复用。节点代码名独立保存。</small>
+                <small v-if="functionNameError" class="catalog-name-error" role="alert">{{ functionNameError }}</small>
+              </label>
             </div>
             <div class="catalog-section-title"><h3>参数声明</h3><button type="button" :disabled="busy" @click="addParameter">添加参数</button></div>
             <p class="catalog-hint">参数名称使用 Go 导出成员名，例如 Target。默认值填写 JSON；字符串写为 "文本"，留空表示未设置。悬浮类型或 ⓘ 查看用途和示例。</p>
@@ -514,6 +539,7 @@ onUnmounted(() => { importRevision.value++; previousFocus?.focus(); });
 .pending-form input:not([readonly]),.pending-form select,.pending-form textarea{border-color:#e9aa43;box-shadow:0 0 0 2px #e9aa4333}.pending-apply{border-color:#e9aa43;background:#66451f;color:#fff0c7;font-weight:700}.catalog-pending{margin-top:16px;padding:10px 12px;border:1px solid #e9aa43;border-radius:6px;color:#ffd38a;background:#45331f}
 .catalog-import-tools{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}.catalog-import textarea{font-family:ui-monospace,monospace;font-size:12px}.catalog-preview{margin-top:20px;padding:14px;border:1px solid #385361;border-radius:8px}.catalog-preview ul{list-style:none;margin:10px 0 0;padding:0;max-height:220px;overflow:auto}.catalog-preview li{padding:5px 0;overflow-wrap:anywhere}.catalog-preview li span{color:#a3f1d9;margin-right:8px}
 .catalog-type-info{color:#94aebb;cursor:help;font-size:12px}.catalog-type-hint{line-height:1.5;overflow-wrap:anywhere}
+.catalog-function-name{display:flex;align-items:stretch;min-width:0}.catalog-function-prefix{display:flex;align-items:center;padding:9px 10px;border:1px solid #50776f;border-right:0;border-radius:6px 0 0 6px;background:#1c3b3d;color:#a3f1d9;font-family:ui-monospace,monospace;flex-shrink:0}.catalog-function-name input{border-radius:0 6px 6px 0;font-family:ui-monospace,monospace}.catalog-grid small{overflow-wrap:anywhere}.catalog-name-error{color:#ffc2c2}
 .catalog-overlay{position:fixed;inset:0;z-index:1000;display:grid;place-items:center;padding:16px;background:#071017b8;backdrop-filter:blur(4px);color:#d8e6ed;font:14px/1.5 system-ui,sans-serif}
 .catalog-dialog{width:min(1040px,100%);max-height:calc(100dvh - 32px);display:flex;flex-direction:column;border:1px solid #365260;border-radius:14px;background:#14232d;box-shadow:0 24px 90px #0008;outline:none}
 header,footer,nav{display:flex;align-items:center;gap:12px;padding:18px 24px;flex-shrink:0}header{justify-content:space-between}h2,h3,p{margin:0}h2{font-size:20px}h3{font-size:15px}header p,.catalog-hint,small,footer span{color:#94aebb;font-size:12px}nav{padding-top:0;border-bottom:1px solid #2d414d;flex-wrap:wrap}.catalog-content{padding:22px 24px;overflow:auto;min-height:160px}button,input,select,textarea{box-sizing:border-box;font:inherit;color:inherit;border:1px solid #385361;border-radius:6px;background:#10202a}button{padding:8px 12px;cursor:pointer;white-space:nowrap}button:hover{border-color:#86dec1;background:#1b3540}button:disabled{opacity:.5;cursor:wait}button.active,.catalog-primary{color:#a3f1d9;border-color:#64cfae;background:#1c3b3d}input,select,textarea{padding:9px 10px;width:100%;min-width:0}input:read-only{color:#8297a4}input:focus,select:focus,textarea:focus,button:focus-visible{outline:2px solid #86dec1;outline-offset:2px}label{display:flex;flex-direction:column;gap:6px;min-width:0}.catalog-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.catalog-section-title{display:flex;align-items:center;justify-content:space-between;margin:24px 0 8px}.catalog-parameter{display:grid;grid-template-columns:1fr 130px 1.4fr auto;align-items:end;gap:10px;margin-top:12px;padding:12px;border:1px solid #2e4754;border-radius:8px}.catalog-wide{grid-column:1/-1}.catalog-events{margin-top:20px}.catalog-check{display:flex;flex-direction:row;align-items:flex-start;gap:9px;margin-top:14px}.catalog-check input{width:auto;margin:4px 0 0}.catalog-warning{margin-top:18px;border:1px solid #947039;background:#3c3222;border-radius:8px;padding:14px;color:#f0d7a5}.catalog-warning p{margin-top:5px}.catalog-existing article{display:flex;gap:12px;align-items:center;justify-content:space-between;padding:15px 0;border-bottom:1px solid #2d414d}.catalog-existing small{display:block;margin-top:4px}.catalog-empty{padding:24px;color:#a5becb;border:1px dashed #456170;border-radius:8px}.catalog-import>label,.catalog-import>p{margin-bottom:16px}.catalog-conflict{margin-top:18px;border:1px solid #725c3a;border-radius:8px;padding:16px}.catalog-compare{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:12px 0}.catalog-compare>div{min-width:0}pre{padding:10px;margin:5px 0 0;max-height:240px;overflow:auto;border-radius:5px;background:#0c1821;font-size:12px}.catalog-error{margin-top:18px;padding:12px;border:1px solid #ad6262;background:#46282d;border-radius:6px;color:#ffc2c2;overflow-wrap:anywhere}footer{border-top:1px solid #2d414d}footer span{margin-right:auto}

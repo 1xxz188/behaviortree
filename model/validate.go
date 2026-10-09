@@ -146,6 +146,7 @@ func Validate(p Project) []Diagnostic {
 		add("", "", "catalogOrganization", err.Error())
 	}
 	out = append(out, ValidateEvents(p)...)
+	out = append(out, ValidateBusinessNames(p)...)
 	if _, err := ResolveGoPackage("", p.Generation.PackagePath); err != nil {
 		add("", "", "generation.packagePath", err.Error())
 	}

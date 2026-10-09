@@ -1,5 +1,6 @@
 import type { BTNode, Project, Tree } from "./project.ts";
 import { nodeTypes } from "./enums.ts";
+import { BUSINESS_NAMING_VERSION, businessNameError, businessNamePrefix, prefixedBusinessName } from "./businessNames.ts";
 
 // Go 关键字不能作为独立代码名，规则与后端输入校验一致。
 const keywords = new Set("break default func interface select case defer go map struct chan else goto package switch const fallthrough if range type continue for import return var".split(" "));
@@ -12,6 +13,8 @@ export function validCodeName(value: unknown): value is string {
 
 // 默认名优先沿用可读短 ID；编辑器自动 UUID 回退到节点类型。
 export function defaultCodeName(node: BTNode): { base: string; forceNumber: boolean } {
+  const prefix = businessNamePrefix(node.type);
+  if (node.namingVersion === BUSINESS_NAMING_VERSION && prefix) return { base: prefix, forceNumber: true };
   const randomID = /^node_[0-9a-f]{32}$/i.test(node.id)
     || /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(node.id);
   const readableID = !randomID && validCodeName(node.id);
@@ -67,11 +70,26 @@ export class CodeNameIndex {
     return this.allocate(name.replace(/[0-9]+$/, ""), true);
   }
 
+  // 新建、复制和粘贴只初始化新实例，沿用占用表与后缀游标，保留原节点及旧定义名称。
+  initializeNew(node: BTNode, businessName?: string, copy = false): void {
+    const prefix = businessNamePrefix(node.type);
+    if (!prefix) {
+      if (copy) node.codeName = this.allocateCopy(node.codeName ?? node.type);
+      return;
+    }
+    node.namingVersion = BUSINESS_NAMING_VERSION;
+    const name = prefixedBusinessName(node.type, businessName ?? (copy ? node.codeName ?? "" : ""));
+    const base = /^[A-Za-z][A-Za-z0-9_]*$/.test(name) ? name.slice(0, 40) : prefix;
+    node.codeName = copy ? this.allocateCopy(base) : this.allocate(base, base === prefix);
+  }
+
   // 缺省名称即时写回节点，已有名称校验失败则不改变占用索引。
   add(node: BTNode): void {
     const seed = defaultCodeName(node);
     const name = node.codeName || this.allocate(seed.base, seed.forceNumber);
     if (!validCodeName(name)) throw new Error(`代码名无效：${name}；需为 1–40 位英文开头的字母、数字或下划线，且不能是 Go 关键字`);
+    const failure = businessNameError(node.type, name, node.namingVersion);
+    if (failure) throw new Error(failure);
     if (this.byName.has(name) && this.byName.get(name) !== node) throw new Error(`当前树内代码名已存在：${name}`);
     node.codeName = name;
     this.byName.set(name, node);
@@ -85,6 +103,8 @@ export class CodeNameIndex {
   // 输入草稿只在应用时进行常数时间格式与唯一性检查。
   validateRename(node: BTNode, name: string): string | null {
     if (!validCodeName(name)) return "代码名需为 1–40 位英文开头的字母、数字或下划线，且不能是 Go 关键字";
+    const failure = businessNameError(node.type, name, node.namingVersion);
+    if (failure) return failure;
     const owner = this.byName.get(name);
     return owner && owner !== node ? `当前树内代码名已存在：${name}` : null;
   }

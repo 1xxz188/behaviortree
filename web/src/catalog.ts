@@ -40,7 +40,7 @@ export function parseCatalog(value: unknown): Definition[] {
   return value;
 }
 
-const definitionFields = new Set(["id", "name", "kind", "goName", "params", "eventIds"]);
+const definitionFields = new Set(["id", "name", "kind", "goName", "namingVersion", "params", "eventIds"]);
 const parameterFields = new Set(["name", "type", "comment", "default", "enum"]);
 
 // 严格限制独立定义格式，避免误把工程分类或拼错的字段静默丢弃。
@@ -54,6 +54,7 @@ function rejectUnknownFields(value: object, fields: ReadonlySet<string>, path: s
 function definitionSignature(item: Definition): string {
   return stringifyJSON({
     id: item.id, name: item.name, kind: item.kind, goName: item.goName,
+    namingVersion: item.namingVersion ?? 0,
     params: (item.params ?? []).map(parameter => ({
       name: parameter.name, type: parameter.type, comment: parameter.comment ?? "",
       ...(parameter.default !== undefined ? { default: parameter.default } : {}),

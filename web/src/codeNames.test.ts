@@ -7,6 +7,7 @@ import { captureSnapshot, restoreSnapshot } from "./treeIdentity.ts";
 import { semanticSignature, GenerationRequests } from "./generation.ts";
 import { stringifyJSON } from "./json.ts";
 import { ProjectSaveState } from "./saveState.ts";
+import { BUSINESS_NAMING_VERSION, businessNamePrefix } from "./businessNames.ts";
 
 // 创建包含目标节点的独立树，避免拓扑影响代码名测试。
 function makeTree(nodes: BTNode[]): Tree {
@@ -159,4 +160,174 @@ test("代码名保存与撤销重做保留稳定身份和代码名", () => {
   assert.equal(redone.trees[0]!.nodes[0]!.id, node.id);
   assert.equal(state.dirty, true);
   assert.match(after.project, /"codeName":"Run"/);
+});
+
+// 新业务实例明确启用新规则；未绑定节点也不再沿用历史条件类型名或可读 ID。
+test("新建动作与条件使用固定前缀并共享已有名称占用表", () => {
+  const tree = makeTree([{ id: "legacy", type: "condition", codeName: "Is1" }]);
+  const index = new CodeNameIndex(tree);
+  for (const [id, type, expected] of [
+    ["readable_action", "action", "Action1"],
+    ["readable_condition", "condition", "Is2"],
+    ["another_action", "action", "Action2"],
+  ] as const) {
+    const node: BTNode = { id, type };
+    index.initializeNew(node);
+    index.add(node);
+    tree.nodes.push(node);
+    assert.equal(node.codeName, expected);
+    assert.equal(node.namingVersion, BUSINESS_NAMING_VERSION);
+  }
+  assert.equal(tree.nodes[0]!.codeName, "Is1");
+  assert.equal(tree.nodes[0]!.namingVersion, undefined);
+  const control: BTNode = { id: "readable_wait", type: "wait" };
+  index.initializeNew(control);
+  index.add(control);
+  assert.equal(control.codeName, "Readable_wait");
+  assert.equal(control.namingVersion, undefined);
+});
+
+// 绑定历史函数只给新实例补前缀；已有前缀不重复叠加，重复创建仍按树内索引消歧。
+test("新业务实例兼容历史函数名且不会重复添加固定前缀", () => {
+  const index = new CodeNameIndex(makeTree([]));
+  for (const [id, type, goName, expected] of [
+    ["1", "action", "MoveTo", "ActionMoveTo"],
+    ["2", "action", "ActionMoveTo", "ActionMoveTo1"],
+    ["3", "condition", "Ready", "IsReady"],
+    ["4", "condition", "IsReady", "IsReady1"],
+    ["5", "action", "_MoveTo", "Action_MoveTo"],
+    ["6", "condition", "func", "Isfunc"],
+  ] as const) {
+    const node: BTNode = { id, type };
+    index.initializeNew(node, goName);
+    index.add(node);
+    assert.equal(node.codeName, expected);
+    assert.equal(node.namingVersion, BUSINESS_NAMING_VERSION);
+  }
+});
+
+// 复制历史节点只迁移副本；连续复制与重新加载保留新规则，原节点的名称和元数据不变。
+test("复制历史业务节点给副本补前缀且保留原节点", () => {
+  const originals: BTNode[] = [
+    { id: "old-action", type: "action", codeName: "MoveTo7", binding: "move_to" },
+    { id: "old-condition", type: "condition", codeName: "Ready", namingVersion: 0 },
+  ];
+  const before = clone(originals);
+  const tree = makeTree(originals);
+  const index = new CodeNameIndex(tree);
+  for (const [position, expected] of [[0, "ActionMoveTo1"], [1, "IsReady1"], [0, "ActionMoveTo2"]] as const) {
+    const copied: BTNode = { ...originals[position]!, id: `copy-${tree.nodes.length}` };
+    index.initializeNew(copied, undefined, true);
+    index.add(copied);
+    tree.nodes.push(copied);
+    assert.equal(copied.codeName, expected);
+    assert.equal(copied.namingVersion, BUSINESS_NAMING_VERSION);
+  }
+  assert.deepEqual(originals.slice(0, 2), before);
+  const restored = makeTree(clone(tree.nodes));
+  const loaded = new CodeNameIndex(restored);
+  assert.deepEqual(restored.nodes, tree.nodes);
+  assert.match(loaded.validateRename(restored.nodes[2]!, "MoveAgain")!, /Action/);
+});
+
+// 長业务名先补固定前缀再截短；多次碰撞跨数字位数仍保留前缀和 40 位长度上限。
+test("新业务长名称碰撞分配保留前缀且不扫描节点数组", () => {
+  const tree = makeTree([]);
+  const index = new CodeNameIndex(tree);
+  Object.defineProperty(tree, "nodes", { get() { throw new Error("名称分配不应扫描节点数组"); } });
+  for (const type of ["action", "condition"] as const) {
+    const stem = businessNamePrefix(type) + "Move".repeat(20);
+    for (let i = 0; i <= 125; i++) {
+      const node: BTNode = { id: `${type}-${i}`, type };
+      index.initializeNew(node, "Move".repeat(20) + (i % 2 ? "Target" : "Home"));
+      index.add(node);
+      const expected = i === 0 ? stem.slice(0, 40) : stem.slice(0, 40 - String(i).length) + i;
+      assert.equal(node.codeName, expected);
+      assert.equal(node.codeName!.length, 40);
+      assert.ok(validCodeName(node.codeName));
+      assert.ok(node.codeName!.startsWith(businessNamePrefix(type)));
+    }
+  }
+});
+
+// 无法用于节点 ASCII 代码名的历史函数只影响新实例默认名，回退仍遵守动作和条件前缀。
+test("新业务实例遇到非ASCII或非法函数名时回退固定前缀", () => {
+  const index = new CodeNameIndex(makeTree([]));
+  for (const type of ["action", "condition"] as const) {
+    for (const [position, goName] of ["", "移动", "Move-To", "Move To", "MoveTo\n"].entries()) {
+      const node: BTNode = { id: `${type}-${position}`, type };
+      index.initializeNew(node, goName);
+      index.add(node);
+      assert.equal(node.codeName, businessNamePrefix(type) + (position + 1));
+      assert.equal(node.namingVersion, BUSINESS_NAMING_VERSION);
+    }
+  }
+});
+
+// 新规则重命名同时检查前缀、格式与占用；任何失败均不能改名或丢失原索引项。
+test("新业务代码名重命名拒绝错误前缀且保留原值与索引", () => {
+  const tree = makeTree([]);
+  const index = new CodeNameIndex(tree);
+  for (const type of ["action", "condition"] as const) {
+    const node: BTNode = { id: type, type };
+    index.initializeNew(node, "Ready");
+    index.add(node);
+    const before = node.codeName!;
+    for (const invalid of ["Ready", type === "action" ? "IsReady" : "ActionReady", businessNamePrefix(type),
+      before.toLowerCase(), before + "\n", before + "-Again", before + "A".repeat(40)]) {
+      assert.ok(index.validateRename(node, invalid));
+      assert.throws(() => index.rename(node, invalid));
+      assert.equal(node.codeName, before);
+      assert.equal(index.byName.get(before), node);
+      assert.equal(index.byName.size, type === "action" ? 1 : 2);
+    }
+    const next = businessNamePrefix(type) + "Renamed";
+    index.rename(node, next);
+    assert.equal(node.codeName, next);
+    assert.equal(index.byName.has(before), false);
+    assert.equal(index.byName.get(next), node);
+  }
+});
+
+// 旧实例的显式、缺省和零版本名称按原规则补全，只有已标记的新实例采用新的条件默认前缀。
+test("加载历史业务节点保留原名称与旧默认分配规则", () => {
+  const tree = makeTree([
+    { id: "1", type: "condition" },
+    { id: "2", type: "action" },
+    { id: "ready", type: "condition" },
+    { id: "legacy", type: "condition", codeName: "OldCheck", namingVersion: 0 },
+    { id: "fresh", type: "condition", namingVersion: BUSINESS_NAMING_VERSION },
+  ]);
+  const index = new CodeNameIndex(tree);
+  assert.deepEqual(tree.nodes.map(node => node.codeName), ["Condition1", "Action1", "Ready", "OldCheck", "Is1"]);
+  assert.equal(tree.nodes[0]!.namingVersion, undefined);
+  assert.equal(tree.nodes[3]!.namingVersion, 0);
+  index.rename(tree.nodes[3]!, "StillOldCheck");
+  assert.equal(tree.nodes[3]!.codeName, "StillOldCheck");
+});
+
+// 前缀元数据只约束编辑，实际函数名和代码名相同便不应使在途预览或已生成源码失效。
+test("业务命名版本元数据不改变工程语义签名", () => {
+  const project = blankProject();
+  project.catalog = [
+    { id: "move", name: "移动", kind: "action", goName: "ActionMove" },
+    { id: "ready", name: "就绪", kind: "condition", goName: "IsReady" },
+  ];
+  project.trees[0]!.nodes = [
+    { id: "1", type: "action", codeName: "ActionMove", binding: "move" },
+    { id: "2", type: "condition", codeName: "IsReady", binding: "ready" },
+  ];
+  const signature = semanticSignature(project);
+  const requests = new GenerationRequests();
+  const token = requests.begin(project);
+  for (const version of [0, BUSINESS_NAMING_VERSION] as const) {
+    for (const definition of project.catalog) definition.namingVersion = version;
+    for (const node of project.trees[0]!.nodes) node.namingVersion = version;
+    assert.equal(semanticSignature(project), signature);
+    assert.equal(requests.accepts(token, project), true);
+    assert.equal(project.catalog[0]!.namingVersion, version);
+  }
+  project.catalog[0]!.goName = "ActionMoveAgain";
+  assert.notEqual(semanticSignature(project), signature);
+  assert.equal(requests.accepts(token, project), false);
 });

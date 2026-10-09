@@ -1,6 +1,7 @@
 import { validateCatalogOrganization } from "./catalogOrganization.ts";
 import { validateEventRegistry, validateNextEventID } from "./eventRegistry.ts";
 import type { EventDefinition } from "./project.ts";
+import { businessNameError, businessNamePrefix } from "./businessNames.ts";
 
 // 枚举名称与 Go 的 JSON 表示一致；联合类型不生成数值反向映射。
 export const nodeTypes = [
@@ -75,6 +76,8 @@ export function validateCatalogTypes(value: unknown, path = "catalog"): void {
     const location = `${path}[${index}]`;
     const definition = record(item, location);
     parseDefinitionKind(definition.kind, `${location}.kind`);
+    const failure = businessNameError(String(definition.kind), definition.goName, definition.namingVersion);
+    if (failure) throw new Error(`${location}.goName: ${failure}`);
     items(definition.params, `${location}.params`).forEach((item, index) => {
       const parameterPath = `${location}.params[${index}]`;
       const parameter = record(item, parameterPath);
@@ -109,6 +112,9 @@ export function validateProjectTypes(value: unknown): void {
       const nodePath = `${path}.nodes[${index}]`;
       const node = record(item, nodePath);
       parseNodeType(node.type, `${nodePath}.type`);
+      const failure = businessNameError(String(node.type), node.codeName === undefined || node.codeName === ""
+        ? businessNamePrefix(String(node.type)) + "1" : node.codeName, node.namingVersion);
+      if (failure) throw new Error(`${nodePath}.codeName: ${failure}`);
       if (node.comment !== undefined && typeof node.comment !== "string") {
         throw new Error(`${nodePath}.comment: 应为字符串`);
       }

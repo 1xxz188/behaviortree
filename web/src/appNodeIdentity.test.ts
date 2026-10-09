@@ -46,7 +46,7 @@ function session() {
   const app = runInNewContext(`${js}\n({ applyNodeID, cancelNodeID, addNode, duplicate, nodeIDError, addTree, applyTreeID, cancelTreeID, treeIDError });`, context) as {
     applyNodeID: () => void; // 属性面板及回车共用的提交入口。
     cancelNodeID: () => void; // 放弃身份草稿的入口。
-    addNode: (type: NodeType) => void; // 侧栏和拖拽共用的新增入口。
+    addNode: (type: NodeType, binding?: string) => void; // 侧栏和拖拽共用的新增入口。
     duplicate: () => void; // 复制当前选中节点的入口。
     nodeIDError: { readonly value: string }; // 模板直接使用的即时校验结果。
     addTree: () => void; // 侧栏创建新树的真实入口。
@@ -124,4 +124,41 @@ test("树递增入口及改为100后的101分配，冲突不产生历史", () =>
   assert.equal(s.treeID.value, "100");
   s.app.addTree();
   assert.equal(s.treeID.value, "101");
+});
+
+// 侧栏新增与目录拖入复用真实入口，旧函数声明不被修改，新实例统一采用固定前缀。
+test("真实新增业务节点采用Action与Is前缀并持久保存规则", () => {
+  const s = session();
+  s.app.addNode("action");
+  assert.equal(s.node.value!.codeName, "Action1");
+  assert.equal(s.node.value!.namingVersion, 1);
+  s.app.addNode("condition");
+  assert.equal(s.node.value!.codeName, "Is1");
+  assert.equal(s.node.value!.namingVersion, 1);
+  const legacy = { id: "move_to", name: "移动", kind: "action", goName: "MoveTo" };
+  s.definitionIndex.value.set(legacy.id, legacy);
+  s.app.addNode("action", legacy.id);
+  assert.equal(s.node.value!.codeName, "ActionMoveTo");
+  assert.equal(s.node.value!.namingVersion, 1);
+  s.app.addNode("action", legacy.id);
+  assert.equal(s.node.value!.codeName, "ActionMoveTo1");
+  assert.equal(legacy.goName, "MoveTo");
+});
+
+// 复制历史业务节点只改变新实例的名称，旧节点身份、代码名与标记均保持不变。
+test("真实复制旧业务节点使用新前缀且原节点保留旧名", () => {
+  const s = session();
+  const legacy = { id: "10", type: "condition" as const, codeName: "CheckReady", name: "就绪" };
+  s.tree.value.nodes.push(legacy);
+  const original = s.tree.value.nodes.at(-1)!;
+  s.treeIdentity.value.addNode(original);
+  s.nodeIdentity.value.addNode(original);
+  s.selected.value = original.id;
+  s.app.duplicate();
+  assert.equal(s.node.value!.codeName, "IsCheckReady1");
+  assert.equal(s.node.value!.namingVersion, 1);
+  assert.equal(original.codeName, "CheckReady");
+  assert.equal(original.namingVersion, undefined);
+  s.app.duplicate();
+  assert.equal(s.node.value!.codeName, "IsCheckReady2");
 });

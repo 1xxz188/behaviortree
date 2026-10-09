@@ -857,9 +857,14 @@ func normalizeProject(project model.Project) (model.Project, string, error) {
 		// 名称仅用于展示；只清除深拷贝中的名称，持久化仍保留原值。
 		p.Trees[i].Name = ""
 		p.Trees[i].Layout = nil
+		// 前缀规则仅限制编辑，实际代码名已经参与生成版本。
+		for j := range p.Trees[i].Nodes {
+			p.Trees[i].Nodes[j].NamingVersion = 0
+		}
 		sort.Slice(p.Trees[i].Nodes, func(a, b int) bool { return p.Trees[i].Nodes[a].ID < p.Trees[i].Nodes[b].ID })
 	}
 	for i := range p.Catalog {
+		p.Catalog[i].NamingVersion = 0
 		sort.Slice(p.Catalog[i].Params, func(a, b int) bool { return p.Catalog[i].Params[a].Name < p.Catalog[i].Params[b].Name })
 		sort.Strings(p.Catalog[i].EventIDs)
 	}

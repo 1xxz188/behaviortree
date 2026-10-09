@@ -114,6 +114,7 @@ export function semanticSignature(project: Project): string {
     tree.nodes.sort(byID);
     // Go 的 omitempty 会在保存后省略空值，统一表示保证重新打开时签名稳定。
     for (const node of tree.nodes) {
+      delete node.namingVersion; // 前缀规则仅限制编辑，实际代码名参与生成版本。
       node.name ??= "";
       node.comment ??= ""; // 节点注释参与生成，空值与 Go omitempty 保存后的缺省表示一致。
       node.children ??= [];
@@ -126,6 +127,7 @@ export function semanticSignature(project: Project): string {
     }
   }
   for (const definition of snapshot.catalog) {
+    delete definition.namingVersion;
     definition.params ??= [];
     definition.eventIds ??= [];
     definition.params.sort((a, b) =>

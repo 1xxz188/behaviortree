@@ -25,6 +25,7 @@ export interface Definition {
   name: string;
   kind: DefinitionKind;
   goName: string;
+  namingVersion?: 0 | 1; // 新业务函数固定前缀，缺省兼容历史命名。
   params?: Parameter[];
   eventIds?: string[]; // 引用工程事件注册表的稳定 ID。
 }
@@ -38,6 +39,7 @@ export interface EventDefinition {
 export interface BTNode {
   id: string;
   codeName?: string; // 树内唯一的稳定代码名，与展示名和节点 ID 独立。
+  namingVersion?: 0 | 1; // 新业务实例固定前缀，旧实例保持原代码名。
   comment?: string; // 节点实例的多行说明，随工程保存并生成到 Go 节点函数注释。
   type: NodeType;
   name?: string;

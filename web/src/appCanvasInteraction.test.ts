@@ -184,6 +184,32 @@ function clipboardEvent(text = "", target: { closest: (selector: string) => unkn
   };
 }
 
+// 跨工程粘贴历史业务节点时只给副本启用新规则，撤销重做完整恢复名称和标记。
+test("粘贴历史业务节点使用固定前缀并支持撤销重做", () => {
+  const s = session();
+  const oldAction: BTNode = { id: "old_action", type: "action", codeName: "MoveTo", binding: "legacy_move" };
+  const oldCondition: BTNode = { id: "old_condition", type: "condition", codeName: "CheckReady", binding: "legacy_ready" };
+  const text = encodeCanvasSelection([
+    { node: oldAction, position: { x: 0, y: 0 } },
+    { node: oldCondition, position: { x: 100, y: 100 } },
+  ])!;
+  const before = stringifyJSON(s.project.value);
+  s.app.pasteCanvasSelection(clipboardEvent(text).event);
+  const copies = s.tree.value.nodes.slice(-2);
+  assert.deepEqual(copies.map(item => item.codeName), ["ActionMoveTo1", "IsCheckReady1"]);
+  assert.deepEqual(copies.map(item => item.namingVersion), [1, 1]);
+  assert.equal(copies[0]!.binding, "legacy_move");
+  assert.equal(copies[1]!.binding, "legacy_ready");
+  assert.equal(oldAction.codeName, "MoveTo");
+  assert.equal(oldCondition.codeName, "CheckReady");
+  assert.equal(oldAction.namingVersion, undefined);
+  const after = stringifyJSON(s.project.value);
+  s.app.undo();
+  assert.equal(stringifyJSON(s.project.value), before);
+  s.app.redo();
+  assert.equal(stringifyJSON(s.project.value), after);
+});
+
 // 单选只复制当前节点，粘贴后分配新身份并用一次历史边界恢复工程。
 test("单节点复制粘贴分配唯一身份且整次操作可撤销重做", async () => {
   const s = session();

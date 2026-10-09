@@ -34,6 +34,7 @@ import { TreeIdentityIndex, captureSnapshot, restoreSnapshot } from "./treeIdent
 import type { EditorSnapshot } from "./treeIdentity";
 import { NodeIdentityIndex } from "./nodeIdentity";
 import { normalizeCodeNames } from "./codeNames";
+import { businessNamePrefix } from "./businessNames";
 import { VueFlow, Handle, Position, SelectionMode, ConnectionMode, useVueFlow, getRectOfNodes } from "@vue-flow/core";
 import type { Connection, EdgeMouseEvent, EdgeUpdateEvent, NodeDragEvent, NodeMouseEvent } from "@vue-flow/core";
 import { Background } from "@vue-flow/background";
@@ -701,9 +702,9 @@ function addNode(type: NodeType, binding?: string, position?: NodePosition) {
       item.binding = binding;
       const business = definitionIndex.value.get(binding);
       item.name = business?.name;
-      // 业务目录创建时一次分配可读名称，之后改绑定或业务函数名不改节点代码名。
-      if (business) item.codeName = nodeIdentity.value.codeNames.allocateBusiness(business.goName);
     }
+    // 只为新实例初始化固定前缀；绑定旧业务函数也不修改其原声明。
+    nodeIdentity.value.codeNames.initializeNew(item, binding ? definitionIndex.value.get(binding)?.goName : undefined);
     if (["repeat", "retry"].includes(type)) item.count = 3;
     if (["wait", "timeout"].includes(type)) item.durationMs = 1000;
     tree.value.nodes.push(item);
@@ -949,7 +950,7 @@ function duplicate() {
   mutate(() => {
     const n = clone(node.value!);
     n.id = nodeIdentity.value.allocateID();
-    n.codeName = nodeIdentity.value.codeNames.allocateCopy(n.codeName!);
+    nodeIdentity.value.codeNames.initializeNew(n, undefined, true);
     n.name = `${n.name ?? kinds[n.type]?.label} 副本`;
     n.children = [];
     tree.value.nodes.push(n);
@@ -1835,10 +1836,10 @@ function pasteCanvasSelection(event: ClipboardEvent) {
       const copied: BTNode = {
         ...source,
         id,
-        codeName: nodeIdentity.value.codeNames.allocateCopy(source.codeName ?? source.type),
         name: `${source.name ?? kinds[source.type].label} 副本`,
         children: (source.children ?? []).map(child => remapped.get(child)!),
       };
+      nodeIdentity.value.codeNames.initializeNew(copied, undefined, true);
       tree.value.nodes.push(copied);
       treeIdentity.value.addNode(copied);
       nodeIdentity.value.addNode(copied);
@@ -2380,7 +2381,8 @@ onUnmounted(() => toolLifecycle.abort());
           <button :class="{ 'pending-action': codeNamePending }" @click="applyCodeName" :disabled="codeNameDraft === node.codeName">应用代码名{{ codeNamePending ? ' · 未应用' : '' }}</button>
           <button @click="cancelCodeName" :disabled="codeNameDraft === node.codeName && !codeNameError">取消</button>
         </div>
-        <p id="code-name-help" class="muted identity-help">树内唯一，1–40 位，英文开头，可含数字和下划线，不能是 Go 关键字。用于生成节点常量和节点函数；从业务目录创建时默认采用业务函数名，之后独立保存，修改绑定不会自动改名。</p>
+        <p id="code-name-help" class="muted identity-help">树内唯一，1–40 位，英文开头，可含数字和下划线，不能是 Go 关键字。用于生成节点常量和节点函数；新业务实例按固定前缀分配，修改绑定不会自动改名。</p>
+        <p v-if="businessNamePrefix(node.type)" class="muted identity-help">{{ node.namingVersion === 1 ? '固定前缀' : '新增默认前缀' }}：<code>{{ businessNamePrefix(node.type) }}</code>。{{ node.namingVersion === 1 ? '修改代码名时必须保留此前缀。' : '此节点沿用历史命名；复制或粘贴的新实例使用新规则。' }}</p>
         <p v-if="codeNameError" id="code-name-error" class="identity-error" role="alert">{{ codeNameError }}</p>
         <label class="field-label" :class="{ 'pending-field': nodeIDPending }"
           >Node ID<input ref="nodeIDInput" v-model="nodeIDDraft" class="mono"

@@ -22,15 +22,17 @@ const handlers = script.statements.filter(statement =>
 const js = ts.transpileModule(handlers, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
 
 // 单个节点使用实际响应式索引和画布数据投影，模拟属性面板草稿、应用和取消。
-function session(type: NodeType = "action", binding = "move_to") {
+function session(type: NodeType = "action", binding = "move_to", prefixed = false) {
   const project = ref(blankProject());
   const tree = computed(() => project.value.trees[0]!);
-  tree.value.nodes = [{ id: "3", type, name: "移动到目标", codeName: "OldMove", binding, durationMs: 100 }];
+  const codeName = prefixed ? type === "condition" ? "IsReady" : "ActionMove" : "OldMove";
+  tree.value.nodes = [{ id: "3", type, name: "移动到目标", codeName, binding, durationMs: 100,
+    ...(prefixed ? { namingVersion: 1 as const } : {}) }];
   tree.value.root = "3";
   const nodeIdentity = ref(new NodeIdentityIndex(tree.value));
   const selected = ref("3");
   const node = computed(() => nodeIdentity.value.byID.get(selected.value));
-  const codeNameDraft = ref("OldMove");
+  const codeNameDraft = ref(codeName);
   const codeNameError = ref("");
   const app = runInNewContext(`${js}\n({ graphNodes, applyCodeName, cancelCodeName });`, {
     computed, tree, selected, node, nodeIdentity, codeNameDraft, codeNameError, kinds,
@@ -85,5 +87,22 @@ test("不同节点类型均显示代码名并保留辅助信息", async () => {
     assert.match(html, />NewCode</);
     if (type === "wait") assert.match(html, /100 ms/);
     else assert.match(html, /未绑定业务定义/);
+  }
+});
+
+// 新规则代码名在真实回车/应用入口检查前缀，失败时画布仍显示此前已生效的名称。
+test("新业务节点不能移除前缀且合法重命名立即显示", async () => {
+  for (const [type, prefix, original] of [["action", "Action", "ActionMove"], ["condition", "Is", "IsReady"]] as const) {
+    const s = session(type, "", true);
+    s.codeNameDraft.value = "RemovedPrefix";
+    s.applyCodeName();
+    assert.match(s.codeNameError.value, new RegExp(prefix));
+    assert.equal(s.node.value!.codeName, original);
+    assert.match(await s.html(), new RegExp(`>${original}<`));
+    s.codeNameDraft.value = prefix + "Updated";
+    s.applyCodeName();
+    assert.equal(s.codeNameError.value, "");
+    assert.equal(s.node.value!.namingVersion, 1);
+    assert.match(await s.html(), new RegExp(`>${prefix}Updated<`));
   }
 });

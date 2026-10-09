@@ -9,6 +9,7 @@ import { GenerationRequests, semanticSignature } from "./generation.ts";
 import { parseJSON, stringifyJSON } from "./json.ts";
 import { blankProject } from "./project.ts";
 import type { Definition } from "./project.ts";
+import { BUSINESS_NAMING_VERSION, businessNamePrefix } from "./businessNames.ts";
 
 // 执行目录面板实际草稿读写函数，覆盖新建、编辑回显与清空的完整数据路径。
 const source = readFileSync(new URL("./CatalogManager.vue", import.meta.url), "utf8").split('<script setup lang="ts">')[1]!.split("</script>")[0]!;
@@ -21,6 +22,7 @@ const js = ts.transpileModule(workflow, { compilerOptions: { target: ts.ScriptTa
 // 用可序列化上下文复用真实表单函数，无需复制参数转换实现。
 function form() {
   const context = {
+    BUSINESS_NAMING_VERSION, businessNamePrefix, // 使用真实新建前缀依赖，参数注释仍走原表单入口。
     guardPending: () => true, formSignature: () => "", formBaseline: { value: "" }, pendingWarning: { value: "" }, // 参数转换测试不模拟离开表单。
     parseJSON, stringifyJSON, props: { projectRevision: 0 }, busy: { value: false }, mode: { value: "create" }, draftRevision: { value: 0 },
     incoming: { value: [] }, incomingPackage: { value: null }, choices: { value: {} }, eventChoices: { value: {} }, eventMappings: { value: {} }, eventRenames: { value: {} }, importEnumDescription: { value: false }, acknowledged: { value: false },
