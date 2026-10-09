@@ -3,15 +3,18 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
-import { computed, ref, shallowReactive, shallowRef } from "vue";
+import { computed, reactive, ref, shallowReactive, shallowRef } from "vue";
 import * as Vue from "vue";
 import type { VNode } from "vue";
 import { compile } from "@vue/compiler-dom";
 import { parse } from "@vue/compiler-sfc";
 import { CatalogOrganizationIndex } from "./catalogOrganization.ts";
 import type { CatalogEntry } from "./catalogOrganization.ts";
+import { CatalogUsageIndex } from "./catalogVisibility.ts";
+import type { CatalogTreeScope, CatalogNodeStatus } from "./catalogVisibility.ts";
+import { EventRegistryIndex } from "./eventRegistry.ts";
 import { stringifyJSON } from "./json.ts";
-import { blankProject } from "./project.ts";
+import { blankProject, clone } from "./project.ts";
 
 // 执行真实拖拽函数及位置索引 computed，不复制组件的落点计算实现。
 const component = readFileSync(new URL("./CatalogBrowser.vue", import.meta.url), "utf8");
@@ -20,8 +23,8 @@ const source = component.split('<script setup lang="ts">')[1]!.split("</script>"
 const renderCode = compile(parse(component).descriptor.template!.content, { mode: "function", expressionPlugins: ["typescript"] }).code;
 const render = new Function("Vue", ts.transpileModule(renderCode, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText)(Vue);
 const script = ts.createSourceFile("CatalogBrowser.ts", source, ts.ScriptTarget.Latest, true);
-const names = new Set(["startDrag", "endDrag", "dropLocation", "dragOver", "drop", "leaveDropTarget", "selectFolder", "selectDefinition", "inspectDefinition", "definitionMenu", "submitDialog"]);
-const values = new Set(["placements", "isFiltered", "rows"]);
+const names = new Set(["startDrag", "endDrag", "dropLocation", "dragOver", "drop", "leaveDropTarget", "selectFolder", "selectDefinition", "inspectDefinition", "definitionMenu", "submitDialog", "clearFilters"]);
+const values = new Set(["placements", "isFiltered", "rows", "results", "treeScope", "nodeStatus", "isViewFiltered", "hasMatchingDefinitions"]);
 const workflow = script.statements.filter(statement =>
   (ts.isFunctionDeclaration(statement) && names.has(statement.name?.text ?? ""))
   || (ts.isVariableStatement(statement) && statement.declarationList.declarations.some(declaration => ts.isIdentifier(declaration.name) && values.has(declaration.name.text))),
@@ -46,30 +49,49 @@ function dragEvent(ratio = .5) {
 }
 
 // 使用真实分类索引和事务回调，断言实际工程变化及画布事件，而非源代码文本。
-function browser() {
-  const project = blankProject();
-  project.catalog = ["A", "B", "C"].map(id => ({ id, name: id, kind: "action", goName: id }));
+function browser(ids = ["A", "B", "C"]) {
+  const project = reactive(blankProject());
+  project.catalog = ids.map(id => ({ id, name: id, kind: "action", goName: id }));
   const index = new CatalogOrganizationIndex(project);
+  const eventIndex = computed(() => new EventRegistryIndex(project)); // 与 App 共用工程引用索引，绑定变化自动失效。
+  const usage = new CatalogUsageIndex(() => project.trees, () => eventIndex.value.definitionToNodes);
+  const currentTree = shallowRef(project.trees[0]!); // 模拟父级切换当前树，使用真实响应式可达缓存。
   index.addFolder("父目录", "", "parent");
   index.addFolder("子目录", "parent", "child");
   const emissions: { name: string; args: unknown[] }[] = [];
   const transactions = { attempts: 0, succeeded: 0, errors: [] as string[] };
   const props = shallowReactive({
     index, revision: 0, search: "", disabled: false, collapsed: false, presentation: "sidebar" as "sidebar" | "directories" | "tags",
+    treeScope: "all" as CatalogTreeScope, nodeStatus: "all" as CatalogNodeStatus,
+    get matchesDefinition(): ((id: string) => boolean) | undefined { return usageMatcher.value; }, // 与 App 共用真实组合匹配入口。
     commit: (change: () => void) => {
       transactions.attempts++;
       try { change(); transactions.succeeded++; props.revision++; return true; }
       catch (cause) { transactions.errors.push(cause instanceof Error ? cause.message : String(cause)); return false; }
     },
   });
+  const usageMatcher = computed<((id: string) => boolean) | undefined>(() => usage.matcher(currentTree.value, props.treeScope, props.nodeStatus));
   const context = {
     computed, props, filters: ref<string[]>([]), dragged: shallowRef<CatalogEntry>(), dropHint: ref(""),
     selectedFolder: ref("parent"), selectedDefinition: ref(""), Node: class {},
     dialog: shallowRef<{ mode: string; id: string; parentId: string; entry: CatalogEntry }>(), failure: ref(""), nextTick: Vue.nextTick,
-    expanded: ref(new Set<string>([""])), emit: (name: string, ...args: unknown[]) => emissions.push({ name, args }),
+    expanded: ref(new Set<string>([""])), emit: (name: string, ...args: unknown[]) => {
+      emissions.push({ name, args });
+      // 模拟父级 v-model 与清空搜索，筛选事件不能进入工程事务。
+      if (name === "update:treeScope") props.treeScope = args[0] as CatalogTreeScope;
+      if (name === "update:nodeStatus") props.nodeStatus = args[0] as CatalogNodeStatus;
+      if (name === "clearSearch") props.search = "";
+    },
   };
-  const actions = runInNewContext(`${js}\n({ startDrag, endDrag, dropLocation, dragOver, drop, leaveDropTarget, inspectDefinition, definitionMenu, submitDialog, rows });`, context) as {
+  const actions = runInNewContext(`${js}\n({ startDrag, endDrag, dropLocation, dragOver, drop, leaveDropTarget, inspectDefinition, definitionMenu, submitDialog, rows, results, isFiltered, treeScope, nodeStatus, clearFilters, isViewFiltered, hasMatchingDefinitions });`, context) as {
     rows: { value: { entry: CatalogEntry; depth: number }[] };
+    results: Vue.ComputedRef<typeof project.catalog>; // 真实搜索、标签和组合筛选结果。
+    isFiltered: Vue.ComputedRef<boolean>; // 搜索结果与目录树的实际模板分支。
+    treeScope: Vue.WritableComputedRef<CatalogTreeScope>; // 实际选择框的范围 model。
+    nodeStatus: Vue.WritableComputedRef<CatalogNodeStatus>; // 实际选择框的状态 model。
+    isViewFiltered: Vue.ComputedRef<boolean>; // 范围或状态是否限制显示。
+    hasMatchingDefinitions: Vue.ComputedRef<boolean>; // 跨折叠目录检查真实匹配结果。
+    clearFilters(): void; // 统一恢复两个条件、标签及搜索。
     startDrag(event: DragEvent, entry: CatalogEntry): void;
     endDrag(): void;
     dropLocation(event: DragEvent, entry?: CatalogEntry): { folder: string; before?: CatalogEntry; hint: string };
@@ -86,7 +108,7 @@ function browser() {
     }
     throw new Error(`测试条目不存在：${id}`);
   }
-  return { project, index, props, context, transactions, emissions, entry, ...actions };
+  return { project, index, props, currentTree, usage, context, transactions, emissions, entry, ...actions };
 }
 
 // 扁平收集编译后的元素，事件回调仍来自组件原函数与原模板。
@@ -96,14 +118,199 @@ function elements(node: VNode): VNode[] {
 
 // 模拟实际库面板的渲染上下文，业务定义与目录取同一真实索引。
 function renderBrowser(view: ReturnType<typeof browser>): VNode[] {
-  return elements(render({
+  return elements(render(Vue.proxyRefs({
     ...view.props, ...view, rows: view.rows.value, expanded: view.context.expanded.value,
     selectedFolder: view.context.selectedFolder.value, selectedDefinition: view.context.selectedDefinition.value,
-    dropHint: view.context.dropHint.value, isFiltered: Boolean(view.props.search), results: view.index.search(view.props.search),
+    dropHint: view.context.dropHint.value, isFiltered: view.isFiltered.value, results: view.results.value,
+    treeScope: view.treeScope, nodeStatus: view.nodeStatus,
     allTags: [...view.index.tags.values()], filters: view.context.filters.value, filtersOpen: false, folderMenu: undefined, dialog: undefined,
     endDrag: view.endDrag, emit: view.context.emit,
-  }, []));
+  }), []));
 }
+
+// 从真实选择框触发 model 更新，覆盖模板绑定与父级状态同步，而非直接改匹配结果。
+function chooseFilter(view: ReturnType<typeof browser>, label: string, value: string) {
+  const select = renderBrowser(view).find(node => node.type === "select" && node.props?.["aria-label"] === label)!;
+  assert.equal(typeof select.props?.["onUpdate:modelValue"], "function");
+  select.props!["onUpdate:modelValue"](value);
+}
+
+// 收集实际显示的业务定义，目录仍保留，不将其作为节点计入。
+function visibleIDs(view: ReturnType<typeof browser>) {
+  return Array.from(view.rows.value).filter(row => row.entry.kind === "definition").map(row => row.entry.id);
+}
+
+// 两棵树复用节点 ID；同一定义可仅用于草稿、跨树有效或同时被有效与草稿引用。
+function mixedBrowser() {
+  const view = browser(["A", "B", "C", "D", "E", "F", "G"]);
+  const current = view.project.trees[0]!;
+  current.root = "root";
+  current.nodes = [
+    { id: "root", type: "sequence", children: ["a", "f"] },
+    { id: "a", type: "action", binding: "A" },
+    { id: "b", type: "action", binding: "B" },
+    { id: "d", type: "condition", binding: "D" },
+    { id: "f", type: "action", binding: "F" },
+    { id: "f-draft", type: "action", binding: "F" },
+  ];
+  view.project.trees.push({ id: "other", name: "其他树", root: "root", nodes: [
+    { id: "root", type: "sequence", children: ["a", "d"] },
+    { id: "a", type: "action", binding: "C" },
+    { id: "d", type: "condition", binding: "D" },
+    { id: "g", type: "action", binding: "G" },
+  ] });
+  return view;
+}
+
+// 复现根上条件实例尚未选择业务实现函数：目录定义必须仍能在当前树无效范围中找到。
+test("当前树无效包含尚未接入业务实现函数的定义", () => {
+  const view = browser(["IsTest"]);
+  view.project.catalog[0]!.name = "测试";
+  view.project.catalog[0]!.kind = "condition";
+  const tree = view.project.trees[0]!;
+  tree.root = "root";
+  tree.nodes = [
+    { id: "root", type: "sequence", children: ["unbound"] },
+    { id: "unbound", type: "condition", codeName: "ConditionTest" },
+  ];
+  chooseFilter(view, "业务节点树范围", "current");
+  chooseFilter(view, "业务节点状态", "invalid");
+  assert.deepEqual(visibleIDs(view), ["IsTest"], "未选择业务实现函数不能把目录定义排除在当前树无效范围外");
+  assert.ok(renderBrowser(view).some(node => node.props?.id === "catalog-definition-IsTest"));
+  chooseFilter(view, "业务节点状态", "valid");
+  assert.deepEqual(visibleIDs(view), [], "根连接本身不能代替业务实现函数绑定");
+  chooseFilter(view, "业务节点状态", "all");
+  assert.deepEqual(visibleIDs(view), ["IsTest"]);
+  chooseFilter(view, "业务节点状态", "valid");
+  tree.nodes[1]!.binding = "IsTest";
+  assert.deepEqual(visibleIDs(view), ["IsTest"], "选择实现函数后立即进入有效范围");
+  chooseFilter(view, "业务节点状态", "invalid");
+  assert.deepEqual(visibleIDs(view), []);
+  delete tree.nodes[1]!.binding;
+  assert.deepEqual(visibleIDs(view), ["IsTest"], "清空实现函数后立即恢复无效范围");
+  assert.equal(view.transactions.attempts, 0);
+});
+
+// 管理窗口在既有目录创建未绑定定义后，当前树筛选无需重载即可展示该公共候选。
+test("当前树无效立即显示目录中新建但未绑定的定义", () => {
+  const view = mixedBrowser();
+  chooseFilter(view, "业务节点树范围", "current");
+  chooseFilter(view, "业务节点状态", "invalid");
+  view.project.catalog.push({ id: "IsNew", name: "新条件", kind: "condition", goName: "IsNew" });
+  view.index.assignNewDefinitions(["IsNew"], "parent");
+  view.props.revision++;
+  view.context.expanded.value.add("parent");
+  assert.deepEqual(visibleIDs(view), ["B", "D", "E", "IsNew"]);
+  chooseFilter(view, "业务节点状态", "all");
+  assert.deepEqual(visibleIDs(view), ["A", "B", "D", "E", "F", "IsNew"]);
+});
+
+// 验证两个真实下拉框的全部六种组合、跨树有效优先和未使用定义，并保证不改工程。
+test("范围和状态可组合筛选且默认全部树全部状态", () => {
+  const view = mixedBrowser();
+  const before = stringifyJSON(view.project);
+  assert.equal(view.treeScope.value, "all");
+  assert.equal(view.nodeStatus.value, "all");
+  const cases: [CatalogTreeScope, CatalogNodeStatus, string[]][] = [
+    ["all", "all", ["A", "B", "C", "D", "E", "F", "G"]],
+    ["all", "valid", ["A", "C", "D", "F"]],
+    ["all", "invalid", ["B", "E", "G"]],
+    ["current", "all", ["A", "B", "D", "E", "F"]],
+    ["current", "valid", ["A", "F"]],
+    ["current", "invalid", ["B", "D", "E"]],
+  ];
+  for (const [scope, status, expected] of cases) {
+    chooseFilter(view, "业务节点树范围", scope);
+    chooseFilter(view, "业务节点状态", status);
+    assert.deepEqual(visibleIDs(view), expected, `${scope} + ${status}`);
+    assert.equal(view.isFiltered.value, false, "仅范围和状态筛选仍应保留目录树");
+  }
+  assert.equal(view.transactions.attempts, 0);
+  assert.equal(stringifyJSON(view.project), before);
+});
+
+// 搜索与标签继续按 AND 叠加两个条件；清除入口恢复默认全部，目录结构仍保持。
+test("组合筛选与标签搜索叠加并能一次清除", () => {
+  const view = mixedBrowser();
+  const tag = view.index.addTag("筛选标签");
+  for (const id of ["A", "D", "F"]) view.index.setTags(id, [tag.id]);
+  view.context.filters.value = [tag.id];
+  chooseFilter(view, "业务节点树范围", "current");
+  chooseFilter(view, "业务节点状态", "invalid");
+  assert.deepEqual(Array.from(view.results.value, item => item.id), ["D"]);
+  view.props.search = "F";
+  assert.deepEqual(Array.from(view.results.value), []);
+  chooseFilter(view, "业务节点状态", "valid");
+  assert.deepEqual(Array.from(view.results.value, item => item.id), ["F"]);
+  const clear = renderBrowser(view).find(node => node.type === "button" && node.children === "清除筛选")!;
+  clear.props!.onClick();
+  assert.equal(view.treeScope.value, "all");
+  assert.equal(view.nodeStatus.value, "all");
+  assert.equal(view.context.filters.value.length, 0);
+  assert.equal(view.props.search, "");
+  assert.deepEqual(visibleIDs(view), ["A", "B", "C", "D", "E", "F", "G"]);
+  assert.equal(view.transactions.attempts, 0);
+});
+
+// 切树、回接草稿、修改绑定及恢复树对象时即时更新，跨树相同节点 ID 不串用状态。
+test("组合结果随当前树和根连接绑定变化即时更新", () => {
+  const view = mixedBrowser();
+  chooseFilter(view, "业务节点树范围", "current");
+  chooseFilter(view, "业务节点状态", "invalid");
+  view.currentTree.value = view.project.trees[1]!;
+  assert.deepEqual(visibleIDs(view), ["E", "G"]);
+  view.currentTree.value.nodes[0]!.children!.push("g");
+  assert.deepEqual(visibleIDs(view), ["E"]);
+  view.currentTree.value.nodes[0]!.children = ["a", "d"];
+  view.currentTree.value.nodes[3]!.binding = "E";
+  assert.deepEqual(visibleIDs(view), ["E", "G"]);
+  const replacement = reactive(clone(view.project.trees[0]!));
+  view.project.trees[0] = replacement;
+  view.currentTree.value = replacement;
+  assert.deepEqual(visibleIDs(view), ["B", "D", "G"]);
+  replacement.root = "missing";
+  chooseFilter(view, "业务节点状态", "valid");
+  assert.deepEqual(visibleIDs(view), []);
+  assert.ok(renderBrowser(view).some(node => node.type === "p" && node.children === "没有符合条件的业务定义。"), "保留目录时仍需提示没有匹配定义");
+});
+
+// 筛选、布局和注释不触发重新遍历，改线只更新一棵树；环与重复悬挂边仍有界结束。
+test("业务可达缓存按树复用且草稿环不会重复展开", () => {
+  const view = mixedBrowser();
+  const current = view.project.trees[0]!;
+  const other = view.project.trees[1]!;
+  const before = view.usage.forTree(current).value;
+  const otherBefore = view.usage.forTree(other).value;
+  current.name = "只改显示名称";
+  current.layout = { a: { x: 200, y: 100 } };
+  current.nodes[1]!.comment = "只改注释";
+  current.nodes[1]!.params = { Speed: { value: 1 } };
+  chooseFilter(view, "业务节点树范围", "current");
+  chooseFilter(view, "业务节点状态", "valid");
+  view.props.search = "A";
+  assert.equal(view.usage.forTree(current).value, before);
+  current.nodes[0]!.children = ["root", "a", "a", "missing"];
+  assert.deepEqual(visibleIDs(view), ["A"]);
+  assert.notEqual(view.usage.forTree(current).value, before);
+  assert.equal(view.usage.forTree(other).value, otherBefore);
+  chooseFilter(view, "业务节点树范围", "all");
+  view.props.search = "";
+  assert.deepEqual(visibleIDs(view), ["A", "C", "D"]);
+  view.project.trees.pop();
+  assert.deepEqual(visibleIDs(view), ["A"]);
+});
+
+// 隐藏同级条目仍参与真实排序锚点，筛选时拖放不能破坏未显示定义的相对顺序。
+test("组合筛选保留目录排序的完整后继", () => {
+  const view = mixedBrowser();
+  chooseFilter(view, "业务节点树范围", "current");
+  chooseFilter(view, "业务节点状态", "valid");
+  view.startDrag(dragEvent().event, view.entry("F"));
+  view.drop(dragEvent(.9).event, view.entry("A"));
+  assert.deepEqual(view.index.entries().map(item => item.id), ["A", "F", "B", "C", "D", "E", "G", "parent"]);
+  assert.deepEqual(visibleIDs(view), ["A", "F"]);
+  assert.equal(view.transactions.succeeded, 1);
+});
 
 // 复现截图中的末尾空白松手：从末行边缘继续向下时仍须接受移动并追加根目录末尾。
 test("拖到目录树末尾空白处仍能完成排序", () => {

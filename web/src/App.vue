@@ -11,6 +11,8 @@ import NodeHelpDialog from "./NodeHelpDialog.vue";
 import CanvasHelpDialog from "./CanvasHelpDialog.vue";
 import CatalogCopyDialog from "./CatalogCopyDialog.vue";
 import { CatalogOrganizationIndex } from "./catalogOrganization";
+import { CatalogUsageIndex } from "./catalogVisibility";
+import type { CatalogTreeScope, CatalogNodeStatus } from "./catalogVisibility";
 import { validatedCatalogJSON } from "./catalogTransfer";
 import { synchronizeCatalog } from "./catalogSync";
 import SourceViewer from "./SourceViewer.vue";
@@ -91,6 +93,7 @@ class RequestError extends Error {
 }
 
 const project = ref<Project>(blankProject());
+const catalogUsage = new CatalogUsageIndex(() => project.value.trees, () => eventIndex.value.definitionToNodes); // 可达缓存复用工程现有业务引用索引。
 const catalogIndex = shallowRef(new CatalogOrganizationIndex(project.value)); // 分类缓存不扫描行为树。
 const catalogRevision = ref(0); // 组织索引原地修改后的界面修订。
 const catalogFolder = ref(""); // 新建和导入定义的默认目标目录。
@@ -128,6 +131,8 @@ const inspectorOpen = ref(false);
 const nodeHelp = ref<NodeType>(); // 库节点的说明窗口独立于画布选择和工程历史。
 const builtinCollapsed = ref(false); // 内置节点区仅保存当前页面的折叠偏好，不进入工程历史。
 const catalogCollapsed = ref(false); // 业务节点区独立折叠，切换黑板或行为树时保留。
+const catalogTreeScope = ref<CatalogTreeScope>("all"); // 默认全部树，切换侧栏页仍保留范围偏好。
+const catalogNodeStatus = ref<CatalogNodeStatus>("all"); // 默认全部状态，不写工程或撤销历史。
 const search = ref("");
 const fileName = ref(""); // 仅表示当前工作目录内已成功打开或保存的文件。
 const suggestedName = ref("project.json"); // 新建及导入只提供首次保存建议。
@@ -251,7 +256,17 @@ const catalogMenu = shallowRef<{
   definition: Definition; // 捕获右击对象，确认时校验身份以排除过期菜单。
   x: number; // 菜单视口横坐标。
   y: number; // 菜单视口纵坐标。
+  initialMode?: "menu" | "delete"; // 编辑页入口直接显示二次确认。
+  revision: number; // 拒绝确认期间工程再次修改后的过期删除。
 }>();
+// 复用事件引用索引，只汇总目标定义的引用树，包含尚未接入根节点的草稿。
+const catalogMenuReferences = computed(() => {
+  const target = catalogMenu.value?.definition;
+  const byTree = target ? eventIndex.value.definitionToNodes.get(target.id) : undefined;
+  let nodes = 0;
+  for (const references of byTree?.values() ?? []) nodes += references.size;
+  return { trees: byTree?.size ?? 0, nodes };
+});
 // 保存右击的实际树对象，不依赖当前画布选择，避免对另一棵树误操作。
 const treeMenu = shallowRef<{
   tree: Tree; // 菜单与确认框操作的目标。
@@ -423,6 +438,8 @@ const tree = computed(
     treeIdentity.value.byID.get(treeID.value) ??
     project.value.trees[0]!,
 );
+// 范围与状态组合后仅查缓存集合，搜索和标签筛选不重复遍历行为树。
+const catalogMatchesDefinition = computed(() => catalogUsage.matcher(tree.value, catalogTreeScope.value, catalogNodeStatus.value));
 const nodeIdentity = shallowRef(reactive(new NodeIdentityIndex(tree.value))); // 当前树的增量身份及入边索引。
 const nodeIndex = computed(() => nodeIdentity.value.byID);
 const node = computed(() => nodeIndex.value.get(selected.value));
@@ -479,18 +496,7 @@ const bindingOptions = computed(() => project.value.catalog.filter((d) => d.kind
 // 依据当前根可达性缓存画布级别，重载或清空诊断后草稿仍保持警告；每个节点只需 O(1) 查表。
 const nodeDiagnosticLevels = computed(() => {
   const currentTree = tree.value;
-  const nodes = new Map(currentTree.nodes.map(node => [node.id, node]));
-  const reachable = new Set<string>();
-  const pending = [currentTree.root];
-  // 只沿根节点的出边遍历，访问集合防止环和重复连线引起重复展开。
-  while (pending.length) {
-    const id = pending.pop()!;
-    if (reachable.has(id)) continue;
-    const node = nodes.get(id);
-    if (!node) continue;
-    reachable.add(id);
-    for (const child of node.children ?? []) pending.push(child);
-  }
+  const reachable = catalogUsage.forTree(currentTree).value.reachable;
   const levels = new Map<string, "error" | "warning">();
   for (const node of currentTree.nodes) {
     if (!reachable.has(node.id)) levels.set(node.id, "warning");
@@ -1731,7 +1737,14 @@ function openCatalogMenu(event: MouseEvent | KeyboardEvent, target: Definition) 
     definition: target,
     x: "clientX" in event ? event.clientX : bounds.left,
     y: "clientY" in event ? event.clientY : bounds.bottom,
+    revision: editRevision,
   };
+}
+// 编辑页仅打开删除确认；再次检查草稿、对象身份与修订，取消不会修改工程。
+function requestDeleteDefinition(target: Definition, revision: number) {
+  if (workspaceChanging.value || revision !== editRevision || definitionIndex.value.get(target.id) !== target || !guardPendingNavigation()) return;
+  treeMenu.value = undefined;
+  catalogMenu.value = { definition: target, x: 0, y: 0, initialMode: "delete", revision };
 }
 // 按对象身份验证编辑目标，直接进入已有定义表单并保持节点绑定不变。
 function editCatalogDefinition(target: Definition) {
@@ -1746,9 +1759,10 @@ function editCatalogDefinition(target: Definition) {
 }
 // 二次确认后复用目录同步的撤销和校验边界；保留失效引用，供用户重新绑定。
 async function confirmDeleteDefinition() {
-  const target = catalogMenu.value?.definition;
+  const menu = catalogMenu.value;
+  const target = menu?.definition;
   catalogMenu.value = undefined;
-  if (!target || workspaceChanging.value || definitionIndex.value.get(target.id) !== target) return;
+  if (!target || workspaceChanging.value || menu?.revision !== editRevision || definitionIndex.value.get(target.id) !== target) return;
   await applyCatalog(project.value.catalog.filter(item => item !== target));
 }
 // 目录与所有节点参数在同一撤销边界内同步，随后立即用同一快照校验整个工程。
@@ -2241,6 +2255,7 @@ onUnmounted(() => toolLifecycle.abort());
           </button>
         </div>
         <CatalogBrowser ref="catalogBrowser" v-model:collapsed="catalogCollapsed" :index="catalogIndex" :revision="catalogRevision" :search="search"
+          v-model:tree-scope="catalogTreeScope" v-model:node-status="catalogNodeStatus" :matches-definition="catalogMatchesDefinition"
           :disabled="workspaceChanging" :commit="commitCatalogOrganization" :failure-message="error ? message : ''"
           @select="catalogFolder = $event" @clear-search="search = ''"
           @create="manageCatalog('create', false, $event)" @import="manageCatalog('import', false, $event)" @manage="manageCatalog('manage')"
@@ -2837,9 +2852,10 @@ onUnmounted(() => toolLifecycle.abort());
       :index="catalogIndex" :revision="catalogRevision" :disabled="workspaceChanging" :commit="commitCatalogOrganization"
       :failure-message="error ? message : ''" :transfer-busy="catalogTransferBusy"
       @select="catalogDialog.folderId = $event" @transfer="transferCatalog($event)" @menu="openCatalogMenu"
-      @apply="applyCatalog" @manage-events="catalogDialog = undefined; eventManagerOpen = true" @close="catalogDialog = undefined" />
-    <CatalogContextMenu v-if="catalogMenu" :key="`${catalogMenu.definition.id}:${catalogMenu.x}:${catalogMenu.y}`"
-      :definition="catalogMenu.definition" :x="catalogMenu.x" :y="catalogMenu.y"
+      @apply="applyCatalog" @delete="requestDeleteDefinition" @manage-events="catalogDialog = undefined; eventManagerOpen = true" @close="catalogDialog = undefined" />
+    <CatalogContextMenu v-if="catalogMenu" :key="`${catalogMenu.definition.id}:${catalogMenu.x}:${catalogMenu.y}:${catalogMenu.initialMode ?? 'menu'}`"
+      :definition="catalogMenu.definition" :x="catalogMenu.x" :y="catalogMenu.y" :initial-mode="catalogMenu.initialMode"
+      :reference-trees="catalogMenuReferences.trees" :reference-nodes="catalogMenuReferences.nodes"
       @close="catalogMenu = undefined" @edit="editCatalogDefinition(catalogMenu.definition)" @delete="confirmDeleteDefinition"
       @move="organizeCatalogDefinition('move')" @tags="organizeCatalogDefinition('tags')"
       @copy="transferCatalog('copy', catalogMenu.definition)" @export="transferCatalog('download', catalogMenu.definition)" />

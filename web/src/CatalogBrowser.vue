@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import type { Definition } from "./project";
 import type { CatalogEntry, CatalogOrganizationIndex } from "./catalogOrganization";
+import type { CatalogTreeScope, CatalogNodeStatus } from "./catalogVisibility";
 
 const props = defineProps<{
   collapsed: boolean; // 折叠偏好由父级持有，组件重建时仍保留。
@@ -13,9 +14,14 @@ const props = defineProps<{
   failureMessage: string; // 父级操作失败的具体原因，在模态框内可见。
   presentation?: "sidebar" | "directories" | "tags"; // 管理页复用目录手势及分类表单，默认作为侧栏。
   initialFolder?: string; // 管理页打开时继承侧栏的当前目录。
+  treeScope?: CatalogTreeScope; // 父级保存树范围，默认显示全部树。
+  nodeStatus?: CatalogNodeStatus; // 父级保存节点状态，默认显示全部。
+  matchesDefinition?: (id: string) => boolean; // 按缓存集合组合范围与状态，逐行常数时间判断。
 }>();
 const emit = defineEmits<{
   "update:collapsed": [value: boolean]; // 只切换业务区显示，不修改工程或目录状态。
+  "update:treeScope": [value: CatalogTreeScope]; // 范围筛选只影响侧栏显示。
+  "update:nodeStatus": [value: CatalogNodeStatus]; // 状态筛选可独立与范围组合。
   create: [folderId: string]; import: [folderId: string]; manage: [];
   inspect: [definition: Definition]; menu: [event: MouseEvent | KeyboardEvent, definition: Definition];
   drag: [event: DragEvent, definition: Definition]; dragend: [];
@@ -35,6 +41,9 @@ const selectedDefinition = ref(""); // 当前操作的定义与目录互斥高�
 const expanded = ref(new Set<string>(["", props.initialFolder ?? ""]));
 const filters = ref<string[]>([]);
 const filtersOpen = ref(false); // 标签筛选默认收起，选择保持到用户主动清除。
+// 使用父级视图偏好，折叠或切换黑板后仍恢复同一组筛选条件。
+const treeScope = computed({ get: () => props.treeScope ?? "all", set: (value: CatalogTreeScope) => emit("update:treeScope", value) });
+const nodeStatus = computed({ get: () => props.nodeStatus ?? "all", set: (value: CatalogNodeStatus) => emit("update:nodeStatus", value) });
 const dialog = ref<OrganizationDialog>();
 const modal = ref<HTMLDialogElement>();
 const dialogBaseline = ref(""); // 打开弹窗时的字段基准，避免未修改的表单误报。
@@ -55,7 +64,19 @@ let menuTrigger: HTMLElement | undefined;
 let dialogTrigger: HTMLElement | undefined; // 子弹窗关闭后恢复原按钮或上下文菜单触发位置。
 const isFiltered = computed(() => Boolean(props.search.trim() || filters.value.length));
 const allTags = computed(() => { props.revision; return [...props.index.tags.values()]; });
-const results = computed(() => { props.revision; return props.index.search(props.search, filters.value); });
+const results = computed(() => {
+  props.revision;
+  const definitions = props.index.search(props.search, filters.value);
+  return props.matchesDefinition ? definitions.filter(definition => props.matchesDefinition!(definition.id)) : definitions;
+});
+const isViewFiltered = computed(() => treeScope.value !== "all" || nodeStatus.value !== "all"); // 与搜索结果视图区分，保留目录树和排序。
+// 只在范围或状态过滤时按缓存匹配，折叠目录中的匹配定义不会被误判为空。
+const hasMatchingDefinitions = computed(() => {
+  props.revision;
+  if (!props.matchesDefinition) return props.index.definitions.size > 0;
+  for (const id of props.index.definitions.keys()) if (props.matchesDefinition(id)) return true;
+  return false;
+});
 // 拖拽悬停频繁触发，预先索引每个条目的父级及后继，避免每次指针事件扫描同级。
 const placements = computed(() => {
   props.revision;
@@ -71,6 +92,7 @@ const rows = computed(() => {
   const stack: VisibleRow[] = props.index.entries("").map(entry => ({ entry, depth: 0 })).reverse();
   while (stack.length) {
     const row = stack.pop()!;
+    if (row.entry.kind === "definition" && props.matchesDefinition && !props.matchesDefinition(row.entry.id)) continue;
     result.push(row);
     if (row.entry.kind === "folder" && expanded.value.has(row.entry.id)) {
       const children = props.index.entries(row.entry.id);
@@ -79,6 +101,8 @@ const rows = computed(() => {
   }
   return result;
 });
+// 清除筛选同时恢复默认范围、状态和搜索，不修改工程分类或当前目录。
+function clearFilters() { filters.value = []; treeScope.value = "all"; nodeStatus.value = "all"; emit("clearSearch"); }
 const folderChoices = computed(() => {
   props.revision;
   return [{ id: "", name: "根目录" }, ...[...props.index.folders.values()]
@@ -191,7 +215,7 @@ async function locate(definition: Definition) {
   let parent = folder;
   const next = new Set(expanded.value);
   while (parent) { next.add(parent); parent = props.index.folders.get(parent)!.parentId; }
-  expanded.value = next; filters.value = []; emit("clearSearch"); selectFolder(folder);
+  expanded.value = next; clearFilters(); selectFolder(folder);
   await nextTick();
   document.getElementById(`catalog-definition-${definition.id}`)?.scrollIntoView({ block: "nearest" });
   document.getElementById(`catalog-definition-${definition.id}`)?.focus();
@@ -286,6 +310,10 @@ onBeforeUnmount(() => { document.removeEventListener("pointerdown", outside, tru
     <!-- 仅隐藏内容，保留目录展开、标签筛选及当前选择。 -->
     <div :id="!presentation || presentation === 'sidebar' ? 'catalog-node-content' : undefined" v-show="presentation === 'tags' || presentation === 'directories' || !collapsed">
     <template v-if="!presentation || presentation === 'sidebar'">
+      <div class="catalog-view-filters">
+        <label>范围<select v-model="treeScope" aria-label="业务节点树范围" title="仅当前树显示该树引用的定义，以及工程中尚未使用的公共定义。"><option value="all">全部树</option><option value="current">仅当前树</option></select></label>
+        <label>状态<select v-model="nodeStatus" aria-label="业务节点状态" title="有效：所选范围内有根节点可达的实例引用；无效：仅草稿引用或尚未使用。"><option value="all">全部</option><option value="valid">只看有效</option><option value="invalid">只看无效</option></select></label>
+      </div>
       <div class="filter-heading">
         <button class="text-button" :aria-expanded="filtersOpen" @click="filtersOpen = !filtersOpen">{{ filtersOpen ? '▾' : '▸' }} 标签筛选（{{ filters.length }}）</button>
         <button v-if="filters.length" class="text-button" @click="filters = []">清除</button>
@@ -315,7 +343,7 @@ onBeforeUnmount(() => { document.removeEventListener("pointerdown", outside, tru
     <button class="catalog-root" :class="{ selected: !selectedFolder && !selectedDefinition, 'drop-inside': dropHint === 'root' }" :disabled="disabled"
       @click="selectFolder('')" @dragenter="dragOver($event)" @dragover="dragOver($event)" @dragleave="leaveDropTarget" @drop="drop($event)">▣ 根目录 <small>{{ index.definitions.size }} 个定义</small></button>
     <template v-if="isFiltered">
-      <div class="search-summary">{{ results.length }} 个结果 <button @click="filters = []; emit('clearSearch')">清除筛选</button></div>
+      <div class="search-summary">{{ results.length }} 个结果 <button @click="clearFilters">清除筛选</button></div>
       <div v-for="definition in results" :key="definition.id" class="catalog-result">
         <button class="catalog-definition" :class="{ selected: selectedDefinition === definition.id }" :disabled="disabled" draggable="true" @dragstart="startDrag($event, { kind: 'definition', id: definition.id, order: 0 })" @dragend="endDrag"
           @click="inspectDefinition(definition)" @contextmenu.prevent.stop="definitionMenu($event, definition)" @keydown.shift.f10.prevent.stop="definitionMenu($event, definition)">
@@ -342,7 +370,7 @@ onBeforeUnmount(() => { document.removeEventListener("pointerdown", outside, tru
           <span><b>{{ index.definitions.get(row.entry.id)!.name }}</b><small>{{ index.definitions.get(row.entry.id)!.goName }}</small></span>
         </button>
       </div>
-      <p v-if="!rows.length" class="muted empty-note">新建业务定义，或粘贴 JSON 导入已有定义。</p>
+      <p v-if="isViewFiltered ? !hasMatchingDefinitions : !rows.length" class="muted empty-note">{{ isViewFiltered ? '没有符合条件的业务定义。' : '新建业务定义，或粘贴 JSON 导入已有定义。' }}</p>
     </div>
     </template>
     </div>
@@ -378,6 +406,9 @@ onBeforeUnmount(() => { document.removeEventListener("pointerdown", outside, tru
 <style scoped>
 .pending-organization input,.pending-organization select{border-color:#e9aa43;box-shadow:0 0 0 2px #e9aa4333}.pending-apply{border-color:#e9aa43;background:#66451f;color:#fff0c7;font-weight:700}
 .filter-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 6px 0; }
+.catalog-view-filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(85px, 1fr)); gap: 6px; margin: 8px 0; }
+.catalog-view-filters label { display: grid; gap: 4px; min-width: 0; font-size: 11px; color: #9cabb8; }
+.catalog-view-filters select { width: 100%; min-width: 0; box-sizing: border-box; padding: 5px; font-size: 11px; }
 .directory-tools { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
 .directory-tools button, .tag-row button { flex-shrink: 0; }
 .catalog-browser { min-width: 0; }

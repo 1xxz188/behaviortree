@@ -9,6 +9,8 @@ import { blankProject, clone, kinds } from "./project.ts";
 import type { Diagnostic, Project } from "./project.ts";
 import { parseJSON, stringifyJSON } from "./json.ts";
 import { GenerationRequests } from "./generation.ts";
+import { CatalogUsageIndex } from "./catalogVisibility.ts";
+import { EventRegistryIndex } from "./eventRegistry.ts";
 
 // 执行真实校验请求链，并渲染真实诊断模板，避免仅验证底部消息已被赋值。
 const app = readFileSync(new URL("./App.vue", import.meta.url), "utf8");
@@ -37,7 +39,7 @@ function session() {
   const trees = computed(() => new Map(project.value.trees.map(tree => [tree.id, tree])));
   const context = {
     noticeRevision: { value: 0 }, // 实际发布操作结果的版本。
-    Error, clone, stringifyJSON, parseJSON, computed, kinds,
+    Error, clone, stringifyJSON, parseJSON, computed, kinds, catalogUsage: new CatalogUsageIndex(() => project.value.trees, () => new EventRegistryIndex(project.value).definitionToNodes),
     project, workspace: ref("E:/workspace"), tree: computed(() => trees.value.get(treeID.value) ?? project.value.trees[0]!),
     treeID, selected: ref(""), eventMatchedNodes: ref(new Set<string>()),
     semanticRevision: ref(1), generationRequests: new GenerationRequests(),
@@ -64,12 +66,15 @@ function session() {
     fail: () => { failure = true; },
     respond: (items: Diagnostic[]) => { returnedDiagnostics = items; },
     render: () => renderToString(createSSRApp({ setup: () => ({ ...context, focusDiagnostic: workflow.focusDiagnostic }), render: renderOutput })),
-    renderNode: (id: string) => renderToString(createSSRApp({
-      render: renderCanvasNode,
-      components: { Handle: { render: () => null } },
-      setup: () => ({ data: workflow.graphNodes.value.find(node => node.id === id)!.data,
-        selected: "", Position: { Left: "left", Right: "right" } }),
-    })),
+    renderNode: (id: string) => {
+      // 浏览器先计算画布再渲染；在 SSR setup 外取数据，避免把懒缓存误建成 SSR 专用 computed。
+      const data = workflow.graphNodes.value.find(node => node.id === id)!.data;
+      return renderToString(createSSRApp({
+        render: renderCanvasNode,
+        components: { Handle: { render: () => null } },
+        setup: () => ({ data, selected: "", Position: { Left: "left", Right: "right" } }),
+      }));
+    },
   };
 }
 

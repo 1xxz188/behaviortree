@@ -11,14 +11,16 @@ import { captureSnapshot, restoreSnapshot } from "./treeIdentity.ts";
 import type { EditorSnapshot } from "./treeIdentity.ts";
 import { stringifyJSON } from "./json.ts";
 import { CatalogOrganizationIndex } from "./catalogOrganization.ts";
+import { EventRegistryIndex } from "./eventRegistry.ts";
 
 // 抽取真实右键处理函数，验证目标身份和二次确认边界，避免复制实现。
 const source = readFileSync(new URL("./App.vue", import.meta.url), "utf8")
   .split('<script setup lang="ts">')[1]!.split("</script>")[0]!;
 const script = ts.createSourceFile("App.ts", source, ts.ScriptTarget.Latest, true);
-const names = new Set(["openCatalogMenu", "editCatalogDefinition", "confirmDeleteDefinition", "organizeCatalogDefinition"]);
+const names = new Set(["openCatalogMenu", "editCatalogDefinition", "requestDeleteDefinition", "confirmDeleteDefinition", "organizeCatalogDefinition"]);
 const handlers = script.statements.filter(statement =>
-  ts.isFunctionDeclaration(statement) && names.has(statement.name?.text ?? ""),
+  (ts.isFunctionDeclaration(statement) && names.has(statement.name?.text ?? ""))
+  || (ts.isVariableStatement(statement) && statement.declarationList.declarations.some(item => ts.isIdentifier(item.name) && item.name.text === "catalogMenuReferences")),
 ).map(statement => statement.getText(script)).join("\n");
 const js = ts.transpileModule(handlers, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
 
@@ -36,13 +38,17 @@ function session() {
   const treeID = ref(project.value.trees[0]!.id);
   const selected = ref("1");
   const definitionIndex = computed(() => new Map(project.value.catalog.map(item => [item.id, item])));
-  const catalogMenu = shallowRef<{ definition: Definition; x: number; y: number }>();
+  const catalogMenu = shallowRef<{ definition: Definition; x: number; y: number; revision: number; initialMode?: string }>();
   const catalogDialog = ref<{ mode: string; definition?: Definition; kind?: string }>();
   const history: EditorSnapshot[] = [];
   const notices: string[] = [];
+  const pending = ref(false); // 未应用表单必须阻止打开删除确认。
+  const revision = ref(1); // 模拟确认打开期间发生的真实工程事务。
   const context = {
-    guardPendingNavigation: () => true, // 菜单既有测试不模拟属性草稿。
-    project, treeID, selected, definitionIndex, catalogMenu, catalogDialog,
+    guardPendingNavigation: () => !pending.value,
+    project, treeID, selected, definitionIndex, catalogMenu, catalogDialog, pending, revision, computed,
+    get editRevision() { return revision.value; }, // 实际处理函数读取最新修订，不冻结初始值。
+    eventIndex: computed(() => new EventRegistryIndex(project.value)), // 与实际界面复用同一引用索引。
     catalogIndex: shallowRef(new CatalogOrganizationIndex(project.value)),
     catalogManager: shallowRef<{ editDefinition: (target: Definition) => void; openMoveDefinition: (id: string) => void; openDefinitionTags: (id: string) => void }>(),
     catalogBrowser: shallowRef<{ openMoveDefinition: (id: string) => void; openDefinitionTags: (id: string) => void }>(),
@@ -53,11 +59,13 @@ function session() {
       synchronizeCatalog(project.value, catalog);
     },
   };
-  const app = runInNewContext(`${js}\n({ openCatalogMenu, editCatalogDefinition, confirmDeleteDefinition, organizeCatalogDefinition });`, context) as {
+  const app = runInNewContext(`${js}\n({ openCatalogMenu, editCatalogDefinition, requestDeleteDefinition, confirmDeleteDefinition, organizeCatalogDefinition, catalogMenuReferences });`, context) as {
     organizeCatalogDefinition: (operation: "move" | "tags") => void; // 分类操作路由到当前可见窗口。
     openCatalogMenu: (event: unknown, target: Definition) => void; // 仅记录右击目标和位置。
     editCatalogDefinition: (target: Definition) => void; // 直接打开该定义的编辑页面。
     confirmDeleteDefinition: () => void | Promise<void>; // 二次确认后才移除定义。
+    requestDeleteDefinition: (target: Definition, revision: number) => void; // 编辑页直接请求删除确认。
+    catalogMenuReferences: { readonly value: { trees: number; nodes: number } }; // 删除确认使用真实引用数量。
   };
   return { ...context, app, history, notices };
 }
@@ -136,7 +144,7 @@ test("过期业务定义菜单不能编辑或删除同 ID 的新定义", async (
   const detached = { ...s.project.value.catalog[1]! };
   s.app.editCatalogDefinition(detached);
   assert.equal(s.catalogDialog.value, undefined);
-  s.catalogMenu.value = { definition: detached, x: 0, y: 0 };
+  s.catalogMenu.value = { definition: detached, x: 0, y: 0, revision: 1 };
   await s.app.confirmDeleteDefinition();
   assert.equal(s.project.value.catalog.length, 2);
   assert.equal(s.history.length, 0);
@@ -151,8 +159,65 @@ test("工作区切换期间拒绝打开业务定义菜单和执行变更", async
   assert.equal(s.catalogMenu.value, undefined);
   s.app.editCatalogDefinition(target);
   assert.equal(s.catalogDialog.value, undefined);
-  s.catalogMenu.value = { definition: target, x: 0, y: 0 };
+  s.catalogMenu.value = { definition: target, x: 0, y: 0, revision: 1 };
   await s.app.confirmDeleteDefinition();
   assert.equal(s.project.value.catalog.length, 2);
   assert.equal(s.history.length, 0);
+});
+
+// 编辑页删除绕过菜单直接进入确认，取消保留编辑页；确认仍沿用同一撤销事务。
+test("编辑页删除只打开确认，取消保留原工程和编辑页", async () => {
+  const s = session();
+  const target = s.project.value.catalog[1]!;
+  s.catalogDialog.value = { mode: "edit", definition: target };
+  const before = stringifyJSON(s.project.value);
+  s.app.requestDeleteDefinition(target, 1);
+  assert.equal(s.catalogMenu.value!.initialMode, "delete");
+  assert.equal(s.catalogMenu.value!.definition, target);
+  assert.equal(s.history.length, 0);
+  s.catalogMenu.value = undefined;
+  await s.app.confirmDeleteDefinition();
+  assert.equal(stringifyJSON(s.project.value), before);
+  assert.equal(s.catalogDialog.value.definition, target);
+  s.app.requestDeleteDefinition(target, 1);
+  await s.app.confirmDeleteDefinition();
+  assert.equal(s.history.length, 1);
+  assert.equal(s.project.value.trees[0]!.nodes[1]!.binding, target.id);
+  assert.equal(s.project.value.trees[0]!.nodes[1]!.params!.Target!.value, 42);
+  assert.equal(stringifyJSON(restoreSnapshot(s.history[0]!).project), before);
+});
+
+// 表单草稿、过期修订及确认期间的额外事务均不得执行删除，包括原对象未被替换的情况。
+test("编辑页删除拒绝草稿和过期确认修订", async () => {
+  const s = session();
+  const target = s.project.value.catalog[1]!;
+  s.pending.value = true;
+  s.app.requestDeleteDefinition(target, 1);
+  assert.equal(s.catalogMenu.value, undefined);
+  s.pending.value = false;
+  s.app.requestDeleteDefinition(target, 0);
+  assert.equal(s.catalogMenu.value, undefined);
+  s.app.requestDeleteDefinition(target, 1);
+  s.revision.value++;
+  await s.app.confirmDeleteDefinition();
+  assert.equal(s.project.value.catalog.length, 2);
+  assert.equal(s.history.length, 0);
+});
+
+// 引用统计覆盖跨树、重复节点 ID 和未接入根的草稿，且仅使用已构建的索引桶。
+test("业务定义删除确认统计工程引用，包含草稿节点", () => {
+  const s = session();
+  const target = s.project.value.catalog[1]!;
+  s.project.value.trees.push({ id: "2", name: "其他树", root: "root", nodes: [
+    { id: "root", type: "sequence", children: ["2"] },
+    { id: "2", type: "action", binding: target.id },
+    { id: "draft", type: "action", binding: target.id },
+  ] });
+  s.app.requestDeleteDefinition(target, 1);
+  const counts = s.app.catalogMenuReferences.value;
+  assert.equal(counts.trees, 2);
+  assert.equal(counts.nodes, 3);
+  assert.equal(s.app.catalogMenuReferences.value, counts, "重复渲染复用汇总结果");
+  s.catalogMenu.value = undefined;
+  assert.equal(s.app.catalogMenuReferences.value.nodes, 0);
 });

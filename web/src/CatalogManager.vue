@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from "vue";
 import type { Definition, Parameter, EventDefinition, Project } from "./project";
 import type { DefinitionKind, ValueType } from "./enums";
 import { valueTypes } from "./enums";
@@ -36,6 +36,7 @@ const emit = defineEmits<{
   select: [folderId: string];
   transfer: [operation: "copy" | "download"];
   menu: [event: MouseEvent | KeyboardEvent, definition: Definition];
+  delete: [definition: Definition, revision: number]; // 编辑页只请求二次确认，不直接删除工程数据。
 }>();
 
 // 参数编辑使用字符串保存尚未完成的输入，提交时才解析 JSON 默认值。
@@ -79,7 +80,14 @@ watch(() => [props.index, props.revision], () => {
 // 选择目录同时更新父级新增与导入归属。
 function selectFolder(id: string) { selectedFolder.value = id; emit("select", id); }
 // 分类修改仅交由父级事务执行，未连接工程时保持只读。
-function commitOrganization(change: () => void) { return props.commit?.(change) ?? false; }
+function commitOrganization(change: () => void) {
+  const revision = props.projectRevision;
+  const refreshDraft = mode.value === "edit" && draftRevision.value === revision && !hasPending.value;
+  const applied = props.commit?.(change) ?? false;
+  // 只接受当前表单发起的一次分类事务；外部事务仍使旧定义草稿失效。
+  if (applied && refreshDraft) organizationDraftRevision = revision + 1;
+  return applied;
+}
 // 父级定义菜单复用目录页的分类操作表单。
 function openMoveDefinition(id: string) { organizationBrowser.value?.openMoveDefinition(id); }
 // 标签关联与侧栏调用同一表单和事务。
@@ -91,6 +99,7 @@ function transfer(operation: "copy" | "download") {
   emit("transfer", operation);
 }
 const editingID = ref("");
+const editingTarget = shallowRef<Definition>(); // 捕获正在编辑的原对象，切换目标时不依赖初始属性。
 const draft = ref<Definition & { eventIds: string[] }>({ id: "", name: "", kind: props.initialKind ?? "action", goName: businessNamePrefix(props.initialKind ?? "action"), namingVersion: BUSINESS_NAMING_VERSION, eventIds: [] });
 const functionPrefix = computed(() => businessNamePrefix(draft.value.kind)); // 当前种类的固定前缀。
 const prefixedNaming = computed(() => draft.value.namingVersion === BUSINESS_NAMING_VERSION); // 旧定义仍可原名编辑。
@@ -109,6 +118,7 @@ watch(() => draft.value.kind, (kind, previous) => {
   draft.value.goName = prefix + suffix;
 }, { flush: "sync" });
 const draftRevision = ref(props.projectRevision); // 提交时拒绝工程或注册表变化后的旧表单。
+let organizationDraftRevision: number | undefined; // 当前分类事务允许刷新的唯一后续修订。
 const parameters = ref<ParameterDraft[]>([]);
 let parameterKey = 0;
 const incoming = ref<Definition[]>([]);
@@ -168,7 +178,11 @@ const dialogTitle = computed(() => mode.value === "edit" ? `编辑业务定义�
 // 修改输入立即作废旧预览及确认；同步监听防止同一事件内误提交旧数据。
 watch(importText, resetPreview, { flush: "sync" });
 watch(() => props.catalog, resetPreview);
-watch(() => props.projectRevision, resetPreview);
+watch(() => props.projectRevision, revision => {
+  if (revision === organizationDraftRevision && draftRevision.value === revision - 1) draftRevision.value = revision;
+  organizationDraftRevision = undefined;
+  resetPreview();
+});
 
 // 输入或工程发生变化后，必须重新解析而不能沿用旧冲突选择。
 function resetPreview() {
@@ -210,6 +224,8 @@ function changeMode(next: "create" | "edit" | "import" | "manage", discard = fal
   acknowledged.value = false;
   error.value = "";
   editingID.value = "";
+  editingTarget.value = undefined;
+  organizationDraftRevision = undefined;
   draft.value = { id: "", name: "", kind: props.initialKind ?? "action", goName: businessNamePrefix(props.initialKind ?? "action"), namingVersion: BUSINESS_NAMING_VERSION, eventIds: [] };
   draftRevision.value = props.projectRevision;
   parameters.value = [];
@@ -229,6 +245,7 @@ function editDefinition(item: Definition) {
   if (busy.value || props.disabled) return;
   if (!changeMode("edit")) return;
   editingID.value = item.id;
+  editingTarget.value = item;
   draft.value = { id: item.id, name: item.name, kind: item.kind, goName: item.goName, namingVersion: item.namingVersion ?? 0, eventIds: [...(item.eventIds ?? [])] };
   draftRevision.value = props.projectRevision;
   parameters.value = (item.params ?? []).map((parameter) => ({
@@ -238,6 +255,28 @@ function editDefinition(item: Definition) {
   }));
   bindNew.value = false;
   formBaseline.value = formSignature();
+}
+
+// 编辑页操作先处理草稿，并按对象身份和修订拒绝过期目标。
+function editingActionTarget(): Definition | undefined {
+  if (mode.value !== "edit" || busy.value || props.disabled || !guardPending()) return;
+  const target = editingTarget.value;
+  const current = target && (props.index ? props.index.definitions.get(target.id) : props.catalog.find(item => item.id === target.id));
+  if (!target || current !== target || draftRevision.value !== props.projectRevision) {
+    error.value = "业务定义或工程已变化，请重新打开业务定义表单。";
+    return;
+  }
+  return target;
+}
+// 复用分类浏览器的标签弹窗和事务，保留编辑表单供后续修改。
+function setEditingTags() {
+  const target = editingActionTarget();
+  if (target) openDefinitionTags(target.id);
+}
+// 删除请求交给父层现有确认和撤销流程，目标及修订均来自本次编辑。
+function requestDeleteDefinition() {
+  const target = editingActionTarget();
+  if (target) emit("delete", target, props.projectRevision);
 }
 const anyPending = computed(() => hasPending.value || !!organizationBrowser.value?.hasPending || !!tagBrowser.value?.hasPending);
 // 父级工程切换与卸载前使用同一表单定位入口。
@@ -444,7 +483,7 @@ onUnmounted(() => { importRevision.value++; previousFocus?.focus(); });
   <Teleport to="body">
     <div class="catalog-overlay" @click.self="close">
       <section ref="dialog" class="catalog-dialog" role="dialog" aria-modal="true" aria-labelledby="catalog-title" tabindex="-1" @keydown="dialogKeydown">
-        <header><div><h2 id="catalog-title">{{ dialogTitle }}</h2><p>{{ mode === 'edit' ? `正在修改已有${draft.kind === 'action' ? '动作' : '条件'}定义 · ID：${editingID}` : '声明可绑定的动作与条件，业务函数由 Go 实现。' }}</p></div><button v-if="mode === 'manage'" type="button" :disabled="busy || disabled" aria-label="关闭业务定义管理" @click="close">关闭</button></header>
+        <header><div><h2 id="catalog-title">{{ dialogTitle }}</h2><p>{{ mode === 'edit' ? `正在修改已有${draft.kind === 'action' ? '动作' : '条件'}定义 · ID：${editingID}` : '声明可绑定的动作与条件，业务函数由 Go 实现。' }}</p></div><button v-if="mode === 'edit' && index" type="button" :disabled="busy || disabled" @click="setEditingTags">设置标签</button><button v-if="mode === 'manage'" type="button" :disabled="busy || disabled" aria-label="关闭业务定义管理" @click="close">关闭</button></header>
         <nav v-if="mode !== 'manage'" aria-label="定义表单导航">
           <button type="button" :disabled="busy || disabled" @click="changeMode('manage')">← 返回业务定义</button>
         </nav>
@@ -529,13 +568,19 @@ onUnmounted(() => { importRevision.value++; previousFocus?.focus(); });
           <p v-if="pendingWarning" class="catalog-pending" role="alert">{{ pendingWarning }}</p>
           <p v-if="error" class="catalog-error" role="alert">{{ error }}</p>
         </div>
-        <footer><span>{{ hasPending ? '有未应用更改，请先保存或取消。' : mode === 'manage' ? '分类修改即时应用，修改后需保存工程；关闭不会撤销已应用的修改。' : mode === 'import' ? '仅在应用后修改工程；请保存工程以保留导入结果。' : '定义保存后，可在代码面板预览业务函数骨架。' }}</span><button v-if="mode !== 'manage'" type="button" :disabled="busy || disabled" @click="changeMode('manage', true)">取消</button><button v-if="mode !== 'manage'" class="catalog-primary" :class="{ 'pending-apply': hasPending }" type="button" :disabled="busy || (mode === 'import' && (!previewReady || !previewValidated || !incoming.length || pendingChoices || (updatesExisting && !acknowledged)))" @click="applyCatalog">{{ busy ? '校验中…' : mode === 'import' ? '应用到工程' : mode === 'edit' ? '验证并保存修改' : '验证并保存定义' }}{{ hasPending ? ' · 未应用' : '' }}</button></footer>
+        <footer>
+          <button v-if="mode === 'edit'" type="button" class="catalog-delete" :disabled="busy || disabled" @click="requestDeleteDefinition">删除定义</button>
+          <span>{{ hasPending ? '有未应用更改，请先保存或取消。' : mode === 'manage' ? '分类修改即时应用，修改后需保存工程；关闭不会撤销已应用的修改。' : mode === 'import' ? '仅在应用后修改工程；请保存工程以保留导入结果。' : '定义保存后，可在代码面板预览业务函数骨架。' }}</span>
+          <button v-if="mode !== 'manage'" type="button" :disabled="busy || disabled" @click="changeMode('manage', true)">取消</button>
+          <button v-if="mode !== 'manage'" class="catalog-primary" :class="{ 'pending-apply': hasPending }" type="button" :disabled="busy || (mode === 'import' && (!previewReady || !previewValidated || !incoming.length || pendingChoices || (updatesExisting && !acknowledged)))" @click="applyCatalog">{{ busy ? '校验中…' : mode === 'import' ? '应用到工程' : mode === 'edit' ? '验证并保存修改' : '验证并保存定义' }}{{ hasPending ? ' · 未应用' : '' }}</button>
+        </footer>
       </section>
     </div>
   </Teleport>
 </template>
 
 <style scoped>
+.catalog-delete{color:#ffabab;border-color:#875259}footer span{min-width:0}
 .pending-form input:not([readonly]),.pending-form select,.pending-form textarea{border-color:#e9aa43;box-shadow:0 0 0 2px #e9aa4333}.pending-apply{border-color:#e9aa43;background:#66451f;color:#fff0c7;font-weight:700}.catalog-pending{margin-top:16px;padding:10px 12px;border:1px solid #e9aa43;border-radius:6px;color:#ffd38a;background:#45331f}
 .catalog-import-tools{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}.catalog-import textarea{font-family:ui-monospace,monospace;font-size:12px}.catalog-preview{margin-top:20px;padding:14px;border:1px solid #385361;border-radius:8px}.catalog-preview ul{list-style:none;margin:10px 0 0;padding:0;max-height:220px;overflow:auto}.catalog-preview li{padding:5px 0;overflow-wrap:anywhere}.catalog-preview li span{color:#a3f1d9;margin-right:8px}
 .catalog-type-info{color:#94aebb;cursor:help;font-size:12px}.catalog-type-hint{line-height:1.5;overflow-wrap:anywhere}

@@ -6,6 +6,9 @@ const props = defineProps<{
   definition: Definition; // 右击目标，只读显示，修改由工程入口提交。
   x: number; // 菜单视口横坐标。
   y: number; // 菜单视口纵坐标。
+  initialMode?: "menu" | "delete"; // 编辑页直接复用删除确认，不显示中间菜单。
+  referenceTrees?: number; // 工程中直接引用此定义的树数，包含草稿节点。
+  referenceNodes?: number; // 引用节点总数，由父层缓存索引统计。
 }>();
 const emit = defineEmits<{
   close: []; // 取消或点击菜单外部。
@@ -16,7 +19,7 @@ const emit = defineEmits<{
   copy: []; // 复制单条定义的 JSON 数组。
   export: []; // 下载单条定义的 JSON 文件。
 }>();
-const confirming = ref(false); // 删除确认与菜单互斥显示。
+const confirming = ref(props.initialMode === "delete"); // 删除确认与菜单互斥显示。
 const menu = ref<HTMLElement>(); // 浮层菜单，用于定位和键盘导航。
 const dialog = ref<HTMLDialogElement>(); // 原生模态框约束焦点。
 const cancelButton = ref<HTMLButtonElement>(); // 删除确认默认聚焦取消。
@@ -83,8 +86,13 @@ onMounted(() => {
   previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   document.addEventListener("pointerdown", onOutsidePointer, true);
   window.addEventListener("resize", fitMenu);
-  fitMenu();
-  menu.value?.querySelector<HTMLButtonElement>("button")?.focus();
+  if (confirming.value) {
+    dialog.value?.showModal();
+    cancelButton.value?.focus();
+  } else {
+    fitMenu();
+    menu.value?.querySelector<HTMLButtonElement>("button")?.focus();
+  }
 });
 onBeforeUnmount(() => {
   document.removeEventListener("pointerdown", onOutsidePointer, true);
@@ -109,6 +117,7 @@ onBeforeUnmount(() => {
       <h2 id="catalog-delete-title">删除业务定义</h2>
       <p>确定删除“{{ definition.name }}”吗？</p>
       <p class="muted">定义 ID：{{ definition.id }} · {{ definition.goName }}</p>
+      <p v-if="referenceNodes !== undefined">当前有 {{ referenceTrees ?? 0 }} 棵树、{{ referenceNodes }} 个节点引用此定义（含草稿节点）。</p>
       <p>已有节点会保留，引用此定义的节点需要重新绑定。此操作可撤销。</p>
       <div class="dialog-actions">
         <button ref="cancelButton" type="button" autofocus @click="emit('close')">取消</button>
