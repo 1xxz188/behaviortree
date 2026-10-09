@@ -92,11 +92,26 @@ function canonicalValue(value: unknown): unknown {
   return value;
 }
 
-// 工程集合的排序规则与生成器一致；树展示名、布局和集合原始顺序不使代码过期。
+// 与生成器共用根可达节点语义；展示名、布局和未接入根的草稿不改变源码签名。
 export function semanticSignature(project: Project): string {
   const snapshot = clone(project);
   delete snapshot.catalogOrganization; // 目录、标签和排序不改变生成语义。
   delete (snapshot as Partial<Project>).nextEventId; // 分配游标只属于编辑状态，不改变已声明事件的生成结果。
+  for (const tree of snapshot.trees) {
+    // 每树一次建索引并按连线遍历，环与缺失子节点不会引起递归溢出或重复扫描。
+    const nodes = new Map(tree.nodes.map(node => [node.id, node]));
+    const reachable = new Set<string>();
+    const pending = [tree.root];
+    while (pending.length) {
+      const id = pending.pop()!;
+      if (reachable.has(id)) continue;
+      const node = nodes.get(id);
+      if (!node) continue;
+      reachable.add(id);
+      for (const child of node.children ?? []) pending.push(child);
+    }
+    tree.nodes = tree.nodes.filter(node => reachable.has(node.id));
+  }
   normalizeCodeNames(snapshot);
   const byID = (a: { id: string }, b: { id: string }) =>
     a.id < b.id ? -1 : a.id > b.id ? 1 : 0;

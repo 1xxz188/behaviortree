@@ -490,7 +490,7 @@ func (s *Server) generate(w http.ResponseWriter, r *http.Request) {
 		reply(w, 409, map[string]string{"error": err.Error()})
 		return
 	}
-	reply(w, 200, map[string]any{"files": responseFiles(result.Files), "sourceMap": result.SourceMap, "version": result.Version, "directory": filepath.Join(workspace.path, rel)})
+	reply(w, 200, map[string]any{"files": responseFiles(result.Files), "sourceMap": result.SourceMap, "version": result.Version, "diagnostics": result.Diagnostics, "directory": filepath.Join(workspace.path, rel)})
 }
 
 // WriteProjectGenerated 通过工程根目录发布产物，阻止路径中的符号链接逃出工程。

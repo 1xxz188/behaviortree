@@ -103,12 +103,13 @@ type Node struct {
 	ReselectOnCompletion bool                  `json:"reselectOnCompletion,omitempty"` // priority 候选结束后按最新条件重新选路，缺省沿用候选结果。
 }
 
-// Diagnostic 定位可在画布上显示的校验错误。
+// Diagnostic 定位可在画布上显示的校验错误或草稿警告。
 type Diagnostic struct {
-	TreeID  string `json:"treeId,omitempty"` // 所属树。
-	NodeID  string `json:"nodeId,omitempty"` // 所属节点。
-	Field   string `json:"field,omitempty"`  // 错误属性。
-	Message string `json:"message"`          // 中文错误说明。
+	TreeID   string `json:"treeId,omitempty"`   // 所属树。
+	NodeID   string `json:"nodeId,omitempty"`   // 所属节点。
+	Field    string `json:"field,omitempty"`    // 错误属性。
+	Message  string `json:"message"`            // 中文错误说明。
+	Severity string `json:"severity,omitempty"` // error 或 warning；缺省按错误处理，兼容旧诊断。
 }
 
 // Decode 严格读取单个工程，防止拼错的属性被静默丢弃。

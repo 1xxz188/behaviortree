@@ -79,7 +79,7 @@ func (s *Server) preview(w http.ResponseWriter, r *http.Request) {
 		generationError(w, err)
 		return
 	}
-	reply(w, 200, map[string]any{"files": responseFiles(result.Files), "sourceMap": result.SourceMap, "version": result.Version})
+	reply(w, 200, map[string]any{"files": responseFiles(result.Files), "sourceMap": result.SourceMap, "version": result.Version, "diagnostics": result.Diagnostics})
 }
 
 // scaffold 仅预览业务函数骨架，用户可以复制所需函数到自己的业务文件。

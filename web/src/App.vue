@@ -73,6 +73,7 @@ interface GeneratedCode {
   version: string; // 生成内容的版本摘要。
   directory?: string; // 实际落盘目录，预览无路径。
   matchesCurrent?: boolean; // 已保存源码是否对应当前工程。
+  diagnostics?: Diagnostic[]; // 成功生成仍保留被跳过草稿节点的警告。
 }
 // 结果保留生成时的修订号，编辑后只标记过期，不丢弃源码。
 interface CodeSnapshot extends GeneratedCode {
@@ -162,6 +163,8 @@ const diagnostics = ref<Diagnostic[]>([]);
 const validationResult = shallowRef<{
   revision: number; // 校验对应的语义修订，工程修改后不再显示旧的通过结论。
   count: number; // 本次完成的校验问题数，零表示明确通过。
+  errorCount: number; // 仅错误阻止生成，缺省 severity 的诊断按错误处理。
+  warningCount: number; // 草稿节点警告允许继续生成和代码导出。
 }>();
 const codeSnapshot = shallowRef<CodeSnapshot>();
 const scaffoldSnapshot = shallowRef<{
@@ -473,7 +476,32 @@ function openEventManager() { if (guardPendingNavigation()) eventManagerOpen.val
 const definitionIndex = computed(() => new Map(project.value.catalog.map((d) => [d.id, d])));
 const definition = computed(() => definitionIndex.value.get(node.value?.binding ?? ""));
 const bindingOptions = computed(() => project.value.catalog.filter((d) => d.kind === node.value?.type));
-const invalidNodes = computed(() => new Set(diagnostics.value.filter((d) => d.treeId === tree.value.id).map((d) => d.nodeId)));
+// 依据当前根可达性缓存画布级别，重载或清空诊断后草稿仍保持警告；每个节点只需 O(1) 查表。
+const nodeDiagnosticLevels = computed(() => {
+  const currentTree = tree.value;
+  const nodes = new Map(currentTree.nodes.map(node => [node.id, node]));
+  const reachable = new Set<string>();
+  const pending = [currentTree.root];
+  // 只沿根节点的出边遍历，访问集合防止环和重复连线引起重复展开。
+  while (pending.length) {
+    const id = pending.pop()!;
+    if (reachable.has(id)) continue;
+    const node = nodes.get(id);
+    if (!node) continue;
+    reachable.add(id);
+    for (const child of node.children ?? []) pending.push(child);
+  }
+  const levels = new Map<string, "error" | "warning">();
+  for (const node of currentTree.nodes) {
+    if (!reachable.has(node.id)) levels.set(node.id, "warning");
+  }
+  // 草稿忽略旧业务错误；接回根后取消旧草稿警告，可达节点仍显示当前校验错误。
+  for (const diagnostic of diagnostics.value) {
+    if (diagnostic.treeId !== currentTree.id || !diagnostic.nodeId || diagnostic.severity === "warning" || !reachable.has(diagnostic.nodeId)) continue;
+    levels.set(diagnostic.nodeId, "error");
+  }
+  return levels;
+});
 const eventMatchedNodes = computed(() => matchedEventNodes(highlightedEventIDs.value, eventIndex.value, treeID.value));
 const availableKinds = computed(() =>
   nodeTypes.map((type) => ({ type, info: kinds[type] })).filter(({ type, info }) =>
@@ -493,7 +521,8 @@ const graphNodes = computed(() =>
       node: n,
       kind: kinds[n.type],
       root: n.id === tree.value.root,
-      invalid: invalidNodes.value.has(n.id),
+      invalid: nodeDiagnosticLevels.value.get(n.id) === "error",
+      warning: nodeDiagnosticLevels.value.get(n.id) === "warning",
       eventMatched: eventMatchedNodes.value.has(n.id),
     },
   })),
@@ -1387,12 +1416,14 @@ function validate() {
     const result = await currentProjectRequest<{ diagnostics: Diagnostic[] }>("/api/validate");
     if (!result) return;
     diagnostics.value = result.data.diagnostics;
-    validationResult.value = { revision: result.revision, count: diagnostics.value.length };
+    const errorCount = diagnostics.value.filter(diagnostic => diagnostic.severity !== "warning").length;
+    const warningCount = diagnostics.value.length - errorCount;
+    validationResult.value = { revision: result.revision, count: diagnostics.value.length, errorCount, warningCount };
     notice(
-      diagnostics.value.length
-        ? `发现 ${diagnostics.value.length} 个问题`
-        : "校验通过，可以生成 Go 代码",
-      diagnostics.value.length > 0,
+      errorCount
+        ? `发现 ${errorCount} 个错误${warningCount ? `，${warningCount} 个警告` : ""}`
+        : warningCount ? `校验通过，${warningCount} 个草稿节点将在生成和代码导出时跳过` : "校验通过，可以生成 Go 代码",
+      errorCount > 0,
     );
   });
 }
@@ -1425,9 +1456,10 @@ function generate(write = true) {
     const result = await currentProjectRequest<GeneratedCode>(write ? "/api/generate" : "/api/preview");
     if (!result) return;
     acceptCodeSnapshot(result.data, result.signature, result.revision, write ? "generated" : "preview");
-    diagnostics.value = [];
+    diagnostics.value = result.data.diagnostics ?? [];
     showOutput("source");
-    notice(`${write ? "已生成到目录" : "预览已更新"} · ${result.data.version.slice(0, 12)}`);
+    const warningCount = diagnostics.value.filter(diagnostic => diagnostic.severity === "warning").length;
+    notice(`${write ? "已生成到目录" : "预览已更新"} · ${result.data.version.slice(0, 12)}${warningCount ? ` · 已跳过 ${warningCount} 个草稿节点，请查看校验警告` : ""}`);
   });
 }
 // 从生成目录读取上次产物；打开工程自动读取时，尚无产物不视为错误。
@@ -1751,7 +1783,7 @@ async function applyCatalog(catalog: Definition[], bindID?: string, events?: Eve
     const result = await request<{ diagnostics: Diagnostic[] }>("/api/validate", clone(project.value));
     if (revision !== semanticRevision.value) return;
     diagnostics.value = [...resets, ...(result.diagnostics ?? [])];
-    notice(diagnostics.value.length ? `业务定义已应用，请保存工程；发现 ${diagnostics.value.length} 条校验提示` : "业务定义已应用，请保存工程；校验通过", diagnostics.value.length > 0);
+    notice(diagnostics.value.length ? `业务定义已应用，请保存工程；发现 ${diagnostics.value.length} 条校验提示` : "业务定义已应用，请保存工程；校验通过", diagnostics.value.some(diagnostic => diagnostic.severity !== "warning"));
   } catch (cause) {
     if (revision !== semanticRevision.value) return;
     notice(`业务目录已同步，但校验失败：${cause instanceof Error ? cause.message : String(cause)}`, true);
@@ -2370,7 +2402,7 @@ onUnmounted(() => toolLifecycle.abort());
             :class="[
               'bt-node',
               data.kind.color,
-              { invalid: data.invalid },
+              { invalid: data.invalid, warning: data.warning },
               { 'event-match': data.eventMatched },
             ]"
           >
@@ -2750,17 +2782,18 @@ onUnmounted(() => toolLifecycle.abort());
       <p v-if="bottomTab === 'source' && sourceStale" class="code-warning">当前工程已变化，以下保留旧源码；更新预览后恢复节点联动。</p>
       <p v-if="bottomTab === 'scaffold' && scaffoldSnapshot" class="code-warning">{{ scaffoldStale ? '工程已变化，请更新骨架。' : '' }}骨架中的 TODO 需要手动实现；默认保存到 {{ project.generation.packagePath }}/actions.go，同名文件需再次确认才会覆盖。</p>
       <div v-if="bottomTab === 'diagnostics'" class="output-content">
-        <p v-if="validationResult && validationResult.revision === semanticRevision" class="validation-result" :class="{ 'identity-error': validationResult.count > 0 }" role="status">
-          {{ validationResult.count ? `校验完成，发现 ${validationResult.count} 个问题，请点击下方条目定位。` : '校验通过，未发现结构与类型问题，可以生成 Go 代码。' }}
+        <p v-if="validationResult && validationResult.revision === semanticRevision" class="validation-result" :class="{ 'identity-error': validationResult.errorCount > 0, 'validation-warning': validationResult.errorCount === 0 && validationResult.warningCount > 0 }" role="status">
+          {{ validationResult.errorCount ? `校验完成，发现 ${validationResult.errorCount} 个错误${validationResult.warningCount ? `、${validationResult.warningCount} 个警告` : ''}，请点击下方条目定位。` : validationResult.warningCount ? `校验通过，${validationResult.warningCount} 个草稿节点将在生成和代码导出时跳过，请点击警告定位。` : '校验通过，未发现结构与类型问题，可以生成 Go 代码。' }}
         </p>
         <template v-if="bottomTab === 'diagnostics'"
           ><button
             v-for="(d, i) in diagnostics"
             :key="i"
             class="diagnostic"
+            :class="{ warning: d.severity === 'warning' }"
             @click="focusDiagnostic(d)"
           >
-            <span>!</span><code>{{ d.nodeId ?? d.field ?? d.treeId }}</code
+            <span>{{ d.severity === 'warning' ? '警告' : '错误' }}</span><code>{{ d.nodeId ?? d.field ?? d.treeId }}</code
             >{{ d.message }}
           </button>
           <p v-if="!diagnostics.length && (!validationResult || validationResult.revision !== semanticRevision)" class="muted">

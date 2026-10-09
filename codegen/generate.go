@@ -38,9 +38,10 @@ type GeneratedFile struct {
 
 // Result 包含公共 glue、各定义树文件和可持久化的调试映射。
 type Result struct {
-	Files     []GeneratedFile  `json:"files"`     // glue 在首位，其余按定义树 ID 排序。
-	SourceMap []SourceLocation `json:"sourceMap"` // 节点与源码映射。
-	Version   string           `json:"version"`   // 不含画布布局的内容摘要。
+	Files       []GeneratedFile    `json:"files"`       // glue 在首位，其余按定义树 ID 排序。
+	SourceMap   []SourceLocation   `json:"sourceMap"`   // 节点与源码映射。
+	Version     string             `json:"version"`     // 不含画布布局的内容摘要。
+	Diagnostics []model.Diagnostic `json:"diagnostics"` // 生成成功时保留被跳过草稿的可定位警告。
 }
 
 // ValidationError 为 CLI 和 Web 保留全部可定位诊断。
@@ -49,9 +50,13 @@ type ValidationError struct{ Diagnostics []model.Diagnostic } // 生成前的全
 // MaxExpandedNodes 限制子树复用后的总展开状态，避免很小的输入指数占用内存。
 const MaxExpandedNodes = 100000
 
-// Error 返回第一个诊断作为普通 Go 错误信息。
+// Error 只计入阻断错误，避免草稿警告掩盖实际失败原因。
 func (e *ValidationError) Error() string {
-	return fmt.Sprintf("行为树校验失败 (%d): %s", len(e.Diagnostics), e.Diagnostics[0].Message)
+	errors := model.ValidationErrors(e.Diagnostics)
+	if len(errors) == 0 {
+		return "行为树校验失败"
+	}
+	return fmt.Sprintf("行为树校验失败 (%d): %s", len(errors), errors[0].Message)
 }
 
 // occurrence 是生成期间使用的一个独立节点展开实例。
@@ -87,15 +92,16 @@ type generator struct {
 
 // Generate 按定义树生成确定性的多个 Go 文件，不读写手写业务文件。
 func Generate(project model.Project) (Result, error) {
-	project = model.WithCodeNames(project)
-	if d := model.Validate(project); len(d) > 0 {
-		return Result{}, &ValidationError{d}
-	}
-	if err := checkExpandedSize(project); err != nil {
-		return Result{}, err
+	diagnostics := model.Validate(project)
+	if len(model.ValidationErrors(diagnostics)) > 0 {
+		return Result{}, &ValidationError{Diagnostics: diagnostics}
 	}
 	p, version, err := normalizeProject(project)
 	if err != nil {
+		return Result{}, err
+	}
+	// 只统计实际运行节点及其子树引用，草稿不占用展开预算。
+	if err := checkExpandedSize(p); err != nil {
 		return Result{}, err
 	}
 	resolved, err := model.ResolveGoPackage("", p.Generation.PackagePath)
@@ -370,7 +376,7 @@ func Generate(project model.Project) (Result, error) {
 			mapping[i] = SourceLocation{TreeID: n.tree, NodeID: n.node.ID, File: name, Index: i, Line: lines[n.function], FunctionName: n.function}
 		}
 	}
-	return Result{Files: files, SourceMap: mapping, Version: version}, nil
+	return Result{Files: files, SourceMap: mapping, Version: version, Diagnostics: diagnostics}, nil
 }
 
 // emitHeader 只导入当前文件实际使用的包，公共时长别名由 glue 提供。
@@ -820,7 +826,7 @@ func checkExpandedSize(p model.Project) error {
 	return nil
 }
 
-// ProjectVersion 计算与生成器一致的语义版本，忽略树显示名称和布局且允许未连完的草稿。
+// ProjectVersion 计算与生成器一致的语义版本，忽略树显示名称、布局和未接入根的草稿。
 func ProjectVersion(project model.Project) (string, error) {
 	_, version, err := normalizeProject(project)
 	return version, err
@@ -834,6 +840,8 @@ func normalizeProject(project model.Project) (model.Project, string, error) {
 	if diagnostics := model.ValidateEvents(project); len(diagnostics) != 0 {
 		return model.Project{}, "", fmt.Errorf("%s: %s", diagnostics[0].Field, diagnostics[0].Message)
 	}
+	// 先投影运行节点再补代码名，草稿的属性和名称占用均不参与生成或版本摘要。
+	project, _ = model.ExecutionProject(project)
 	project = model.WithCodeNames(project)
 	// 分配游标只影响未来新增事件，不改变当前生成源码及版本摘要。
 	project.NextEventID = ""

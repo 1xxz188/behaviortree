@@ -135,10 +135,12 @@ func Zero(t bt.ValueType, enum []string) json.RawMessage {
 	return json.RawMessage("0")
 }
 
-// Validate 检查拓扑、Go 绑定和所有参数，返回可直接展示的错误位置。
+// Validate 校验根节点可达部分的拓扑、Go 绑定和参数，对未接入根的草稿返回跳过警告。
 func Validate(p Project) []Diagnostic {
-	var out []Diagnostic
-	add := func(tree, node, field, message string) { out = append(out, Diagnostic{tree, node, field, message}) }
+	p, out := ExecutionProject(p)
+	add := func(tree, node, field, message string) {
+		out = append(out, Diagnostic{TreeID: tree, NodeID: node, Field: field, Message: message})
+	}
 	if p.SchemaVersion != SchemaVersion {
 		add("", "", "schemaVersion", "不支持的工程格式版本")
 	}
@@ -277,12 +279,6 @@ priorityReselection:
 		nodes := map[string]Node{}
 		codeNames := make(map[string]struct{}, len(tree.Nodes))
 		for _, n := range tree.Nodes {
-			if n.ID == "" {
-				add(tree.ID, n.ID, "id", "节点 ID 不能为空")
-			}
-			if _, ok := nodes[n.ID]; ok {
-				add(tree.ID, n.ID, "id", "重复节点 ID")
-			}
 			nodes[n.ID] = n
 			if n.CodeName != "" {
 				if !ValidCodeName(n.CodeName) {
@@ -442,12 +438,6 @@ priorityReselection:
 			color[id] = 2
 		}
 		visit(tree.Root)
-		for _, n := range tree.Nodes {
-			if color[n.ID] == 0 {
-				add(tree.ID, n.ID, "children", "节点无法从根节点到达")
-				visit(n.ID)
-			}
-		}
 	}
 	color := map[string]int{}
 	var visitTree func(string)

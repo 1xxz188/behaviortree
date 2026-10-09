@@ -5,6 +5,7 @@ import { runInNewContext } from "node:vm";
 import ts from "typescript";
 import { computed, ref } from "vue";
 import { clone, blankProject } from "./project.ts";
+import type { Diagnostic } from "./project.ts";
 import { parseJSON, stringifyJSON } from "./json.ts";
 import { GenerationRequests } from "./generation.ts";
 import { ProjectSaveState } from "./saveState.ts";
@@ -29,7 +30,7 @@ function deferred() {
 }
 
 // 建立最小编辑会话，真实保存状态仍使用工程完整内容判断。
-function editor(options: { dirty?: boolean; name?: string; chosenName?: string; saveError?: boolean; saveWait?: Promise<void> } = {}) {
+function editor(options: { dirty?: boolean; name?: string; chosenName?: string; saveError?: boolean; saveWait?: Promise<void>; diagnostics?: Diagnostic[] } = {}) {
   const project = ref(blankProject());
   const saveState = new ProjectSaveState();
   const name = options.name ?? "project.json";
@@ -39,6 +40,7 @@ function editor(options: { dirty?: boolean; name?: string; chosenName?: string; 
     saveState.changed();
   }
   const calls: { path: string; body: any }[] = [];
+  const outputs: string[] = []; // 成功生成必须继续展示源码，同时保留可查看的警告。
   const context = {
     noticeRevision: { value: 0 }, // 实际发布操作结果的版本。
     Error, stringifyJSON, parseJSON, clone, computed, project, saveState,
@@ -50,20 +52,20 @@ function editor(options: { dirty?: boolean; name?: string; chosenName?: string; 
     allFiles: { value: name ? [name] : [] },
     dirty: { get value() { return saveState.dirty; } },
     busy: { value: false }, message: { value: "" }, error: { value: false },
-    diagnostics: { value: [] }, semanticRevision: { value: 0 }, editRevision: 0,
+    diagnostics: { value: [] as Diagnostic[] }, semanticRevision: { value: 0 }, editRevision: 0,
     mutate: (fn: () => void) => { fn(); saveState.changed(); },
     generationRequests: new GenerationRequests(),
     window: { sessionStorage: undefined, localStorage: undefined }, rememberTabSession: () => {}, rememberProject: () => {},
     askProject: async (_kind: string) => options.chosenName
       ? { name: options.chosenName, directory: "E:/workspace", overwrite: false } : undefined,
-    showOutput: () => {}, acceptCodeSnapshot: () => {}, resetResults: () => {},
+    showOutput: (tab: string) => outputs.push(tab), acceptCodeSnapshot: () => {}, resetResults: () => {},
     fetch: async (path: string, init: { body: string }) => {
       calls.push({ path, body: parseJSON(init.body) });
       if (path === "/api/project") await options.saveWait;
       const failed = path === "/api/project" && options.saveError;
       return { ok: !failed, status: failed ? 500 : 200,
         text: async () => stringifyJSON(failed ? { error: "磁盘写入失败" }
-          : path === "/api/project" ? { workspace: "E:/workspace" } : { version: "123456789012abcdef" }) };
+          : path === "/api/project" ? { workspace: "E:/workspace" } : { version: "123456789012abcdef", diagnostics: options.diagnostics }) };
     },
   };
   const workflow = runInNewContext(`${workflowJS}\n({ generate, changeGenerationPackagePath, generationUnsaved, saveCurrent });`, context) as {
@@ -72,7 +74,7 @@ function editor(options: { dirty?: boolean; name?: string; chosenName?: string; 
     generationUnsaved: { readonly value: { packagePath: boolean; contextImport: boolean; contextType: boolean } }; // 三个字段的独立未保存状态。
     saveCurrent: () => Promise<boolean>; // 直接验证保存期间新输入仍然醒目。
   };
-  return { context, calls, ...workflow };
+  return { context, calls, outputs, ...workflow };
 }
 
 // 未保存工程必须先写入 JSON，写入成功后才能发送生成请求。
@@ -129,6 +131,30 @@ test("干净工程直接生成，未保存工程预览只请求预览接口", as
   await preview.generate(false);
   assert.deepEqual(preview.calls.map(call => call.path), ["/api/preview"]);
   assert.equal(preview.context.dirty.value, true);
+});
+
+// 预览和正式生成成功时保留服务端警告，明确说明跳过数量，并完整提交含草稿的工程快照。
+test("预览和生成保留草稿警告且成功提示跳过节点", async () => {
+  const warnings: Diagnostic[] = [
+    { severity: "warning", treeId: "1", nodeId: "2", message: "草稿动作将在生成时跳过" },
+    { severity: "warning", treeId: "1", nodeId: "3", message: "草稿子树将在生成时跳过" },
+  ];
+  for (const write of [false, true]) {
+    const s = editor({ diagnostics: warnings });
+    s.context.project.value.trees[0]!.nodes.push(
+      { id: "2", type: "action", codeName: "DraftAction" },
+      { id: "3", type: "subtree", codeName: "DraftSubtree", tree: "missing" },
+    );
+    await s.generate(write);
+    assert.deepEqual(s.calls.map(call => call.path), [write ? "/api/generate" : "/api/preview"]);
+    assert.equal(s.calls[0]!.body.trees[0].nodes.length, 3);
+    assert.equal(s.context.project.value.trees[0]!.nodes.length, 3);
+    assert.equal(stringifyJSON(s.context.diagnostics.value), stringifyJSON(warnings));
+    assert.equal(s.context.error.value, false);
+    assert.match(s.context.message.value, /已跳过 2 个草稿节点.*校验警告/);
+    assert.match(s.context.message.value, write ? /已生成到目录/ : /预览已更新/);
+    assert.deepEqual(s.outputs, ["source"]);
+  }
 });
 
 // 保存和代码预览均发送完成后重选配置，不能在请求快照中丢失新属性。

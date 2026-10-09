@@ -80,6 +80,7 @@ export interface Project {
   };
 }
 export interface Diagnostic {
+  severity?: "error" | "warning"; // 缺省为错误；草稿节点只报警告，不阻止生成。
   treeId?: string;
   nodeId?: string;
   field?: string;

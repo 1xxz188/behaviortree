@@ -91,6 +91,19 @@ test("自动校验结果替换旧诊断并明确显示新增参数未绑定", as
   assert.doesNotMatch(stringifyJSON(context.diagnostics.value), /未知参数/);
 });
 
+// 自动校验只有草稿警告时正常完成目录更新，混合错误才使用失败提示。
+test("目录自动校验按错误级别决定失败而保留草稿警告", async () => {
+  const warning: Diagnostic = { severity: "warning", treeId: "1", nodeId: "2", message: "草稿节点将在生成时跳过" };
+  for (const items of [[warning], [warning, { treeId: "1", nodeId: "1", message: "业务参数未绑定" }]]) {
+    const { context, apply } = editor();
+    context.fetch = async () => ({ ok: true, text: async () => stringifyJSON({ diagnostics: items }) });
+    await apply(context.project.value.catalog);
+    assert.equal(stringifyJSON(context.diagnostics.value), stringifyJSON(items));
+    assert.equal(context.error.value, items.length > 1);
+    assert.match(context.message.value, /业务定义已应用，请保存工程/);
+  }
+});
+
 // 在自动校验返回前继续编辑时，旧响应不得复活已清除的错误。
 test("目录自动校验的过期响应不会覆盖新修订诊断", async () => {
   const { context, updated, apply } = editor();

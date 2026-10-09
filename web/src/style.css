@@ -456,6 +456,9 @@ pre {
   border-color: #514763;
   border-left-color: #b3a1e8;
 }
+.bt-node.warning {
+  border-color: #e8c584;
+}
 .bt-node.invalid {
   border-color: #ff7d83;
 }
@@ -470,6 +473,12 @@ pre {
 .vue-flow__node.selected .bt-node {
   box-shadow:
     0 0 0 2px #a3f0d085,
+    0 8px 22px #0004;
+}
+/* 选中草稿仍使用警告色外圈，避免默认的绿色选中光晕掩盖黄色边框。 */
+.vue-flow__node.selected .bt-node.warning {
+  box-shadow:
+    0 0 0 2px #e8c58485,
     0 8px 22px #0004;
 }
 .bt-node-top {
@@ -741,6 +750,10 @@ pre {
 }
 .diagnostic > span {
   color: #f09994;
+}
+.diagnostic.warning > span,
+.validation-warning {
+  color: #e8c584;
 }
 .diagnostic code {
   color: #a9bbce;

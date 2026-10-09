@@ -1,7 +1,51 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createGeneratedSourceIndex, selectGeneratedFile, sourceNodeKey } from "./generation.ts";
+import { createGeneratedSourceIndex, selectGeneratedFile, semanticSignature, sourceNodeKey } from "./generation.ts";
 import type { GeneratedFile, SourceLocation } from "./generation.ts";
+import { clone, emptyProject } from "./project.ts";
+import { stringifyJSON } from "./json.ts";
+
+// 草稿节点及其内部错误不参与源码版本，签名比较仍保留工程中的全部草稿以供保存恢复。
+test("源码语义签名忽略孤立节点和未接入根的草稿分支", () => {
+  const project = emptyProject();
+  const expected = semanticSignature(project);
+  const tree = project.trees[0]!;
+  tree.nodes.push(
+    { id: "draft", type: "action", codeName: "bad-name", binding: "missing", children: ["draft-group"] },
+    { id: "draft-group", type: "sequence", codeName: "Root", children: ["draft", "root", "missing"] },
+  );
+  const before = stringifyJSON(project);
+  assert.equal(semanticSignature(project), expected);
+  assert.equal(stringifyJSON(project), before);
+  tree.nodes.find(node => node.id === "draft")!.binding = "other-missing";
+  tree.nodes.find(node => node.id === "draft")!.comment = "草稿内容修改";
+  assert.equal(semanticSignature(project), expected);
+  assert.equal(tree.nodes.length, 6);
+});
+
+// 草稿接入根后及再次断开后的版本都应正确变化，跨树节点只从各自根确定有效范围。
+test("草稿接入根才改变源码签名且跨树同名节点独立判断", () => {
+  const project = emptyProject();
+  const tree = project.trees[0]!;
+  tree.nodes.push({ id: "draft", type: "wait", codeName: "Draft", durationMs: 250 });
+  const initial = semanticSignature(project);
+  tree.nodes.find(node => node.id === "root")!.children!.push("draft");
+  const connected = semanticSignature(project);
+  assert.notEqual(connected, initial);
+  tree.nodes.find(node => node.id === "draft")!.durationMs = 500;
+  assert.notEqual(semanticSignature(project), connected);
+  tree.nodes.find(node => node.id === "root")!.children!.pop();
+  assert.equal(semanticSignature(project), initial);
+  const other = clone(tree);
+  other.id = "other";
+  other.root = "draft";
+  project.trees.push(other);
+  const separate = semanticSignature(project);
+  tree.nodes.find(node => node.id === "draft")!.durationMs = 1000;
+  assert.equal(semanticSignature(project), separate);
+  other.nodes.find(node => node.id === "draft")!.durationMs = 1000;
+  assert.notEqual(semanticSignature(project), separate);
+});
 
 // 不同文件可使用相同行号，同一源节点的多次展开只能属于其定义树文件。
 test("多文件源码索引隔离同名节点和行号，保留全部展开位置", () => {

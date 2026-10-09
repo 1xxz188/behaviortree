@@ -101,7 +101,9 @@ func run(args []string) error {
 		}
 		if diagnostics := model.Validate(p); len(diagnostics) != 0 {
 			_ = json.NewEncoder(os.Stdout).Encode(diagnostics)
-			return fmt.Errorf("校验失败，共 %d 个问题", len(diagnostics))
+			if failures := model.ValidationErrors(diagnostics); len(failures) != 0 {
+				return fmt.Errorf("校验失败，共 %d 个错误", len(failures))
+			}
 		}
 		if args[0] == "validate" {
 			fmt.Println("校验通过")
