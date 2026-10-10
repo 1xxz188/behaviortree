@@ -368,12 +368,19 @@ onBeforeUnmount(() => { document.removeEventListener("pointerdown", outside, tru
       </div>
     </template>
     <div v-if="presentation === 'tags'" class="tag-manager">
-      <div class="tag-heading"><strong>工程标签</strong><button :disabled="disabled" @click="openDialog('tag-create')">新建标签</button></div>
-      <p class="muted">删除标签仅解除关联，保留业务定义。</p>
-      <p v-if="!allTags.length" class="muted">暂无标签，可创建后关联业务定义。</p>
-      <div v-for="tag in allTags" :key="tag.id" class="tag-row"><span><b>{{ tag.name }}</b><small>{{ index.tagMembers.get(tag.id)?.size ?? 0 }} 个关联定义</small></span>
-        <button :disabled="disabled" :aria-label="`重命名标签 ${tag.name}`" @click="openDialog('tag-rename', tag.id)">重命名</button>
-        <button :disabled="disabled" :aria-label="`删除标签 ${tag.name}`" @click="openDialog('tag-delete', tag.id)">删除</button>
+      <!-- 标题与说明集中在工具栏内，通过底色和边框区分下方标签列表。 -->
+      <div class="tag-heading">
+        <div class="tag-heading-copy"><strong>工程标签</strong><p class="muted">删除标签仅解除关联，保留业务定义。</p></div>
+        <button :disabled="disabled" @click="openDialog('tag-create')">新建标签</button>
+      </div>
+      <div class="tag-list" role="list" aria-label="工程标签列表">
+        <p v-if="!allTags.length" class="muted tag-empty">暂无标签，可创建后关联业务定义。</p>
+        <div v-for="tag in allTags" :key="tag.id" class="tag-row" role="listitem"><span class="tag-details"><b>{{ tag.name }}</b><small>{{ index.tagMembers.get(tag.id)?.size ?? 0 }} 个关联定义</small></span>
+          <div class="tag-actions">
+            <button :disabled="disabled" :aria-label="`重命名标签 ${tag.name}`" @click="openDialog('tag-rename', tag.id)">重命名</button>
+            <button :disabled="disabled" :aria-label="`删除标签 ${tag.name}`" @click="openDialog('tag-delete', tag.id)">删除</button>
+          </div>
+        </div>
       </div>
     </div>
     <template v-else>
@@ -467,12 +474,18 @@ onBeforeUnmount(() => { document.removeEventListener("pointerdown", outside, tru
 .directory-tools button, .tag-row button { flex-shrink: 0; }
 .catalog-browser { min-width: 0; }
 .catalog-management .catalog-current { font-size: 13px; }
-.catalog-management .tag-manager { margin: 0; padding: 0; border: 0; background: transparent; }
-.catalog-management .tag-heading, .catalog-management .tag-row { font-size: 14px; gap: 12px; padding: 12px 0; }
-.catalog-management .tag-row { border-bottom: 1px solid #304653; flex-wrap: wrap; }
-.catalog-management .tag-row span { min-width: 100px; }
-.catalog-management .tag-row small { display: block; font-size: 12px; color: #8fa5b6; margin-top: 5px; }
-.catalog-management .tag-heading button, .catalog-management .tag-row button { font-size: 13px; padding: 8px 12px; }
+.catalog-management .tag-manager { margin: 0; padding: 0; border: 1px solid #304653; border-radius: 8px; background: #12212b; }
+.catalog-management .tag-heading { margin: 0; padding: 12px 14px; gap: 12px; font-size: 14px; background: #1b2e39; border-bottom: 1px solid #38505e; border-radius: 7px 7px 0 0; }
+.tag-heading-copy { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.tag-heading-copy strong { display: block; line-height: 1.4; }
+.tag-heading-copy p { margin: 4px 0 0; font-size: 12px; line-height: 1.5; }
+.catalog-management .tag-row { margin: 0; padding: 10px 14px; gap: 12px; font-size: 14px; border-bottom: 1px solid #2b404d; }
+.catalog-management .tag-row:last-child { border-bottom: 0; }
+.catalog-management .tag-details { min-width: 0; }
+.catalog-management .tag-row small { display: block; font-size: 12px; color: #8fa5b6; margin-top: 3px; }
+.tag-actions { display: flex; flex-shrink: 0; align-items: center; gap: 8px; }
+.catalog-management .tag-heading button, .catalog-management .tag-row button { flex-shrink: 0; font-size: 13px; padding: 7px 11px; }
+.tag-empty { margin: 0; padding: 18px 14px; font-size: 13px; line-height: 1.5; }
 .catalog-root, .catalog-folder, .catalog-definition { display: flex; align-items: center; gap: 7px; width: 100%; text-align: left; border: 1px solid transparent; }
 .catalog-root { justify-content: space-between; margin-top: 8px; background: #14202a; }
 .catalog-root small, .catalog-current { font-size: 10px; }
