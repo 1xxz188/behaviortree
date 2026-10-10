@@ -26,6 +26,8 @@ function form() {
     guardPending: () => true, formSignature: () => "", formBaseline: { value: "" }, pendingWarning: { value: "" }, // 参数转换测试不模拟离开表单。
     parseJSON, stringifyJSON, props: { projectRevision: 0 }, busy: { value: false }, mode: { value: "create" }, draftRevision: { value: 0 },
     incoming: { value: [] }, incomingPackage: { value: null }, choices: { value: {} }, eventChoices: { value: {} }, eventMappings: { value: {} }, eventRenames: { value: {} }, importEnumDescription: { value: false }, acknowledged: { value: false },
+    // 编辑目标和分类事务修订是切换页面的真实依赖，抽取函数时也须提供对应组件状态。
+    editingTarget: { value: undefined as Definition | undefined }, organizationDraftRevision: undefined as number | undefined,
     error: { value: "" }, editingID: { value: "" }, fileLabel: { value: "" }, bindNew: { value: false },
     importSource: { value: "paste" }, importText: { value: "" }, previewReady: { value: false }, previewValidated: { value: false },
     draft: { value: { id: "Move", name: "移动", kind: "action", goName: "Move", eventIds: [] } },

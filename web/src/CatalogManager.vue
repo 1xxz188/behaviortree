@@ -12,6 +12,7 @@ import { normalizeEventDescription, validateEventRegistry } from "./eventRegistr
 import EventMultiSelect from "./EventMultiSelect.vue";
 import CatalogBrowser from "./CatalogBrowser.vue";
 import type { CatalogOrganizationIndex } from "./catalogOrganization";
+import type { CatalogTreeScope, CatalogNodeStatus } from "./catalogVisibility";
 import { BUSINESS_NAMING_VERSION, businessNameError, businessNamePrefix } from "./businessNames";
 
 const props = withDefaults(defineProps<{
@@ -28,6 +29,9 @@ const props = withDefaults(defineProps<{
   commit?: (change: () => void) => boolean; // 所有分类操作共用撤销事务。
   failureMessage?: string; // 父级事务错误在当前窗口展示。
   transferBusy?: boolean; // 导出进行中禁用重复提交。
+  treeScope?: CatalogTreeScope; // 与侧栏实时共享的树范围，默认全部树。
+  nodeStatus?: CatalogNodeStatus; // 与侧栏实时共享的节点状态，默认全部。
+  matchesDefinition?: (id: string) => boolean; // 复用父级缓存的范围、状态匹配，逐行 O(1) 判断。
 }>(), { initialMode: "manage" });
 const emit = defineEmits<{
   apply: [catalog: Definition[], bindID?: string, events?: EventDefinition[], enumDescription?: string, nextEventId?: string];
@@ -37,6 +41,8 @@ const emit = defineEmits<{
   transfer: [operation: "copy" | "download"];
   menu: [event: MouseEvent | KeyboardEvent, definition: Definition];
   delete: [definition: Definition, revision: number]; // 编辑页只请求二次确认，不直接删除工程数据。
+  "update:treeScope": [value: CatalogTreeScope]; // 筛选更新交由父级同步侧栏。
+  "update:nodeStatus": [value: CatalogNodeStatus]; // 状态偏好不进入工程或撤销记录。
 }>();
 
 // 参数编辑使用字符串保存尚未完成的输入，提交时才解析 JSON 默认值。
@@ -49,30 +55,20 @@ interface ParameterDraft {
   enumText: string; // 每行一个枚举值。
 }
 const mode = ref(props.initialMode);
-const activeTab = ref<"definitions" | "directories" | "tags">("definitions"); // 管理页导航与操作按钮分离。
+const activeTab = ref<"definitions" | "tags">("definitions"); // 业务定义与目录合并，标签维护仍为独立页。
 // 从任意表单返回时统一显示定义列表，保留已选目录与搜索条件。
 watch(mode, value => { if (value === "manage") activeTab.value = "definitions"; });
 const query = ref(""); // 仅筛选定义名称、ID 和业务函数。
 const kindFilter = ref<"" | DefinitionKind>(""); // 空值代表全部种类。
-const selectedFolder = ref(props.initialFolder ?? ""); // 目录筛选只包含直属定义。
+const selectedFolder = ref(props.initialFolder ?? ""); // 当前目录只决定目录操作以及新建、导入归属。
+// 通过受控属性直接同步两处视图，不复制父级状态或使用双向 watch。
+const treeScope = computed({ get: () => props.treeScope ?? "all", set: (value: CatalogTreeScope) => emit("update:treeScope", value) });
+const nodeStatus = computed({ get: () => props.nodeStatus ?? "all", set: (value: CatalogNodeStatus) => emit("update:nodeStatus", value) });
 const organizationBrowser = ref<InstanceType<typeof CatalogBrowser>>(); // 隐藏时仍保留共用分类表单宿主。
 const tagBrowser = ref<InstanceType<typeof CatalogBrowser>>(); // 标签页弹窗切换前也要检查草稿。
 const exportMenu = ref<HTMLDetailsElement>(); // 导出后收起菜单，避免遮挡定义列表。
-const folderChoices = computed(() => {
-  props.revision;
-  return [{ id: "", name: "根目录" }, ...Array.from(props.index?.folders.values() ?? [], folder => ({ id: folder.id, name: props.index!.folderPath(folder.id) }))];
-});
-// 先通过目录索引取得直属定义；筛选结果按响应式输入缓存，不在模板逐行重复搜索。
-const filteredDefinitions = computed(() => {
-  props.revision;
-  const needle = query.value.trim().toLocaleLowerCase();
-  const candidates = props.index
-    ? props.index.entries(selectedFolder.value && props.index.folders.has(selectedFolder.value) ? selectedFolder.value : "")
-      .filter(entry => entry.kind === "definition").map(entry => props.index!.definitions.get(entry.id)!)
-    : props.catalog;
-  return candidates.filter(item => (!kindFilter.value || item.kind === kindFilter.value)
-    && (!needle || `${item.name}\n${item.id}\n${item.goName}`.toLocaleLowerCase().includes(needle)));
-});
+// 管理树清除本地搜索与种类；标签和共享范围、状态由浏览组件统一清除。
+function clearDefinitionFilters() { query.value = ""; kindFilter.value = ""; }
 // 撤销、删除或切换工程后修复目录选择，不保留失效 ID。
 watch(() => [props.index, props.revision], () => {
   if (selectedFolder.value && !props.index?.folders.has(selectedFolder.value)) selectFolder("");
@@ -449,8 +445,8 @@ function close() {
 }
 // 从定义表单进入事件管理前先处理当前未应用的内容。
 function manageEvents() { if (guardPending()) emit("manageEvents"); }
-// 目录与标签页切换前先检查组织弹窗，防止销毁当前编辑内容。
-function changeTab(next: "definitions" | "directories" | "tags") {
+// 业务节点与标签页切换前先检查组织弹窗，防止丢失未提交内容。
+function changeTab(next: "definitions" | "tags") {
   if (next !== activeTab.value && organizationBrowser.value?.hasPending) return organizationBrowser.value.focusPending();
   if (next !== activeTab.value && tagBrowser.value?.hasPending) return tagBrowser.value.focusPending();
   activeTab.value = next;
@@ -485,33 +481,34 @@ onUnmounted(() => { importRevision.value++; previousFocus?.focus(); });
       <section ref="dialog" class="catalog-dialog" role="dialog" aria-modal="true" aria-labelledby="catalog-title" tabindex="-1" @keydown="dialogKeydown">
         <header><div><h2 id="catalog-title">{{ dialogTitle }}</h2><p>{{ mode === 'edit' ? `正在修改已有${draft.kind === 'action' ? '动作' : '条件'}定义 · ID：${editingID}` : '声明可绑定的动作与条件，业务函数由 Go 实现。' }}</p></div><button v-if="mode === 'edit' && index" type="button" :disabled="busy || disabled" @click="setEditingTags">设置标签</button><button v-if="mode === 'manage'" type="button" :disabled="busy || disabled" aria-label="关闭业务定义管理" @click="close">关闭</button></header>
         <nav v-if="mode !== 'manage'" aria-label="定义表单导航">
-          <button type="button" :disabled="busy || disabled" @click="changeMode('manage')">← 返回业务定义</button>
+          <button type="button" :disabled="busy || disabled" @click="changeMode('manage')">← 返回业务节点</button>
         </nav>
         <nav v-else class="catalog-tabs" aria-label="业务节点管理分类">
-          <button type="button" :class="{ active: activeTab === 'definitions' }" :aria-pressed="activeTab === 'definitions'" @click="changeTab('definitions')">业务定义（{{ catalog.length }}）</button>
-          <button type="button" :class="{ active: activeTab === 'directories' }" :aria-pressed="activeTab === 'directories'" @click="changeTab('directories')">目录</button>
+          <button type="button" :class="{ active: activeTab === 'definitions' }" :aria-pressed="activeTab === 'definitions'" @click="changeTab('definitions')">业务节点（{{ catalog.length }}）</button>
           <button type="button" :class="{ active: activeTab === 'tags' }" :aria-pressed="activeTab === 'tags'" @click="changeTab('tags')">标签</button>
         </nav>
         <div class="catalog-content">
           <div id="catalog-manager-overlays"></div>
-          <CatalogBrowser v-if="index" v-show="mode === 'manage' && activeTab === 'directories'" ref="organizationBrowser" presentation="directories" :initial-folder="selectedFolder" :index="index" :revision="revision ?? 0" :collapsed="false" search="" :disabled="Boolean(disabled)" :commit="commitOrganization" :failure-message="failureMessage ?? ''" @select="selectFolder" @inspect="editDefinition" @menu="(event, definition) => emit('menu', event, definition)" />
           <CatalogBrowser v-if="index && mode === 'manage' && activeTab === 'tags'" ref="tagBrowser" presentation="tags" :index="index" :revision="revision ?? 0" :collapsed="false" search="" :disabled="Boolean(disabled)" :commit="commitOrganization" :failure-message="failureMessage ?? ''" />
-          <div v-if="mode === 'manage' && activeTab === 'definitions'" class="catalog-existing">
+          <!-- 仅隐藏统一管理树，编辑及标签页继续复用其分类表单和本地筛选。 -->
+          <div v-show="mode === 'manage' && activeTab === 'definitions'" class="catalog-existing">
             <div class="catalog-toolbar">
               <button type="button" class="catalog-primary" :disabled="disabled" @click="changeMode('create')">新建定义</button>
               <button type="button" :disabled="disabled" @click="changeMode('import')">导入</button>
               <details ref="exportMenu" class="catalog-export"><summary>导出</summary><div class="catalog-export-options"><small>导出全部定义，不受筛选影响</small><button type="button" :disabled="disabled || transferBusy || !catalog.length" @click="transfer('copy')">复制全部 JSON</button><button type="button" :disabled="disabled || transferBusy || !catalog.length" @click="transfer('download')">下载全部 JSON</button></div></details>
             </div>
             <div class="catalog-filters">
-              <label>搜索定义<input v-model="query" type="search" placeholder="名称 / ID / Go 函数" /></label>
-              <label>种类<select v-model="kindFilter"><option value="">全部</option><option value="action">动作</option><option value="condition">条件</option></select></label>
-              <label>目录（直属定义）<select :value="selectedFolder" @change="selectFolder(($event.target as HTMLSelectElement).value)"><option v-for="folder in folderChoices" :key="folder.id" :value="folder.id">{{ folder.name }}</option></select></label>
+              <label>搜索定义<input v-model="query" type="search" aria-label="搜索业务定义" placeholder="名称 / ID / Go 函数" /></label>
+              <label>种类<select v-model="kindFilter" aria-label="业务节点种类"><option value="">全部</option><option value="action">动作</option><option value="condition">条件</option></select></label>
+              <label>范围<select v-model="treeScope" aria-label="业务节点树范围" title="仅当前树显示该树引用的定义，以及工程中尚未使用的公共定义。"><option value="all">全部树</option><option value="current">仅当前树</option></select></label>
+              <label>状态<select v-model="nodeStatus" aria-label="业务节点状态" title="有效：所选范围内有根节点可达的实例引用；无效：仅草稿引用或尚未使用。"><option value="all">全部</option><option value="valid">只看有效</option><option value="invalid">只看无效</option></select></label>
             </div>
-            <p class="catalog-hint">当前显示 {{ filteredDefinitions.length }} 个定义</p>
-            <p v-if="!filteredDefinitions.length" class="catalog-empty">{{ catalog.length ? '当前目录下没有匹配的定义，请调整搜索或筛选条件。' : '还没有业务定义。新建或导入定义后，即可在节点属性中选择绑定。' }}</p>
-            <article v-for="item in filteredDefinitions" :key="item.id"><div class="catalog-definition-info"><div class="catalog-definition-heading"><strong>{{ item.name }}</strong><span class="catalog-kind">{{ item.kind === 'action' ? '动作' : '条件' }}</span></div><small>ID：{{ item.id }} · Go 函数：{{ item.goName }} · 参数：{{ item.params?.length ?? 0 }} 个</small></div><div class="catalog-row-actions"><button type="button" :disabled="disabled" @click="editDefinition(item)">编辑</button><button type="button" :disabled="disabled" :aria-label="`${item.name}的更多操作`" @click="emit('menu', $event, item)">更多 ⋯</button></div></article>
+            <CatalogBrowser v-if="index" ref="organizationBrowser" presentation="directories" :initial-folder="selectedFolder" :index="index" :revision="revision ?? 0" :collapsed="false" :search="query" :kind-filter="kindFilter"
+              :tree-scope="treeScope" :node-status="nodeStatus" :matches-definition="matchesDefinition" :disabled="Boolean(disabled)" :commit="commitOrganization" :failure-message="failureMessage ?? ''"
+              @update:tree-scope="treeScope = $event" @update:node-status="nodeStatus = $event" @clear-search="clearDefinitionFilters"
+              @select="selectFolder" @inspect="editDefinition" @menu="(event, definition) => emit('menu', event, definition)" />
           </div>
-          <form v-else-if="mode === 'create' || mode === 'edit'" id="catalog-form" :class="{ 'pending-form': hasPending }" @submit.prevent="applyCatalog">
+          <form v-if="mode === 'create' || mode === 'edit'" id="catalog-form" :class="{ 'pending-form': hasPending }" @submit.prevent="applyCatalog">
             <div class="catalog-grid">
               <label>定义 ID<input v-model="draft.id" :readonly="Boolean(editingID)" :disabled="busy" placeholder="MoveTo" required /><small>绑定使用的稳定 ID{{ editingID ? '，编辑时保持固定' : '，请使用未占用的标识' }}。</small></label>
               <label>显示名称<input v-model="draft.name" :disabled="busy" placeholder="移动到目标" required /></label>
@@ -587,8 +584,8 @@ onUnmounted(() => { importRevision.value++; previousFocus?.focus(); });
 .catalog-function-name{display:flex;align-items:stretch;min-width:0}.catalog-function-prefix{display:flex;align-items:center;padding:9px 10px;border:1px solid #50776f;border-right:0;border-radius:6px 0 0 6px;background:#1c3b3d;color:#a3f1d9;font-family:ui-monospace,monospace;flex-shrink:0}.catalog-function-name input{border-radius:0 6px 6px 0;font-family:ui-monospace,monospace}.catalog-grid small{overflow-wrap:anywhere}.catalog-name-error{color:#ffc2c2}
 .catalog-overlay{position:fixed;inset:0;z-index:1000;display:grid;place-items:center;padding:16px;background:#071017b8;backdrop-filter:blur(4px);color:#d8e6ed;font:14px/1.5 system-ui,sans-serif}
 .catalog-dialog{width:min(1040px,100%);max-height:calc(100dvh - 32px);display:flex;flex-direction:column;border:1px solid #365260;border-radius:14px;background:#14232d;box-shadow:0 24px 90px #0008;outline:none}
-header,footer,nav{display:flex;align-items:center;gap:12px;padding:18px 24px;flex-shrink:0}header{justify-content:space-between}h2,h3,p{margin:0}h2{font-size:20px}h3{font-size:15px}header p,.catalog-hint,small,footer span{color:#94aebb;font-size:12px}nav{padding-top:0;border-bottom:1px solid #2d414d;flex-wrap:wrap}.catalog-content{padding:22px 24px;overflow:auto;min-height:160px}button,input,select,textarea{box-sizing:border-box;font:inherit;color:inherit;border:1px solid #385361;border-radius:6px;background:#10202a}button{padding:8px 12px;cursor:pointer;white-space:nowrap}button:hover{border-color:#86dec1;background:#1b3540}button:disabled{opacity:.5;cursor:wait}button.active,.catalog-primary{color:#a3f1d9;border-color:#64cfae;background:#1c3b3d}input,select,textarea{padding:9px 10px;width:100%;min-width:0}input:read-only{color:#8297a4}input:focus,select:focus,textarea:focus,button:focus-visible{outline:2px solid #86dec1;outline-offset:2px}label{display:flex;flex-direction:column;gap:6px;min-width:0}.catalog-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.catalog-section-title{display:flex;align-items:center;justify-content:space-between;margin:24px 0 8px}.catalog-parameter{display:grid;grid-template-columns:1fr 130px 1.4fr auto;align-items:end;gap:10px;margin-top:12px;padding:12px;border:1px solid #2e4754;border-radius:8px}.catalog-wide{grid-column:1/-1}.catalog-events{margin-top:20px}.catalog-check{display:flex;flex-direction:row;align-items:flex-start;gap:9px;margin-top:14px}.catalog-check input{width:auto;margin:4px 0 0}.catalog-warning{margin-top:18px;border:1px solid #947039;background:#3c3222;border-radius:8px;padding:14px;color:#f0d7a5}.catalog-warning p{margin-top:5px}.catalog-existing article{display:flex;gap:12px;align-items:center;justify-content:space-between;padding:15px 0;border-bottom:1px solid #2d414d}.catalog-existing small{display:block;margin-top:4px}.catalog-empty{padding:24px;color:#a5becb;border:1px dashed #456170;border-radius:8px}.catalog-import>label,.catalog-import>p{margin-bottom:16px}.catalog-conflict{margin-top:18px;border:1px solid #725c3a;border-radius:8px;padding:16px}.catalog-compare{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:12px 0}.catalog-compare>div{min-width:0}pre{padding:10px;margin:5px 0 0;max-height:240px;overflow:auto;border-radius:5px;background:#0c1821;font-size:12px}.catalog-error{margin-top:18px;padding:12px;border:1px solid #ad6262;background:#46282d;border-radius:6px;color:#ffc2c2;overflow-wrap:anywhere}footer{border-top:1px solid #2d414d}footer span{margin-right:auto}
+header,footer,nav{display:flex;align-items:center;gap:12px;padding:18px 24px;flex-shrink:0}header{justify-content:space-between}h2,h3,p{margin:0}h2{font-size:20px}h3{font-size:15px}header p,.catalog-hint,small,footer span{color:#94aebb;font-size:12px}nav{padding-top:0;border-bottom:1px solid #2d414d;flex-wrap:wrap}.catalog-content{padding:22px 24px;overflow:auto;min-height:160px}button,input,select,textarea{box-sizing:border-box;font:inherit;color:inherit;border:1px solid #385361;border-radius:6px;background:#10202a}button{padding:8px 12px;cursor:pointer;white-space:nowrap}button:hover{border-color:#86dec1;background:#1b3540}button:disabled{opacity:.5;cursor:wait}button.active,.catalog-primary{color:#a3f1d9;border-color:#64cfae;background:#1c3b3d}input,select,textarea{padding:9px 10px;width:100%;min-width:0}input:read-only{color:#8297a4}input:focus,select:focus,textarea:focus,button:focus-visible{outline:2px solid #86dec1;outline-offset:2px}label{display:flex;flex-direction:column;gap:6px;min-width:0}.catalog-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.catalog-section-title{display:flex;align-items:center;justify-content:space-between;margin:24px 0 8px}.catalog-parameter{display:grid;grid-template-columns:1fr 130px 1.4fr auto;align-items:end;gap:10px;margin-top:12px;padding:12px;border:1px solid #2e4754;border-radius:8px}.catalog-wide{grid-column:1/-1}.catalog-events{margin-top:20px}.catalog-check{display:flex;flex-direction:row;align-items:flex-start;gap:9px;margin-top:14px}.catalog-check input{width:auto;margin:4px 0 0}.catalog-warning{margin-top:18px;border:1px solid #947039;background:#3c3222;border-radius:8px;padding:14px;color:#f0d7a5}.catalog-warning p{margin-top:5px}.catalog-import>label,.catalog-import>p{margin-bottom:16px}.catalog-conflict{margin-top:18px;border:1px solid #725c3a;border-radius:8px;padding:16px}.catalog-compare{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:12px 0}.catalog-compare>div{min-width:0}pre{padding:10px;margin:5px 0 0;max-height:240px;overflow:auto;border-radius:5px;background:#0c1821;font-size:12px}.catalog-error{margin-top:18px;padding:12px;border:1px solid #ad6262;background:#46282d;border-radius:6px;color:#ffc2c2;overflow-wrap:anywhere}footer{border-top:1px solid #2d414d}footer span{margin-right:auto}
 @media(max-width:650px){.catalog-overlay{padding:16px}.catalog-dialog{max-height:calc(100dvh - 32px)}header,footer,nav,.catalog-content{padding:14px}.catalog-grid,.catalog-compare{grid-template-columns:1fr}.catalog-parameter{grid-template-columns:1fr 1fr}.catalog-parameter>label:nth-child(3){grid-column:1/-1}footer{flex-wrap:wrap}footer span{width:100%}}
-.catalog-dialog{min-width:0;box-sizing:border-box}.catalog-content{min-height:0;flex:1}.catalog-tabs{gap:20px;padding-bottom:0}.catalog-tabs button{border:0;border-radius:0;background:transparent;padding:10px 0;border-bottom:2px solid transparent;color:#94aebb}.catalog-tabs button.active{border-bottom-color:#64cfae;color:#a3f1d9}.catalog-toolbar,.catalog-row-actions,.catalog-definition-heading{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.catalog-toolbar{margin-bottom:18px}.catalog-filters{display:grid;grid-template-columns:minmax(180px,1.5fr) minmax(100px,.6fr) minmax(150px,1fr);gap:12px;margin-bottom:14px}.catalog-definition-info{min-width:0;flex:1;overflow-wrap:anywhere}.catalog-kind{font-size:11px;line-height:1.6;padding:1px 7px;border:1px solid #3c6670;border-radius:4px;color:#a3d8dd;flex-shrink:0}.catalog-row-actions{flex-shrink:0}.catalog-export{position:relative}.catalog-export summary{list-style:none;cursor:pointer;padding:8px 12px;border:1px solid #385361;border-radius:6px;background:#10202a}.catalog-export summary::after{content:' ▾';color:#94aebb}.catalog-export-options{position:absolute;left:0;top:calc(100% + 6px);z-index:2;min-width:210px;padding:10px;display:grid;gap:6px;border:1px solid #385361;border-radius:8px;background:#14232d;box-shadow:0 8px 24px #0008}.catalog-export-options button{text-align:left}.catalog-export-options small{margin:0 0 4px}.catalog-export summary:focus-visible{outline:2px solid #86dec1;outline-offset:2px}header>div{min-width:0;overflow-wrap:anywhere}header>button{flex-shrink:0}button{flex-shrink:0}
-@media(max-width:650px){.catalog-filters{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.catalog-filters>label:first-child{grid-column:1/-1}.catalog-existing article{align-items:flex-start;flex-wrap:wrap}.catalog-definition-info{flex-basis:100%}.catalog-tabs{gap:16px}.catalog-tabs button{padding:6px 0}.catalog-export-options{left:auto;right:0;min-width:190px}}
+.catalog-dialog{min-width:0;box-sizing:border-box}.catalog-content{min-height:0;flex:1}.catalog-tabs{gap:20px;padding-bottom:0}.catalog-tabs button{border:0;border-radius:0;background:transparent;padding:10px 0;border-bottom:2px solid transparent;color:#94aebb}.catalog-tabs button.active{border-bottom-color:#64cfae;color:#a3f1d9}.catalog-toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.catalog-toolbar{margin-bottom:18px}.catalog-filters{display:grid;grid-template-columns:minmax(200px,2fr) repeat(3,minmax(110px,1fr));gap:12px;margin-bottom:14px}.catalog-export{position:relative}.catalog-export summary{list-style:none;cursor:pointer;padding:8px 12px;border:1px solid #385361;border-radius:6px;background:#10202a}.catalog-export summary::after{content:' ▾';color:#94aebb}.catalog-export-options{position:absolute;left:0;top:calc(100% + 6px);z-index:2;min-width:210px;padding:10px;display:grid;gap:6px;border:1px solid #385361;border-radius:8px;background:#14232d;box-shadow:0 8px 24px #0008}.catalog-export-options button{text-align:left}.catalog-export-options small{margin:0 0 4px}.catalog-export summary:focus-visible{outline:2px solid #86dec1;outline-offset:2px}header>div{min-width:0;overflow-wrap:anywhere}header>button{flex-shrink:0}button{flex-shrink:0}
+@media(max-width:650px){.catalog-filters{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.catalog-filters>label:first-child{grid-column:1/-1}.catalog-tabs{gap:16px}.catalog-tabs button{padding:6px 0}.catalog-export-options{left:auto;right:0;min-width:190px}}
 </style>

@@ -2849,6 +2849,7 @@ onUnmounted(() => toolLifecycle.abort());
     <EventManager v-if="eventManagerOpen" ref="eventManager" :project="project" :index="eventIndex" :revision="editRevision" :commit="commitEventChange" @close="eventManagerOpen = false" />
     <CatalogManager v-if="catalogDialog" ref="catalogManager" :catalog="project.catalog" :project="project" :project-revision="editRevision" :initial-mode="catalogDialog.mode" :initial-kind="catalogDialog.kind"
       :initial-definition="catalogDialog.definition" :initial-folder="catalogDialog.folderId"
+      v-model:tree-scope="catalogTreeScope" v-model:node-status="catalogNodeStatus" :matches-definition="catalogMatchesDefinition"
       :index="catalogIndex" :revision="catalogRevision" :disabled="workspaceChanging" :commit="commitCatalogOrganization"
       :failure-message="error ? message : ''" :transfer-busy="catalogTransferBusy"
       @select="catalogDialog.folderId = $event" @transfer="transferCatalog($event)" @menu="openCatalogMenu"
